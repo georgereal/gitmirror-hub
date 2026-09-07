@@ -1,0 +1,29 @@
+---
+description: Consult ARCHITECTURE.md and REPO_MAP.md before exploring code, and synchronize documentation on milestone events (commits, explicit user requests, or major feature completions).
+alwaysApply: true
+---
+
+# Project Architecture & Code Map Governance
+
+## 1. Always Read Documentation First (Before Broad Code Exploration)
+Before beginning any task, bug investigation, or feature work:
+- **First Step**: Consult the root documentation files before executing broad searches across the codebase:
+  - `ARCHITECTURE.md` - Master system topology, messaging queues, event flows, and resilience design.
+  - `REPO_MAP.md` - Complete file map, directory tree, component responsibilities, and route catalog.
+  - `INSTRUCTIONS.md` - Operational runbook, environment setup, failure testing recipes, and SCM connection steps.
+  - `README.md` - Quickstart and project summary.
+  - `webhook-worker/README.md` - Cloudflare Workers edge gateway setup, authentication, and deployment.
+
+## 2. Event-Driven Documentation Synchronization
+Do **NOT** update documentation on every small intermediate code edit or minor tweak.
+
+Only synchronize `REPO_MAP.md`, `ARCHITECTURE.md`, `INSTRUCTIONS.md`, and `README.md` during specific **milestone events**:
+
+1. **Explicit User Instruction**: When the user asks to update docs, sync the repo map, or refresh architectural diagrams.
+2. **Git Commit / PR Preparation**: Before finalizing changes for a git commit or pull request, verify and update the documentation to reflect the new state.
+3. **Major Architectural Milestones**: When completing a new module, introducing a new external service/gateway (e.g. Cloudflare Workers, new cloud provider), or modifying the core messaging/queue topology.
+
+### What to Update When Triggered:
+- **`REPO_MAP.md`**: New top-level directories, services, controllers, DTOs, frontend views, or API/WebSocket routes.
+- **`ARCHITECTURE.md`**: Mermaid architecture diagrams, message queues/exchanges, event workflows, or security mechanisms.
+- **`INSTRUCTIONS.md` / `README.md`**: New environment variables, CLI commands, setup steps, or operational runbooks.

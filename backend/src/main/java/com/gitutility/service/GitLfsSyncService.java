@@ -1,0 +1,686 @@
+package com.gitutility.service;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.gitutility.model.entity.RepoMapping;
+import lombok.extern.slf4j.Slf4j;
+import org.eclipse.jgit.lib.ObjectId;
+import org.eclipse.jgit.lib.Ref;
+import org.eclipse.jgit.lib.ObjectLoader;
+import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.revwalk.RevTree;
+import org.eclipse.jgit.revwalk.RevWalk;
+import org.eclipse.jgit.treewalk.TreeWalk;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.*;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+@Service
+@Slf4j
+public class GitLfsSyncService {
+
+    private final RestTemplate restTemplate;
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final GitHubAuthService gitHubAuthService;
+    private final SyncCheckpointService syncCheckpointService;
+    private final ExecutorService lfsDiscoveryExecutor;
+    private final ExecutorService lfsTransferExecutor;
+
+    @Value("${git-utility.git.lfs-batch-size:50}")
+    private int lfsBatchSize;
+
+    @Value("${git-utility.git.lfs-discovery-threads:4}")
+    private int lfsDiscoveryThreads;
+
+    public GitLfsSyncService(
+            RestTemplate restTemplate,
+            GitHubAuthService gitHubAuthService,
+            SyncCheckpointService syncCheckpointService,
+            @Qualifier("lfsDiscoveryExecutor") ExecutorService lfsDiscoveryExecutor,
+            @Qualifier("lfsTransferExecutor") ExecutorService lfsTransferExecutor) {
+        this.restTemplate = restTemplate;
+        this.gitHubAuthService = gitHubAuthService;
+        this.syncCheckpointService = syncCheckpointService;
+        this.lfsDiscoveryExecutor = lfsDiscoveryExecutor;
+        this.lfsTransferExecutor = lfsTransferExecutor;
+    }
+
+    private static final Pattern LFS_POINTER_PATTERN =
+            Pattern.compile("version https://git-lfs\\.github\\.com/spec/v1\\s+oid sha256:([a-f0-9]{64})\\s+size (\\d+)", Pattern.MULTILINE);
+
+    public record LfsObject(String oid, long size, String filePath, String headBranch) {
+        public LfsObject(String oid, long size) {
+            this(oid, size, null, null);
+        }
+    }
+
+    @FunctionalInterface
+    public interface LfsProgressListener {
+        void onProgress(String phase, String detail);
+    }
+
+    public record LfsInspectResult(
+            int totalDiscovered,
+            int syncedCount,
+            int pendingCount,
+            boolean inSync,
+            List<LfsObject> objects,
+            String mode,
+            boolean destVerified) {
+        public LfsInspectResult(int totalDiscovered, int syncedCount, int pendingCount, boolean inSync,
+                                List<LfsObject> objects, String mode) {
+            this(totalDiscovered, syncedCount, pendingCount, inSync, objects, mode, true);
+        }
+    }
+
+    /**
+     * Full-repo LFS inspection for Refresh Diff: walk every unique branch tip (same discovery as
+     * a full mirror), then verify each pointer on the destination via the LFS batch API.
+     * Cached checkpoints and trunk-only samples are never used here — page load reads the DB snapshot.
+     */
+    public LfsInspectResult inspectLfsMirrorForDiff(RepoMapping mapping,
+                                                    String sourceRepoUrl,
+                                                    String targetRepoUrl,
+                                                    Repository repository,
+                                                    LfsProgressListener listener) {
+        if (repository == null) {
+            return new LfsInspectResult(0, 0, 0, true, List.of(), "no-repo", false);
+        }
+
+        if (listener != null) {
+            listener.onProgress("discover", "scanning every unique branch tip for LFS pointers");
+        }
+        List<LfsObject> discovered = discoverLfsPointers(repository, listener, null, null);
+        String mode = "full-tips";
+
+        if (mapping != null && mapping.getId() != null && discovered != null && !discovered.isEmpty()) {
+            syncCheckpointService.persistDiscoveredLfs(mapping.getId(), discovered);
+        }
+
+        if (discovered == null || discovered.isEmpty()) {
+            return new LfsInspectResult(0, 0, 0, true, List.of(), mode + "+none", true);
+        }
+
+        if (listener != null) {
+            listener.onProgress("verify",
+                    "checking " + discovered.size() + " object(s) on destination via LFS batch API");
+        }
+
+        String targetToken = mapping != null ? mapping.getTokenB() : null;
+        BatchVerifyResult verify = verifyObjectsPresentOnTarget(
+                targetRepoUrl, discovered, listener, targetToken);
+        Set<String> presentOnTarget = verify.presentOids();
+
+        int synced = 0;
+        for (LfsObject obj : discovered) {
+            if (presentOnTarget.contains(obj.oid())) {
+                synced++;
+            }
+        }
+
+        int total = discovered.size();
+        int pending = Math.max(0, total - synced);
+        if (verify.apiSucceeded()) {
+            mode = mode + "+batch-verify";
+        } else {
+            mode = mode + "+verify-failed";
+        }
+
+        return new LfsInspectResult(
+                total,
+                synced,
+                pending,
+                total == 0 || (verify.apiSucceeded() && synced >= total),
+                discovered,
+                mode,
+                verify.apiSucceeded());
+    }
+
+    public List<LfsObject> discoverLfsPointersForBranchTips(Repository repository,
+                                                            Collection<String> branchNames,
+                                                            LfsProgressListener listener) {
+        if (repository == null || branchNames == null || branchNames.isEmpty()) {
+            return List.of();
+        }
+        Set<ObjectId> uniqueCommits = new LinkedHashSet<>();
+        for (String branch : branchNames) {
+            if (branch == null || branch.isBlank()) {
+                continue;
+            }
+            try {
+                Ref ref = repository.exactRef("refs/heads/" + branch);
+                if (ref == null) {
+                    ref = repository.exactRef("refs/remotes/source/" + branch);
+                }
+                if (ref != null && ref.getObjectId() != null) {
+                    uniqueCommits.add(ref.getObjectId());
+                }
+            } catch (IOException ignored) {
+                // skip unreadable ref
+            }
+        }
+        if (uniqueCommits.isEmpty()) {
+            return List.of();
+        }
+
+        Set<LfsObject> lfsObjects = new LinkedHashSet<>();
+        int totalCommits = uniqueCommits.size();
+        int completed = 0;
+        for (ObjectId commitId : uniqueCommits) {
+            lfsObjects.addAll(scanCommitForLfsPointers(repository, commitId));
+            completed++;
+            if (listener != null) {
+                listener.onProgress("discover", "trunk scan · " + completed + "/" + totalCommits);
+            }
+        }
+        if (listener != null) {
+            listener.onProgress("discover", "discovered " + lfsObjects.size() + " pointer(s) on trunk refs");
+        }
+        return new ArrayList<>(lfsObjects);
+    }
+
+    record BatchVerifyResult(Set<String> presentOids, boolean apiSucceeded) {}
+
+    Set<String> verifyObjectsPresentOnTarget(String targetRepoUrl,
+                                             List<LfsObject> objects,
+                                             LfsProgressListener listener) {
+        return verifyObjectsPresentOnTarget(targetRepoUrl, objects, listener, null).presentOids();
+    }
+
+    BatchVerifyResult verifyObjectsPresentOnTarget(String targetRepoUrl,
+                                                   List<LfsObject> objects,
+                                                   LfsProgressListener listener,
+                                                   String targetTokenOverride) {
+        if (objects == null || objects.isEmpty()) {
+            return new BatchVerifyResult(Set.of(), true);
+        }
+        String targetLfsEndpoint = deriveLfsEndpoint(targetRepoUrl);
+        if (targetLfsEndpoint == null) {
+            return new BatchVerifyResult(Set.of(), false);
+        }
+        String targetToken = resolveToken(targetTokenOverride);
+        Set<String> present = new LinkedHashSet<>();
+        List<List<LfsObject>> batches = partition(objects, Math.max(1, lfsBatchSize));
+        int batchIndex = 0;
+        boolean anyResponse = false;
+        for (List<LfsObject> batch : batches) {
+            batchIndex++;
+            if (listener != null) {
+                listener.onProgress("verify", "destination batch " + batchIndex + "/" + batches.size());
+            }
+            JsonNode targetBatchResp = callLfsBatchApi(targetLfsEndpoint, "upload", batch, targetToken);
+            if (targetBatchResp != null) {
+                anyResponse = true;
+                present.addAll(extractOidsPresentOnTarget(targetBatchResp));
+            }
+        }
+        return new BatchVerifyResult(present, anyResponse);
+    }
+
+    static Set<String> extractOidsPresentOnTarget(JsonNode targetBatchResp) {
+        Set<String> present = new LinkedHashSet<>();
+        if (targetBatchResp == null) {
+            return present;
+        }
+        JsonNode targetObjects = targetBatchResp.path("objects");
+        if (!targetObjects.isArray()) {
+            return present;
+        }
+        for (JsonNode tObj : targetObjects) {
+            String oid = tObj.path("oid").asText(null);
+            if (oid == null || oid.isBlank()) {
+                continue;
+            }
+            JsonNode uploadAction = tObj.path("actions").path("upload");
+            if (uploadAction.isMissingNode() || !uploadAction.has("href")) {
+                present.add(oid);
+            }
+        }
+        return present;
+    }
+
+    public List<LfsObject> discoverLfsPointers(Repository repository) {
+        return discoverLfsPointers(repository, null, null, null);
+    }
+
+    public List<LfsObject> discoverLfsPointers(Repository repository,
+                                               LfsProgressListener listener,
+                                               BooleanSupplier cancelCheck,
+                                               Long jobId) {
+        Set<ObjectId> uniqueCommits;
+        try {
+            uniqueCommits = BareRepoHousekeeping.uniqueBranchTipObjectIds(repository);
+        } catch (IOException e) {
+            log.warn("Could not list branch tips for LFS discovery: {}", e.getMessage());
+            uniqueCommits = Set.of();
+        }
+        if (uniqueCommits.isEmpty()) {
+            return List.of();
+        }
+
+        int totalCommits = uniqueCommits.size();
+        Set<LfsObject> lfsObjects = ConcurrentHashMap.newKeySet();
+        AtomicInteger doneCommits = new AtomicInteger(0);
+        AtomicLong lastEmitMs = new AtomicLong(0);
+        int threads = Math.max(1, Math.min(lfsDiscoveryThreads, totalCommits));
+
+        if (listener != null) {
+            listener.onProgress("discover",
+                    "scanning " + totalCommits + " unique commit tip(s) with "
+                            + threads + " parallel worker(s)");
+        }
+
+        List<Future<?>> futures = new ArrayList<>();
+        try {
+            for (ObjectId commitId : uniqueCommits) {
+                futures.add(lfsDiscoveryExecutor.submit(() -> {
+                    throwIfCancelled(cancelCheck, jobId);
+                    lfsObjects.addAll(scanCommitForLfsPointers(repository, commitId));
+                    int completed = doneCommits.incrementAndGet();
+                    long now = System.currentTimeMillis();
+                    if (listener != null && (completed == 1 || completed == totalCommits
+                            || now - lastEmitMs.get() >= 2000)) {
+                        lastEmitMs.set(now);
+                        listener.onProgress("discover",
+                                "scanning commits · " + completed + "/" + totalCommits);
+                    }
+                }));
+            }
+            for (Future<?> future : futures) {
+                future.get();
+            }
+        } catch (JobCancelledException e) {
+            throw e;
+        } catch (JobPausedException e) {
+            throw e;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("LFS pointer discovery interrupted");
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof JobCancelledException jce) {
+                throw jce;
+            }
+            if (cause instanceof JobPausedException jpe) {
+                throw jpe;
+            }
+            log.warn("LFS pointer discovery failed: {}", cause != null ? cause.getMessage() : e.getMessage());
+        } finally {
+            for (Future<?> future : futures) {
+                future.cancel(true);
+            }
+        }
+
+        if (listener != null) {
+            listener.onProgress("discover", "discovered " + lfsObjects.size() + " pointer(s)");
+        }
+        return new ArrayList<>(lfsObjects);
+    }
+
+    static Set<LfsObject> scanCommitForLfsPointers(Repository repository, ObjectId commitId) {
+        Set<LfsObject> found = new HashSet<>();
+        try (RevWalk revWalk = new RevWalk(repository)) {
+            RevCommit commit = revWalk.parseCommit(commitId);
+            RevTree tree = commit.getTree();
+            try (TreeWalk treeWalk = new TreeWalk(repository)) {
+                treeWalk.addTree(tree);
+                treeWalk.setRecursive(true);
+                while (treeWalk.next()) {
+                    ObjectId objectId = treeWalk.getObjectId(0);
+                    ObjectLoader loader = repository.open(objectId);
+                    if (loader.getSize() < 500) {
+                        byte[] bytes = loader.getBytes();
+                        String content = new String(bytes, StandardCharsets.UTF_8);
+                        Matcher matcher = LFS_POINTER_PATTERN.matcher(content);
+                        if (matcher.find()) {
+                            String oid = matcher.group(1);
+                            long size = Long.parseLong(matcher.group(2));
+                            found.add(new LfsObject(oid, size, treeWalk.getPathString(), null));
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Error inspecting commit {} for LFS pointers: {}", commitId.name(), e.getMessage());
+        }
+        return found;
+    }
+
+    public record LfsSyncStats(int count, long bytes, int failed, int alreadyPresent) {
+        public LfsSyncStats(int count, long bytes, int failed) {
+            this(count, bytes, failed, 0);
+        }
+
+        public static LfsSyncStats empty() {
+            return new LfsSyncStats(0, 0, 0, 0);
+        }
+    }
+
+    private record TransferTask(String oid, Callable<Boolean> task) {}
+
+    public LfsSyncStats syncLfsObjects(String sourceRepoUrl, String targetRepoUrl, List<LfsObject> objects) {
+        return syncLfsObjects(sourceRepoUrl, targetRepoUrl, objects, null, null, null, null, null);
+    }
+
+    public LfsSyncStats syncLfsObjects(String sourceRepoUrl,
+                                       String targetRepoUrl,
+                                       List<LfsObject> objects,
+                                       LfsProgressListener listener,
+                                       BooleanSupplier cancelCheck,
+                                       Long jobId) {
+        return syncLfsObjects(sourceRepoUrl, targetRepoUrl, objects, listener, cancelCheck, jobId, null, null);
+    }
+
+    /**
+     * Synchronizes Git LFS binary blobs from source SCM to target SCM in batches.
+     */
+    public LfsSyncStats syncLfsObjects(String sourceRepoUrl,
+                                       String targetRepoUrl,
+                                       List<LfsObject> objects,
+                                       LfsProgressListener listener,
+                                       BooleanSupplier cancelCheck,
+                                       Long jobId,
+                                       String sourceTokenOverride,
+                                       String targetTokenOverride) {
+        return syncLfsObjects(sourceRepoUrl, targetRepoUrl, objects, listener, cancelCheck, jobId,
+                sourceTokenOverride, targetTokenOverride, null);
+    }
+
+    public LfsSyncStats syncLfsObjects(String sourceRepoUrl,
+                                       String targetRepoUrl,
+                                       List<LfsObject> objects,
+                                       LfsProgressListener listener,
+                                       BooleanSupplier cancelCheck,
+                                       Long jobId,
+                                       String sourceTokenOverride,
+                                       String targetTokenOverride,
+                                       Consumer<String> onTransferSuccess) {
+        if (objects == null || objects.isEmpty()) {
+            return LfsSyncStats.empty();
+        }
+
+        log.info("Synchronizing {} Git LFS objects from {} to {}", objects.size(), sourceRepoUrl, targetRepoUrl);
+        String sourceLfsEndpoint = deriveLfsEndpoint(sourceRepoUrl);
+        String targetLfsEndpoint = deriveLfsEndpoint(targetRepoUrl);
+
+        if (sourceLfsEndpoint == null || targetLfsEndpoint == null) {
+            log.debug("Could not derive LFS batch endpoints for mirroring.");
+            return LfsSyncStats.empty();
+        }
+
+        String sourceToken = resolveToken(sourceTokenOverride);
+        String targetToken = resolveToken(targetTokenOverride);
+
+        Map<String, Long> sizesByOid = new HashMap<>();
+        for (LfsObject obj : objects) {
+            sizesByOid.put(obj.oid(), obj.size());
+        }
+
+        int transferredCount = 0;
+        int alreadyPresentCount = 0;
+        int failedCount = 0;
+        long transferredBytes = 0;
+        int batchSize = Math.max(1, lfsBatchSize);
+        List<List<LfsObject>> batches = partition(objects, batchSize);
+        int batchIndex = 0;
+        try {
+            for (List<LfsObject> batch : batches) {
+                throwIfCancelled(cancelCheck, jobId);
+                batchIndex++;
+                if (listener != null) {
+                    listener.onProgress("transfer",
+                            "batch " + batchIndex + "/" + batches.size()
+                                    + " · " + transferredCount + "/" + objects.size() + " object(s)");
+                }
+
+                JsonNode sourceBatchResp = callLfsBatchApi(sourceLfsEndpoint, "download", batch, sourceToken);
+                JsonNode targetBatchResp = callLfsBatchApi(targetLfsEndpoint, "upload", batch, targetToken);
+
+                if (sourceBatchResp == null || targetBatchResp == null) {
+                    failedCount += batch.size();
+                    continue;
+                }
+
+                JsonNode sourceObjects = sourceBatchResp.path("objects");
+                JsonNode targetObjects = targetBatchResp.path("objects");
+
+                Map<String, JsonNode> sourceMap = new HashMap<>();
+                if (sourceObjects.isArray()) {
+                    for (JsonNode o : sourceObjects) {
+                        sourceMap.put(o.path("oid").asText(), o);
+                    }
+                }
+
+                List<TransferTask> transfers = new ArrayList<>();
+                if (targetObjects.isArray()) {
+                    for (JsonNode tObj : targetObjects) {
+                        throwIfCancelled(cancelCheck, jobId);
+                        String oid = tObj.path("oid").asText();
+                        JsonNode uploadAction = tObj.path("actions").path("upload");
+
+                        if (!uploadAction.isMissingNode() && uploadAction.has("href")) {
+                            JsonNode sObj = sourceMap.get(oid);
+                            JsonNode downloadAction = sObj != null ? sObj.path("actions").path("download") : null;
+                            if (downloadAction != null && downloadAction.has("href")) {
+                                String downloadUrl = downloadAction.path("href").asText();
+                                String uploadUrl = uploadAction.path("href").asText();
+                                transfers.add(new TransferTask(oid,
+                                        () -> transferLfsBlob(downloadUrl, downloadAction, uploadUrl, uploadAction)));
+                            } else {
+                                failedCount++;
+                            }
+                        } else if (oid != null && !oid.isBlank()) {
+                            alreadyPresentCount++;
+                            if (onTransferSuccess != null) {
+                                onTransferSuccess.accept(oid);
+                            }
+                        }
+                    }
+                }
+
+                if (!transfers.isEmpty()) {
+                    List<Callable<Boolean>> callables = transfers.stream().map(TransferTask::task).toList();
+                    List<Future<Boolean>> results = lfsTransferExecutor.invokeAll(callables);
+                    for (int i = 0; i < results.size(); i++) {
+                        String oid = transfers.get(i).oid();
+                        try {
+                            if (Boolean.TRUE.equals(results.get(i).get())) {
+                                transferredCount++;
+                                transferredBytes += sizesByOid.getOrDefault(oid, 0L);
+                                if (onTransferSuccess != null) {
+                                    onTransferSuccess.accept(oid);
+                                }
+                            } else {
+                                failedCount++;
+                            }
+                        } catch (ExecutionException e) {
+                            failedCount++;
+                        }
+                    }
+                }
+            }
+
+            if (failedCount > 0) {
+                log.warn("LFS transfer completed with {} failure(s) out of {} object(s)", failedCount, objects.size());
+            } else {
+                log.info("Successfully transferred {} LFS binary blobs to destination", transferredCount);
+            }
+        } catch (JobCancelledException e) {
+            throw e;
+        } catch (JobPausedException e) {
+            throw e;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("LFS binary transfer interrupted");
+            failedCount = Math.max(failedCount, objects.size() - transferredCount - alreadyPresentCount);
+        } catch (Exception e) {
+            log.warn("LFS binary transfer encountered an issue: {}", e.getMessage());
+            failedCount = Math.max(failedCount, objects.size() - transferredCount - alreadyPresentCount);
+        }
+
+        if (listener != null) {
+            listener.onProgress("transfer",
+                    (transferredCount + alreadyPresentCount) + "/" + objects.size() + " object(s) on destination"
+                            + (alreadyPresentCount > 0 ? " · " + alreadyPresentCount + " already present" : "")
+                            + (failedCount > 0 ? " · " + failedCount + " failed" : ""));
+        }
+        return new LfsSyncStats(transferredCount + alreadyPresentCount, transferredBytes, failedCount, alreadyPresentCount);
+    }
+
+    private String resolveToken(String override) {
+        if (override != null && !override.isBlank()) {
+            return override.trim();
+        }
+        return gitHubAuthService.getEffectiveGitHubToken();
+    }
+
+    static List<org.eclipse.jgit.lib.Ref> collectBranchScanRefs(Repository repository) {
+        try {
+            Map<String, org.eclipse.jgit.lib.Ref> byBranch = new LinkedHashMap<>();
+            for (String branch : BareRepoHousekeeping.listHeadBranchNames(repository)) {
+                org.eclipse.jgit.lib.Ref ref = repository.exactRef("refs/heads/" + branch);
+                if (ref != null) {
+                    byBranch.putIfAbsent(branch, ref);
+                }
+            }
+            for (org.eclipse.jgit.lib.Ref ref : repository.getRefDatabase().getRefsByPrefix("refs/remotes/source/")) {
+                byBranch.putIfAbsent(branchLabel(ref.getName()), ref);
+            }
+            return new ArrayList<>(byBranch.values());
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
+
+    static String branchLabel(String refName) {
+        if (refName == null) {
+            return "";
+        }
+        if (refName.startsWith("refs/remotes/source/")) {
+            return refName.substring("refs/remotes/source/".length());
+        }
+        if (refName.startsWith("refs/heads/")) {
+            return refName.substring("refs/heads/".length());
+        }
+        return refName;
+    }
+
+    static <T> List<List<T>> partition(List<T> items, int batchSize) {
+        List<List<T>> batches = new ArrayList<>();
+        if (items == null || items.isEmpty()) {
+            return batches;
+        }
+        int size = Math.max(1, batchSize);
+        for (int i = 0; i < items.size(); i += size) {
+            batches.add(new ArrayList<>(items.subList(i, Math.min(i + size, items.size()))));
+        }
+        return batches;
+    }
+
+    private static void throwIfCancelled(BooleanSupplier cancelCheck, Long jobId) {
+        if (cancelCheck != null && cancelCheck.getAsBoolean()) {
+            throw new JobCancelledException(jobId);
+        }
+    }
+
+    private JsonNode callLfsBatchApi(String lfsEndpoint, String operation, List<LfsObject> objects, String token) {
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.set("Accept", "application/vnd.git-lfs+json");
+            headers.set("Content-Type", "application/vnd.git-lfs+json");
+            if (token != null && !token.isBlank()) {
+                headers.setBearerAuth(token.trim());
+            }
+
+            Map<String, Object> body = new HashMap<>();
+            body.put("operation", operation);
+            body.put("transfers", List.of("basic"));
+
+            List<Map<String, Object>> objsPayload = new ArrayList<>();
+            for (LfsObject obj : objects) {
+                objsPayload.add(Map.of("oid", obj.oid(), "size", obj.size()));
+            }
+            body.put("objects", objsPayload);
+
+            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
+            String batchUrl = lfsEndpoint + "/objects/batch";
+
+            ResponseEntity<String> response = restTemplate.exchange(URI.create(batchUrl), HttpMethod.POST, entity, String.class);
+            return objectMapper.readTree(response.getBody());
+        } catch (Exception e) {
+            log.debug("LFS Batch API call ({}) failed: {}", operation, e.getMessage());
+            return null;
+        }
+    }
+
+    static void applyActionHeaders(HttpHeaders target, JsonNode action) {
+        if (target == null || action == null || action.isMissingNode()) {
+            return;
+        }
+        JsonNode headerNode = action.path("header");
+        if (!headerNode.isObject()) {
+            return;
+        }
+        headerNode.fields().forEachRemaining(entry -> {
+            if (entry.getValue() != null && !entry.getValue().isNull()) {
+                target.set(entry.getKey(), entry.getValue().asText());
+            }
+        });
+    }
+
+    private boolean transferLfsBlob(String downloadUrl, JsonNode downloadAction,
+                                      String uploadUrl, JsonNode uploadAction) {
+        try {
+            restTemplate.execute(URI.create(downloadUrl), HttpMethod.GET, request -> {
+                applyActionHeaders(request.getHeaders(), downloadAction);
+            }, response -> {
+                try (InputStream in = response.getBody()) {
+                    restTemplate.execute(URI.create(uploadUrl), HttpMethod.PUT, putRequest -> {
+                        applyActionHeaders(putRequest.getHeaders(), uploadAction);
+                        if (!putRequest.getHeaders().containsKey(HttpHeaders.CONTENT_TYPE)) {
+                            putRequest.getHeaders().setContentType(MediaType.APPLICATION_OCTET_STREAM);
+                        }
+                        if (in != null) {
+                            in.transferTo(putRequest.getBody());
+                        }
+                    }, putResponse -> {
+                        if (!putResponse.getStatusCode().is2xxSuccessful()) {
+                            throw new IllegalStateException("LFS upload HTTP " + putResponse.getStatusCode().value());
+                        }
+                        return null;
+                    });
+                }
+                return null;
+            });
+            return true;
+        } catch (Exception e) {
+            log.warn("Failed to stream LFS blob: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private String deriveLfsEndpoint(String repoUrl) {
+        if (repoUrl == null) return null;
+        String clean = repoUrl.trim().replaceAll("\\.git$", "");
+        if (clean.contains("github.com")) {
+            return clean + ".git/info/lfs";
+        }
+        return clean + "/info/lfs";
+    }
+}

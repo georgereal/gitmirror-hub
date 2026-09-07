@@ -1,0 +1,134 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: git-mirror-utility
+  datasource:
+    url: jdbc:h2:file:./data/gitutility;DB_CLOSE_DELAY=-1;AUTO_SERVER=TRUE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  h2:
+    console:
+      enabled: ${GIT_H2_CONSOLE_ENABLED:false}
+      path: /h2-console
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+  rabbitmq:
+    # Supports CloudAMQP connection strings via SPRING_RABBITMQ_ADDRESSES or host/port
+    addresses: ${SPRING_RABBITMQ_ADDRESSES:amqp://guest:guest@localhost:5672}
+    template:
+      retry:
+        enabled: true
+        initial-interval: 1000ms
+        max-attempts: 3
+        multiplier: 2.0
+    listener:
+      simple:
+        auto-startup: true
+        concurrency: 1
+        max-concurrency: 5
+        prefetch: 1
+        default-requeue-rejected: false
+        acknowledge-mode: auto
+        retry:
+          enabled: true
+          initial-interval: 2000ms
+          max-attempts: 3
+          multiplier: 2.0
+          max-interval: 10000ms
+
+git-utility:
+  workspace-dir: ${GIT_WORKSPACE_DIR:/tmp/git-utility-mirrors}
+  instance:
+    id: ${GIT_UTILITY_INSTANCE_ID:}
+  cluster:
+    lease-ttl-seconds: ${GIT_CLUSTER_LEASE_TTL_SEC:90}
+    control-poll-ms: ${GIT_CLUSTER_CONTROL_POLL_MS:2000}
+    heartbeat-interval-ms: ${GIT_CLUSTER_HEARTBEAT_MS:3000}
+    heartbeat-stale-seconds: ${GIT_CLUSTER_HEARTBEAT_STALE_SEC:15}
+  github:
+    graphql-enabled: ${GITHUB_GRAPHQL_ENABLED:true}
+  git:
+    http-timeout-seconds: ${GIT_HTTP_TIMEOUT_SECONDS:600}
+    push-batch-size: ${GIT_PUSH_BATCH_SIZE:8}
+    push-batch-retries: ${GIT_PUSH_BATCH_RETRIES:3}
+    lfs-batch-size: ${GIT_LFS_BATCH_SIZE:50}
+    lfs-discovery-threads: ${GIT_LFS_DISCOVERY_THREADS:4}
+    lfs-transfer-concurrency: ${GIT_LFS_TRANSFER_CONCURRENCY:4}
+    pr-create-concurrency: ${GIT_PR_CREATE_CONCURRENCY:6}
+    pr-fork-fetch-batch-size: ${GIT_PR_FORK_FETCH_BATCH_SIZE:32}
+    pr-list-page-size: ${GIT_PR_LIST_PAGE_SIZE:100}
+    pr-skip-existing-heads: ${GIT_PR_SKIP_EXISTING_HEADS:true}
+    pr-head-prep-progress-interval: ${GIT_PR_HEAD_PREP_PROGRESS_INTERVAL:1}
+    pr-fork-lazy-materialize: ${GIT_PR_FORK_LAZY_MATERIALIZE:true}
+    pr-fork-push-object-refs: ${GIT_PR_FORK_PUSH_OBJECT_REFS:true}
+    http-post-buffer-bytes: ${GIT_HTTP_POST_BUFFER_BYTES:524288000}
+  sync:
+    # Agentic / bot branch prefixes: live webhooks skipped; Smart full sync tip-probes them for DR.
+    ephemeral-branch-prefixes: ${GIT_SYNC_EPHEMERAL_PREFIXES:agents/,agent/,dependabot/,renovate/,snyk-bot/,greenkeeper/,fork-pr-,sync-conflict/}
+    incremental-coalesce-enabled: ${GIT_SYNC_INCREMENTAL_COALESCE:true}
+    incremental-coalesce-window-ms: ${GIT_SYNC_INCREMENTAL_COALESCE_MS:45000}
+  storage:
+    local-dir: ${GIT_STORAGE_LOCAL_DIR:${GIT_WORKSPACE_DIR:/tmp/git-utility-mirrors}}
+    nas-dir: ${GIT_STORAGE_NAS_DIR:/tmp/git-utility-nas-mirrors}
+    max-disk-quota-mb: ${GIT_STORAGE_MAX_DISK_QUOTA_MB:51200}
+    max-cached-repos: ${GIT_STORAGE_MAX_CACHED_REPOS:1000}
+    retention-hours: ${GIT_STORAGE_RETENTION_HOURS:72}
+  throttle:
+    max-concurrent-git-pushes: ${GIT_THROTTLE_MAX_CONCURRENT_PUSHES:5}
+    metadata-sync-interval-seconds: ${GIT_METADATA_SYNC_INTERVAL_SEC:30}
+  circuit-breaker:
+    failure-threshold: ${GIT_CIRCUIT_BREAKER_THRESHOLD:5}
+    reset-timeout-seconds: ${GIT_CIRCUIT_BREAKER_RESET_SEC:30}
+    probe-delay-ms: ${GIT_CIRCUIT_BREAKER_PROBE_MS:30000}
+  queue:
+    pause-consumers-on-startup: ${GIT_QUEUE_PAUSE_ON_STARTUP:true}
+    orphan-job-grace-seconds: ${GIT_QUEUE_ORPHAN_GRACE_SEC:120}
+    exchange: git.sync.exchange
+    main-queue: git.sync.queue
+    routing-key: git.sync.key
+    incremental-queue: git.sync.incremental.queue
+    incremental-routing-key: git.sync.incremental.key
+    inbound-queue: git.sync.inbound.queue
+    inbound-routing-key: git.webhook.inbound
+    dlx-exchange: git.sync.dlx
+    dlq-queue: git.sync.dlq
+    dlq-routing-key: git.sync.dlq.key
+    max-retry-attempts: ${GIT_MAX_RETRY_ATTEMPTS:3}
+    retry-initial-interval-ms: ${GIT_RETRY_INITIAL_INTERVAL_MS:3000}
+    retry-multiplier: ${GIT_RETRY_MULTIPLIER:2.0}
+    retry-max-interval-ms: ${GIT_RETRY_MAX_INTERVAL_MS:30000}
+  dedup:
+    ledger-ttl-seconds: 600
+    cache-max-entries: 5000
+  security:
+    encryption-key: ${GIT_UTILITY_ENCRYPTION_KEY:}
+  cors:
+    # Comma-separated origin patterns for the local React UI. Keep localhost-only unless you add auth.
+    allowed-origin-patterns: ${GIT_CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:*,http://127.0.0.1:*}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when_authorized
+  metrics:
+    tags:
+      application: ${spring.application.name:git-mirror-utility}
+
+logging:
+  level:
+    com.gitutility: INFO
+    org.springframework.amqp: INFO
+    org.eclipse.jgit: INFO

@@ -1,0 +1,17 @@
+name = "gitmirror-webhook-worker"
+main = "src/index.ts"
+compatibility_date = "2024-09-01"
+
+# Environment Variables (Public non-sensitive configurations)
+[vars]
+# Replace with your CloudAMQP (or RabbitMQ management) HTTPS host and vhost.
+# Example: amqps://USER:PASS@HOST/VHOST → RABBITMQ_HTTP_URL = "https://HOST"
+RABBITMQ_HTTP_URL = "https://YOUR-INSTANCE.cloudamqp.com"
+RABBITMQ_VHOST = "YOUR_VHOST"
+RABBITMQ_EXCHANGE = "git.sync.exchange"
+RABBITMQ_ROUTING_KEY = "git.webhook.inbound"
+
+# Secrets (Set these using `npx wrangler secret put <NAME>`):
+# - RABBITMQ_USER
+# - RABBITMQ_PASSWORD
+# - WEBHOOK_SECRET (Optional fallback shared secret for HMAC verification)

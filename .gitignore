@@ -1,0 +1,34 @@
+# Build artifacts
+target/
+backend/target/
+frontend/dist/
+frontend/node_modules/
+webhook-worker/node_modules/
+webhook-worker/.wrangler/
+
+# Database & runtime data
+data/
+backend/data/
+*.mv.db
+*.trace.db
+/tmp/git-utility-mirrors/
+
+# Environment and secrets
+env
+env.pod-a
+env.pod-b
+env.pod-*
+!env.pod-*.example
+additionalinstructions_gitignore
+.env
+.env.local
+
+# Crash dumps and accidental local Maven cache
+hs_err_pid*.log
+.m2/
+
+# IDE & OS files
+.DS_Store
+.idea/
+*.iml
+.vscode/
