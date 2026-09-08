@@ -88,6 +88,50 @@ class PullRequestSyncServiceHeadFastPathTest {
         }
     }
 
+    @Test
+    void shouldFlushPrPrepKeepsForkOnlyPagesQueuedUntilBatchOrEnd() {
+        assertFalse(PullRequestSyncService.shouldFlushPrPrep(0, false, false, 32));
+        assertFalse(PullRequestSyncService.shouldFlushPrPrep(5, false, false, 32));
+        assertTrue(PullRequestSyncService.shouldFlushPrPrep(32, false, false, 32));
+        assertTrue(PullRequestSyncService.shouldFlushPrPrep(1, true, false, 32));
+        assertTrue(PullRequestSyncService.shouldFlushPrPrep(1, false, true, 32));
+    }
+
+    @Test
+    void pullRefsMissingLocallySkipsRefsAlreadyOnDisk(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("mirror.git").toFile();
+        try (Git git = Git.init().setBare(true).setDirectory(repoDir).call()) {
+            ObjectId commitId = insertEmptyCommit(git);
+            org.eclipse.jgit.lib.RefUpdate pull = git.getRepository().updateRef("refs/pull/12/head");
+            pull.setNewObjectId(commitId);
+            pull.update();
+
+            assertEquals(List.of(13L, 14L),
+                    PullRequestSyncService.pullRefsMissingLocally(git, List.of(12L, 13L, 14L)));
+        }
+    }
+
+    @Test
+    void forkFetchBudgetSkipsAfterTwoAllMissBatches() {
+        PullRequestSyncService.PrForkFetchBudget budget = new PullRequestSyncService.PrForkFetchBudget();
+        budget.recordCacheResult(0, 3, true);
+        assertFalse(budget.skipFetches);
+        budget.recordCacheResult(0, 2, true);
+        assertTrue(budget.skipFetches);
+        budget.recordCacheResult(4, 0, true);
+        assertTrue(budget.skipFetches, "already tripped; later success must not reopen mid-job");
+    }
+
+    @Test
+    void forkFetchBudgetResetsOnSuccessfulCacheBeforeTrip() {
+        PullRequestSyncService.PrForkFetchBudget budget = new PullRequestSyncService.PrForkFetchBudget();
+        budget.recordCacheResult(0, 3, true);
+        budget.recordCacheResult(5, 0, true);
+        assertFalse(budget.skipFetches);
+        budget.recordCacheResult(0, 1, true);
+        assertFalse(budget.skipFetches);
+    }
+
     private static ObjectId insertEmptyCommit(Git git) throws Exception {
         org.eclipse.jgit.lib.TreeFormatter tree = new org.eclipse.jgit.lib.TreeFormatter();
         ObjectId treeId = git.getRepository().newObjectInserter().insert(tree);

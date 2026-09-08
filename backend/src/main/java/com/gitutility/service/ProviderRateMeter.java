@@ -1,5 +1,6 @@
 package com.gitutility.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gitutility.model.entity.GitHubAppConfig;
 import com.gitutility.model.entity.SyncAuditLog;
 import com.gitutility.model.entity.SyncJob;
@@ -21,16 +22,19 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Job-scoped REST vs Git-smart-HTTP counters. Bind {@link #bindJob} around {@code executeSync}
- * so Check Access from another tab does not inflate this job's count.
+ * Job-scoped REST / GraphQL / LFS / Git-smart-HTTP counters for the whole run.
+ * {@link #bindJob} registers a durable meter; worker threads call {@link #attachJob}
+ * so PR-create and LFS transfer pools attribute HTTP to the same run totals.
  * Process-level install usage is always recorded via {@link InstallApiUsageTracker}.
- * Accurate SCM API rate mapping is recorded via {@link ScmQuotaTracker}.
  */
 @Component
 @Slf4j
@@ -46,8 +50,12 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
     @Value("${git-utility.provider-limits.github.push-per-minute-guideline:6}")
     private int gitPushPerMinuteGuideline;
 
-    private static final ThreadLocal<JobMeter> CURRENT = new ThreadLocal<>();
+    private static final ConcurrentHashMap<Long, JobMeter> METERS = new ConcurrentHashMap<>();
+    private static final ThreadLocal<Long> CURRENT_JOB_ID = new ThreadLocal<>();
     private static final long ROLLING_WINDOW_MS = 60_000L;
+    private static final long SAMPLE_INTERVAL_MS = 2_000L;
+    private static final int MAX_SAMPLES = 180;
+    private static final ObjectMapper SERIES_MAPPER = new ObjectMapper();
 
     public ProviderRateMeter(SyncAuditLogRepository auditLogRepository,
                              @Lazy EnterpriseLoggingService enterpriseLoggingService,
@@ -64,35 +72,77 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
     }
 
     public void bindJob(Long jobId) {
-        CURRENT.set(new JobMeter(jobId, Instant.now()));
+        if (jobId == null) {
+            return;
+        }
+        METERS.put(jobId, new JobMeter(jobId, Instant.now()));
+        CURRENT_JOB_ID.set(jobId);
+    }
+
+    /**
+     * Attach this thread to an already-bound job (LFS/PR worker pools).
+     * No-op if the job meter was never bound or already unbound.
+     */
+    public void attachJob(Long jobId) {
+        if (jobId == null || !METERS.containsKey(jobId)) {
+            return;
+        }
+        CURRENT_JOB_ID.set(jobId);
+    }
+
+    public void detachJob() {
+        CURRENT_JOB_ID.remove();
     }
 
     public void unbindJob() {
-        CURRENT.remove();
+        Long id = CURRENT_JOB_ID.get();
+        CURRENT_JOB_ID.remove();
+        if (id != null) {
+            METERS.remove(id);
+        }
+    }
+
+    private JobMeter current() {
+        Long id = CURRENT_JOB_ID.get();
+        return id != null ? METERS.get(id) : null;
+    }
+
+    private JobMeter meterFor(SyncJob job) {
+        JobMeter meter = current();
+        if (meter != null) {
+            return meter;
+        }
+        if (job != null && job.getId() != null) {
+            return METERS.get(job.getId());
+        }
+        return null;
     }
 
     public void incrementGitHttpFetch() {
-        JobMeter meter = CURRENT.get();
+        JobMeter meter = current();
         if (meter != null) {
             meter.gitHttpFetchCount.incrementAndGet();
             meter.recordFetchTimestamp(System.currentTimeMillis());
+            meter.maybeSample(false);
         }
         recordGitToQuota(true, false, false);
     }
 
     public void incrementGitHttpPushBatch() {
-        JobMeter meter = CURRENT.get();
+        JobMeter meter = current();
         if (meter != null) {
             meter.gitHttpPushBatchCount.incrementAndGet();
             meter.recordPushTimestamp(System.currentTimeMillis());
+            meter.maybeSample(false);
         }
         recordGitToQuota(false, true, false);
     }
 
     public void recordGitHttpThrottle(String detail) {
-        JobMeter meter = CURRENT.get();
+        JobMeter meter = current();
         if (meter != null) {
             meter.gitHttpThrottleCount.incrementAndGet();
+            meter.maybeSample(false);
             log.warn("[rate] [job-{}] Git protocol throttle: {}", meter.jobId, detail);
         }
         recordGitToQuota(false, false, true);
@@ -112,29 +162,71 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
     }
 
     public Long wallElapsedMs() {
-        JobMeter meter = CURRENT.get();
+        JobMeter meter = current();
         if (meter == null) {
             return null;
         }
         return Math.max(0, Duration.between(meter.startedAt, Instant.now()).toMillis());
     }
 
+    /**
+     * Live run totals for WebSocket progress. Returns {@code null} when this thread
+     * is not attached to a bound job so callers omit traffic instead of broadcasting zeros.
+     */
     public Map<String, Object> snapshotMap() {
-        JobMeter meter = CURRENT.get();
+        JobMeter meter = current();
         if (meter == null) {
-            return emptySnapshotMap();
+            return null;
         }
+        meter.maybeSample(true);
         return meter.toMap(gitPushPerMinuteGuideline);
+    }
+
+    public void recordGraphqlPoints(Integer cost) {
+        JobMeter meter = current();
+        if (meter == null) {
+            return;
+        }
+        if (cost != null && cost > 0) {
+            meter.graphqlPointsUsed.addAndGet(cost);
+        }
+        meter.maybeSample(false);
+    }
+
+    public void recordTransferBytes(long gitReadBytes, long gitWriteBytes, long lfsBytes) {
+        JobMeter meter = current();
+        if (meter == null) {
+            return;
+        }
+        if (gitReadBytes > meter.gitReadBytes) {
+            meter.gitReadBytes = gitReadBytes;
+        }
+        if (gitWriteBytes > meter.gitWriteBytes) {
+            meter.gitWriteBytes = gitWriteBytes;
+        }
+        if (lfsBytes > meter.lfsBytes) {
+            meter.lfsBytes = lfsBytes;
+        }
+        meter.maybeSample(false);
     }
 
     public void copyTo(SyncJob job) {
         if (job == null) {
             return;
         }
-        JobMeter meter = CURRENT.get();
+        JobMeter meter = meterFor(job);
         if (meter == null) {
             if (job.getRestCallCount() == null) {
                 job.setRestCallCount(0);
+            }
+            if (job.getGraphqlCallCount() == null) {
+                job.setGraphqlCallCount(0);
+            }
+            if (job.getLfsApiCallCount() == null) {
+                job.setLfsApiCallCount(0);
+            }
+            if (job.getLfsTransferHttpCount() == null) {
+                job.setLfsTransferHttpCount(0);
             }
             if (job.getGitHttpFetchCount() == null) {
                 job.setGitHttpFetchCount(0);
@@ -147,9 +239,15 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
             }
             return;
         }
+        meter.maybeSample(true);
         Map<String, Object> snap = meter.toMap(gitPushPerMinuteGuideline);
         job.setRestCallCount((Integer) snap.get("restCallCount"));
         job.setRestCallsPerMinute((Double) snap.get("restCallsPerMinute"));
+        job.setGraphqlCallCount((Integer) snap.get("graphqlCallCount"));
+        job.setGraphqlPointsUsed((Integer) snap.get("graphqlPointsUsed"));
+        job.setGraphql429Count((Integer) snap.get("graphql429Count"));
+        job.setLfsApiCallCount((Integer) snap.get("lfsApiCallCount"));
+        job.setLfsTransferHttpCount((Integer) snap.get("lfsTransferHttpCount"));
         job.setGitHttpFetchCount((Integer) snap.get("gitHttpFetchCount"));
         job.setGitHttpPushBatchCount((Integer) snap.get("gitHttpPushBatchCount"));
         job.setGitPushPerMinute((Double) snap.get("gitPushPerMinute"));
@@ -159,6 +257,19 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
         job.setRateLimitLimit((Integer) snap.get("rateLimitLimit"));
         job.setRateLimit429Count((Integer) snap.get("rateLimit429Count"));
         job.setProviderTrafficProvider((String) snap.get("provider"));
+        job.setGitReadBytes((Long) snap.get("gitReadBytes"));
+        job.setGitWriteBytes((Long) snap.get("gitWriteBytes"));
+        Object lfsSnap = snap.get("lfsBytes");
+        if (lfsSnap instanceof Number lfsNum && lfsNum.longValue() > 0) {
+            job.setLfsBytes(lfsNum.longValue());
+        }
+        Object series = snap.get("series");
+        if (series != null) {
+            try {
+                job.setProviderTrafficSeriesJson(SERIES_MAPPER.writeValueAsString(series));
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     static boolean looksLikeGitThrottle(String message) {
@@ -177,15 +288,17 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
     public ClientHttpResponse intercept(HttpRequest request, byte[] body, ClientHttpRequestExecution execution)
             throws IOException {
         ClientHttpResponse response = execution.execute(request, body);
-        JobMeter meter = CURRENT.get();
+        JobMeter meter = current();
 
         String host = request.getURI() != null ? request.getURI().getHost() : null;
         String path = request.getURI() != null ? request.getURI().getPath() : null;
         boolean lfsProtocol = path != null && path.contains("/info/lfs");
-        boolean gitTransferHost = lfsProtocol || (host != null && (host.contains("githubusercontent.com")
+        boolean lfsMediaHost = host != null && (host.contains("githubusercontent.com")
                 || host.contains("s3.amazonaws.com")
                 || host.contains("gitlab.com")
-                || host.contains("bitbucket.org")));
+                || host.contains("bitbucket.org")
+                || host.contains("blob.core.windows.net"));
+        boolean gitTransferHost = lfsProtocol || lfsMediaHost;
         boolean graphql = path != null && path.contains("graphql");
         boolean scmRestApi = looksLikeScmRestApi(host, path);
 
@@ -219,16 +332,31 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
         }
 
         if (meter != null) {
-            if (!gitTransferHost) {
+            if (graphql) {
+                meter.graphqlCallCount.incrementAndGet();
+                if (provider != null) {
+                    meter.provider = provider;
+                }
+            } else if (lfsProtocol) {
+                meter.lfsApiCallCount.incrementAndGet();
+                if (provider != null) {
+                    meter.provider = provider;
+                }
+            } else if (lfsMediaHost) {
+                meter.lfsTransferHttpCount.incrementAndGet();
+                if (provider != null) {
+                    meter.provider = provider;
+                }
+            } else if (!gitTransferHost) {
                 meter.restCallCount.incrementAndGet();
                 if (provider != null) {
                     meter.provider = provider;
                 }
             }
-            if (remaining != null && !gitTransferHost) {
+            if (remaining != null && !gitTransferHost && !graphql) {
                 meter.rateLimitRemaining = remaining;
             }
-            if (limit != null && !gitTransferHost) {
+            if (limit != null && !gitTransferHost && !graphql) {
                 meter.rateLimitLimit = limit;
             }
             log.debug("[rate] job-{} {} {} -> {} remaining={}/{}",
@@ -238,20 +366,24 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
             if (gitTransferHost && (code == 429 || code == 403)) {
                 meter.gitHttpThrottleCount.incrementAndGet();
             }
-            if (rateLimited) {
+            if (code == 429 && graphql) {
+                meter.graphql429Count.incrementAndGet();
+            } else if (code == 429 && !gitTransferHost) {
                 meter.rateLimit429Count.incrementAndGet();
             }
-            boolean lowRemaining = meter.rateLimitLimit != null && meter.rateLimitLimit > 0
+            boolean restRateLimited = code == 429 && !gitTransferHost && !graphql;
+            boolean lowRemaining = !graphql && meter.rateLimitLimit != null && meter.rateLimitLimit > 0
                     && meter.rateLimitRemaining != null
                     && meter.rateLimitRemaining * 5 < meter.rateLimitLimit;
-            if (rateLimited || lowRemaining) {
-                String warn = rateLimited
+            if (restRateLimited || lowRemaining) {
+                String warn = restRateLimited
                         ? "Provider REST 429 Too Many Requests" + (host != null ? " from " + host : "")
                         : "Provider REST quota below 20% remaining (" + meter.rateLimitRemaining
                         + "/" + meter.rateLimitLimit + ")";
                 log.warn("[rate] [job-{}] {}", meter.jobId, warn);
                 persistWarnAudit(meter.jobId, warn);
             }
+            meter.maybeSample(false);
         }
 
         // GraphQL quotas (incl. body rateLimit.cost) are recorded in GithubGraphQlClient to avoid double-count.
@@ -272,6 +404,12 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
 
 
     private InstallRef resolveInstall(String host, String provider) {
+        if (configRepository == null) {
+            if (provider != null) {
+                return new InstallRef(provider + ":unknown", provider, provider);
+            }
+            return null;
+        }
         GitHubAppConfig config = configRepository.findFirstByOrderByIdAsc().orElse(null);
         if (config == null) {
             if (provider != null) {
@@ -488,36 +626,35 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
         return null;
     }
 
-    private static Map<String, Object> emptySnapshotMap() {
-        Map<String, Object> map = new LinkedHashMap<>();
-        map.put("restCallCount", 0);
-        map.put("restCallsPerMinute", 0.0);
-        map.put("gitHttpFetchCount", 0);
-        map.put("gitHttpPushBatchCount", 0);
-        map.put("gitPushPerMinute", 0.0);
-        map.put("gitFetchPerMinute", 0.0);
-        map.put("gitHttpThrottleCount", 0);
-        map.put("gitPushRateGuideline", 6);
-        map.put("rateLimitRemaining", null);
-        map.put("rateLimitLimit", null);
-        map.put("rateLimit429Count", 0);
-        map.put("provider", null);
-        return map;
+    static double round1(double value) {
+        return Math.round(value * 10.0) / 10.0;
     }
 
     private static final class JobMeter {
         final Long jobId;
         final Instant startedAt;
         final AtomicInteger restCallCount = new AtomicInteger();
+        final AtomicInteger graphqlCallCount = new AtomicInteger();
+        final AtomicInteger graphqlPointsUsed = new AtomicInteger();
+        final AtomicInteger graphql429Count = new AtomicInteger();
+        final AtomicInteger lfsApiCallCount = new AtomicInteger();
+        final AtomicInteger lfsTransferHttpCount = new AtomicInteger();
         final AtomicInteger gitHttpFetchCount = new AtomicInteger();
         final AtomicInteger gitHttpPushBatchCount = new AtomicInteger();
         final AtomicInteger gitHttpThrottleCount = new AtomicInteger();
         final AtomicInteger rateLimit429Count = new AtomicInteger();
         final Deque<Long> pushTimestampsMs = new ArrayDeque<>();
         final Deque<Long> fetchTimestampsMs = new ArrayDeque<>();
+        final List<Map<String, Object>> samples = new ArrayList<>();
         volatile Integer rateLimitRemaining;
         volatile Integer rateLimitLimit;
         volatile String provider;
+        volatile long gitReadBytes;
+        volatile long gitWriteBytes;
+        volatile long lfsBytes;
+        volatile double gitPushPerMinutePeak;
+        volatile double gitFetchPerMinutePeak;
+        volatile long lastSampleAtMs;
 
         JobMeter(Long jobId, Instant startedAt) {
             this.jobId = jobId;
@@ -528,6 +665,7 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
             synchronized (pushTimestampsMs) {
                 pushTimestampsMs.addLast(nowMs);
                 pruneOlderThan(pushTimestampsMs, nowMs);
+                gitPushPerMinutePeak = Math.max(gitPushPerMinutePeak, pushTimestampsMs.size());
             }
         }
 
@@ -535,6 +673,7 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
             synchronized (fetchTimestampsMs) {
                 fetchTimestampsMs.addLast(nowMs);
                 pruneOlderThan(fetchTimestampsMs, nowMs);
+                gitFetchPerMinutePeak = Math.max(gitFetchPerMinutePeak, fetchTimestampsMs.size());
             }
         }
 
@@ -544,31 +683,81 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
             }
         }
 
-        private static double perMinute(Deque<Long> deque, long nowMs) {
-            synchronized (deque) {
-                pruneOlderThan(deque, nowMs);
-                return deque.size();
+        synchronized void maybeSample(boolean force) {
+            long nowMs = System.currentTimeMillis();
+            if (!force && lastSampleAtMs > 0 && nowMs - lastSampleAtMs < SAMPLE_INTERVAL_MS) {
+                return;
             }
+            lastSampleAtMs = nowMs;
+            Map<String, Object> point = new LinkedHashMap<>();
+            point.put("t", Math.max(0L, nowMs - startedAt.toEpochMilli()));
+            point.put("rest", restCallCount.get());
+            point.put("graphql", graphqlCallCount.get());
+            point.put("graphqlPoints", graphqlPointsUsed.get());
+            point.put("lfsApi", lfsApiCallCount.get());
+            point.put("lfsHttp", lfsTransferHttpCount.get());
+            point.put("gitFetch", gitHttpFetchCount.get());
+            point.put("gitPush", gitHttpPushBatchCount.get());
+            point.put("gitReadBytes", gitReadBytes);
+            point.put("gitWriteBytes", gitWriteBytes);
+            point.put("lfsBytes", lfsBytes);
+            samples.add(point);
+            if (samples.size() > MAX_SAMPLES) {
+                downsampleEvenly(MAX_SAMPLES);
+            }
+        }
+
+        /** Keep first/last and evenly spaced midpoints so X covers the full job duration. */
+        private void downsampleEvenly(int keep) {
+            if (samples.size() <= keep || keep < 2) {
+                return;
+            }
+            List<Map<String, Object>> compacted = new ArrayList<>(keep);
+            int n = samples.size();
+            for (int i = 0; i < keep; i++) {
+                int idx = (int) Math.round(i * (n - 1) / (double) (keep - 1));
+                compacted.add(samples.get(idx));
+            }
+            samples.clear();
+            samples.addAll(compacted);
         }
 
         Map<String, Object> toMap(int pushGuideline) {
             Map<String, Object> map = new LinkedHashMap<>();
             int rest = restCallCount.get();
+            int gql = graphqlCallCount.get();
+            int lfsApi = lfsApiCallCount.get();
+            int lfsHttp = lfsTransferHttpCount.get();
+            int fetches = gitHttpFetchCount.get();
+            int pushes = gitHttpPushBatchCount.get();
             long elapsedMs = Math.max(1, Duration.between(startedAt, Instant.now()).toMillis());
-            double restPerMin = rest * 60_000.0 / elapsedMs;
-            long nowMs = System.currentTimeMillis();
             map.put("restCallCount", rest);
-            map.put("restCallsPerMinute", Math.round(restPerMin * 10.0) / 10.0);
-            map.put("gitHttpFetchCount", gitHttpFetchCount.get());
-            map.put("gitHttpPushBatchCount", gitHttpPushBatchCount.get());
-            map.put("gitPushPerMinute", Math.round(perMinute(pushTimestampsMs, nowMs) * 10.0) / 10.0);
-            map.put("gitFetchPerMinute", Math.round(perMinute(fetchTimestampsMs, nowMs) * 10.0) / 10.0);
+            map.put("restCallsPerMinute", round1(rest * 60_000.0 / elapsedMs));
+            map.put("graphqlCallCount", gql);
+            map.put("graphqlPointsUsed", graphqlPointsUsed.get());
+            map.put("graphql429Count", graphql429Count.get());
+            map.put("lfsApiCallCount", lfsApi);
+            map.put("lfsTransferHttpCount", lfsHttp);
+            map.put("gitHttpFetchCount", fetches);
+            map.put("gitHttpPushBatchCount", pushes);
+            map.put("gitPushPerMinute", round1(pushes * 60_000.0 / elapsedMs));
+            map.put("gitFetchPerMinute", round1(fetches * 60_000.0 / elapsedMs));
+            map.put("gitPushPerMinutePeak", round1(gitPushPerMinutePeak));
+            map.put("gitFetchPerMinutePeak", round1(gitFetchPerMinutePeak));
             map.put("gitHttpThrottleCount", gitHttpThrottleCount.get());
             map.put("gitPushRateGuideline", pushGuideline);
             map.put("rateLimitRemaining", rateLimitRemaining);
             map.put("rateLimitLimit", rateLimitLimit);
             map.put("rateLimit429Count", rateLimit429Count.get());
+            map.put("gitReadBytes", gitReadBytes);
+            map.put("gitWriteBytes", gitWriteBytes);
+            map.put("lfsBytes", lfsBytes);
             map.put("provider", provider);
+            Map<String, Object> series = new LinkedHashMap<>();
+            series.put("samples", new ArrayList<>(samples));
+            series.put("gitPushPerMinutePeak", round1(gitPushPerMinutePeak));
+            series.put("gitFetchPerMinutePeak", round1(gitFetchPerMinutePeak));
+            map.put("series", series);
             return map;
         }
     }

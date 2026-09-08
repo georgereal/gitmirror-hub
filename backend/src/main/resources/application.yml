@@ -47,13 +47,6 @@ spring:
 
 git-utility:
   workspace-dir: ${GIT_WORKSPACE_DIR:/tmp/git-utility-mirrors}
-  instance:
-    id: ${GIT_UTILITY_INSTANCE_ID:}
-  cluster:
-    lease-ttl-seconds: ${GIT_CLUSTER_LEASE_TTL_SEC:90}
-    control-poll-ms: ${GIT_CLUSTER_CONTROL_POLL_MS:2000}
-    heartbeat-interval-ms: ${GIT_CLUSTER_HEARTBEAT_MS:3000}
-    heartbeat-stale-seconds: ${GIT_CLUSTER_HEARTBEAT_STALE_SEC:15}
   github:
     graphql-enabled: ${GITHUB_GRAPHQL_ENABLED:true}
   git:

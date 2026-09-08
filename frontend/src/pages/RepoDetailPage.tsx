@@ -5,6 +5,7 @@ import { RepoMapping, SyncJob, JobProgress, DiffInspectionProgress } from '../ty
 import { getMappings, updateMapping, deleteMapping, triggerManualSync, getRecentJobs, getJobs } from '../services/api';
 import { initWebSocket } from '../services/websocket';
 import { isLiveSyncStatus } from '../components/SyncPipelineStepper';
+import { mergeProviderTraffic } from '../components/ProviderTrafficStrip';
 
 export const RepoDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -78,7 +79,20 @@ export const RepoDetailPage: React.FC = () => {
           setRecentJobs((jobs) => {
             const job = jobs.find((j) => j.id === progress.jobId);
             if (!job || isLiveSyncStatus(job.status)) {
-              setProgressByJobId((prev) => ({ ...prev, [progress.jobId]: progress }));
+              setProgressByJobId((prev) => {
+                const existing = prev[progress.jobId];
+                const mergedTraffic = mergeProviderTraffic(
+                  existing?.providerTraffic,
+                  progress.providerTraffic
+                );
+                return {
+                  ...prev,
+                  [progress.jobId]: {
+                    ...progress,
+                    providerTraffic: mergedTraffic ?? progress.providerTraffic ?? existing?.providerTraffic,
+                  },
+                };
+              });
             }
             return jobs;
           });

@@ -213,5 +213,5 @@ Phase 2a (access tracking + safer LRU) can ship with Phase 0/1 without object st
 ## Related reading
 
 - Cursor: [Git at any scale](https://cursor.com/blog/git-at-any-scale) (Continuity — learn principles, do not clone hosting stack)
-- Hub: [`ARCHITECTURE.md`](../ARCHITECTURE.md) §3.5 storage tiers, §3.6.1 throughput / one-job-one-pod, resume sections
-- Sibling backlog: [`fanout-concurrency.md`](fanout-concurrency.md) (in-pod only), [`kafka-mirroring-partitions.md`](kafka-mirroring-partitions.md)
+- Hub: [`ARCHITECTURE.md`](../ARCHITECTURE.md) storage tiers & resume sections
+- Sibling backlog: [`fanout-concurrency.md`](fanout-concurrency.md)

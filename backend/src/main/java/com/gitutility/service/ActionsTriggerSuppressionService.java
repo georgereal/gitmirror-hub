@@ -37,7 +37,6 @@ public class ActionsTriggerSuppressionService {
     private final GitHubEnterpriseProviderService gitHubEnterpriseProviderService;
     private final ScmCredentialService scmCredentialService;
 
-
     private final Map<Long, Instant> jobStartedAt = new ConcurrentHashMap<>();
 
     public ActionsTriggerSuppressionService(
@@ -48,7 +47,6 @@ public class ActionsTriggerSuppressionService {
             @Lazy GitHubProviderService gitHubProviderService,
             @Lazy GitHubEnterpriseProviderService gitHubEnterpriseProviderService,
             @Lazy ScmCredentialService scmCredentialService) {
-
         this.systemEngineConfigService = systemEngineConfigService;
         this.configRepository = configRepository;
         this.scmProviderFacade = scmProviderFacade;
@@ -56,7 +54,6 @@ public class ActionsTriggerSuppressionService {
         this.gitHubProviderService = gitHubProviderService;
         this.gitHubEnterpriseProviderService = gitHubEnterpriseProviderService;
         this.scmCredentialService = scmCredentialService;
-
     }
     public boolean isEnabled() {
         return systemEngineConfigService.getOrCreateConfig().isSuppressMirrorActionsTriggers();

@@ -56,6 +56,18 @@ public final class GitWireByteMeter implements AutoCloseable {
         return writeBytes.get();
     }
 
+    /** Read bytes on the active thread meter, or 0 if none is bound. */
+    public static long currentReadBytes() {
+        GitWireByteMeter meter = ACTIVE.get();
+        return meter == null ? 0L : meter.readBytes.get();
+    }
+
+    /** Write bytes on the active thread meter, or 0 if none is bound. */
+    public static long currentWriteBytes() {
+        GitWireByteMeter meter = ACTIVE.get();
+        return meter == null ? 0L : meter.writeBytes.get();
+    }
+
     @Override
     public void close() {
         if (previous != null) {

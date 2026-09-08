@@ -27,6 +27,7 @@ import {
   pipelineStageLabel,
   canSkipJobStages,
 } from './SyncPipelineStepper';
+import { JobExecutionSummary } from './JobExecutionSummary';
 import { resolveJobElapsedMs, isLiveJobStatus } from '../utils/jobTiming';
 
 interface JobLogModalProps {
@@ -85,7 +86,14 @@ export const JobLogModal: React.FC<JobLogModalProps> = ({
           if (!latestJob || latestJob.id !== jobId) return;
           const changed = latestJob.status !== localJob.status
             || latestJob.completedAt !== localJob.completedAt
-            || latestJob.summaryMessage !== localJob.summaryMessage;
+            || latestJob.summaryMessage !== localJob.summaryMessage
+            || latestJob.restCallCount !== localJob.restCallCount
+            || latestJob.graphqlCallCount !== localJob.graphqlCallCount
+            || latestJob.lfsApiCallCount !== localJob.lfsApiCallCount
+            || latestJob.lfsTransferHttpCount !== localJob.lfsTransferHttpCount
+            || latestJob.bytesTransferred !== localJob.bytesTransferred
+            || latestJob.pipelineJson !== localJob.pipelineJson
+            || latestJob.providerTrafficSeriesJson !== localJob.providerTrafficSeriesJson;
           if (!changed) return;
           setLocalJob(latestJob);
           onJobUpdatedRef.current?.(latestJob);
@@ -261,6 +269,11 @@ export const JobLogModal: React.FC<JobLogModalProps> = ({
                     {elapsedMs != null && (
                       <span>• Elapsed: {formatDuration(elapsedMs)}</span>
                     )}
+                    {(localJob.bytesTransferred || traffic.gitReadBytes || traffic.gitWriteBytes) ? (
+                      <span>
+                        • {formatBytes((localJob.bytesTransferred || 0) || ((traffic.gitReadBytes ?? 0) + (traffic.gitWriteBytes ?? 0) + (traffic.lfsBytes ?? 0)))}
+                      </span>
+                    ) : null}
                     {etaSuffix && (
                       <span className="font-semibold text-indigo-700">• {etaSuffix}</span>
                     )}
@@ -299,8 +312,17 @@ export const JobLogModal: React.FC<JobLogModalProps> = ({
         ) : (
           <div className="px-6 py-2 bg-zinc-50 border-b border-zinc-100 flex items-center justify-between text-xs text-zinc-600 shrink-0 font-mono text-[11px]">
             <div className="flex items-center space-x-4">
+              {(localJob.gitReadBytes != null && localJob.gitReadBytes > 0) && (
+                <span>Download: {formatBytes(localJob.gitReadBytes)}</span>
+              )}
+              {(localJob.gitWriteBytes != null && localJob.gitWriteBytes > 0) && (
+                <span>Upload: {formatBytes(localJob.gitWriteBytes)}</span>
+              )}
+              {localJob.lfsBytes != null && localJob.lfsBytes > 0 && (
+                <span>LFS: {formatBytes(localJob.lfsBytes)}</span>
+              )}
               {localJob.bytesTransferred != null && localJob.bytesTransferred > 0 && (
-                <span>Transferred: {formatBytes(localJob.bytesTransferred)}</span>
+                <span>Total: {formatBytes(localJob.bytesTransferred)}</span>
               )}
               {localJob.objectsReceived != null && localJob.objectsReceived > 0 && (
                 <span>Objects: {localJob.objectsReceived.toLocaleString()}</span>
@@ -379,39 +401,7 @@ export const JobLogModal: React.FC<JobLogModalProps> = ({
               </div>
             )}
 
-            {/* Job Metadata Card */}
-            <div className="p-3.5 bg-white border border-zinc-200 rounded-xl space-y-2 text-xs">
-              <div className="font-semibold text-zinc-800 flex items-center justify-between">
-                <span>Execution Summary</span>
-                <span className="text-[10px] font-mono text-zinc-400">ID #{localJob.id}</span>
-              </div>
-              <div className="space-y-1.5 font-mono text-[11px] text-zinc-600">
-                <div className="flex justify-between py-0.5 border-b border-zinc-100">
-                  <span className="text-zinc-400 font-sans">Mapping</span>
-                  <span className="font-semibold text-zinc-800 truncate max-w-[160px]" title={localJob.pairName}>
-                    {localJob.pairName}
-                  </span>
-                </div>
-                <div className="flex justify-between py-0.5 border-b border-zinc-100">
-                  <span className="text-zinc-400 font-sans">Branch Ref</span>
-                  <span className="truncate max-w-[160px]" title={localJob.branch || '*'}>
-                    {localJob.branch || '*'}
-                  </span>
-                </div>
-                <div className="flex justify-between py-0.5 border-b border-zinc-100">
-                  <span className="text-zinc-400 font-sans">Trigger</span>
-                  <span className="capitalize">{localJob.triggerType ? localJob.triggerType.toLowerCase() : 'manual'}</span>
-                </div>
-                <div className="flex justify-between py-0.5">
-                  <span className="text-zinc-400 font-sans">Started At</span>
-                  <span>
-                    {localJob.startedAt
-                      ? new Date(localJob.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-                      : '--'}
-                  </span>
-                </div>
-              </div>
-            </div>
+            <JobExecutionSummary job={localJob} pipeline={pipeline} elapsedMs={elapsedMs} />
           </div>
 
           {/* Right Main Panel: Full-Height Live Terminal Console */}

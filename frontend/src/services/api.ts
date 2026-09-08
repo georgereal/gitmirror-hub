@@ -7,8 +7,8 @@ import {
   RuntimeMetrics,
   ClusterRuntimeMetrics,
   ScmQuotas,
-
   DashboardStats,
+  JobUsageResponse,
   GitHubAppConfig,
   PermissionCheckReport,
   GitHubRepoOption,
@@ -166,7 +166,12 @@ export const getClusterRuntimeMetrics = async (): Promise<ClusterRuntimeMetrics>
 
 export const getScmQuotas = async (): Promise<ScmQuotas> => {
   const res = await api.get('/scm-quotas', { params: { topRepos: 25 } });
+  return res.data;
+};
 
+export const getJobUsage = async (hours = 6, limit = 40): Promise<JobUsageResponse> => {
+  const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+  const res = await api.get('/jobs/usage', { params: { since, limit } });
   return res.data;
 };
 

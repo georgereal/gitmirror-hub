@@ -124,6 +124,8 @@ public class SyncDiffReport {
         private int reviewCommentsCount;
         @JsonProperty("isDraft")
         private boolean draft;
+        /** Source PR updatedAt (GraphQL/REST) for delta listing. */
+        private java.time.Instant updatedAt;
     }
 
     @Data

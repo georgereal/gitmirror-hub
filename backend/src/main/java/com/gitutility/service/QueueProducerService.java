@@ -148,6 +148,5 @@ public class QueueProducerService {
 
     private static boolean sameRepo(String left, String right) {
         return RepoMappingService.sameRepo(left, right);
-
     }
 }

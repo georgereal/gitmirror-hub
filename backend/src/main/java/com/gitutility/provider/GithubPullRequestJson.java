@@ -3,6 +3,8 @@ package com.gitutility.provider;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.gitutility.model.dto.SyncDiffReport;
 
+import java.time.Instant;
+
 public final class GithubPullRequestJson {
 
     private GithubPullRequestJson() {
@@ -24,6 +26,18 @@ public final class GithubPullRequestJson {
                 .commentsCount(pr.path("comments").asInt(0))
                 .reviewCommentsCount(pr.path("review_comments").asInt(0))
                 .draft(pr.path("draft").asBoolean(false))
+                .updatedAt(parseUpdatedAt(pr.path("updated_at").asText(null)))
                 .build();
+    }
+
+    static Instant parseUpdatedAt(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return Instant.parse(raw.trim());
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

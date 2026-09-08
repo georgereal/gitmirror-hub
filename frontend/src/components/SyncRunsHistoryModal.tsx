@@ -26,6 +26,7 @@ import { formatBytes, formatDuration } from '../utils/format';
 import { JobProgressBar } from './JobProgressBar';
 import { overlayLiveProgress, finalizeStaleProgressLines, parseRejectedRefs, prepareAuditDisplayLogs } from '../utils/liveJobLogs';
 import { ProviderTrafficStrip, trafficFromJobAndProgress } from './ProviderTrafficStrip';
+import { JobExecutionSummary } from './JobExecutionSummary';
 import { SyncPipelineStepper, pipelineFromJobAndProgress } from './SyncPipelineStepper';
 import {
   RunFilter,
@@ -543,40 +544,7 @@ export const SyncRunsHistoryModal: React.FC<SyncRunsHistoryModalProps> = ({
                             </div>
                           )}
 
-                          {/* Synchronized Artifacts & Metadata Breakdown */}
-                          <div className="p-3.5 bg-white border border-zinc-200 rounded-xl space-y-2.5">
-                            <div className="text-xs font-bold text-zinc-800 flex items-center space-x-1.5">
-                              <Layers className="w-3.5 h-3.5 text-zinc-500" />
-                              <span>Synchronized Artifacts</span>
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-2 text-xs font-mono">
-                              <div className="p-2 rounded-lg bg-zinc-50 border border-zinc-100">
-                                <div className="text-[10px] text-zinc-400 font-sans uppercase">Branches</div>
-                                <div className="font-bold text-zinc-900 mt-0.5">
-                                  {job.branchesCount != null ? job.branchesCount : (job.branch ? 1 : '--')}
-                                </div>
-                              </div>
-                              <div className="p-2 rounded-lg bg-zinc-50 border border-zinc-100">
-                                <div className="text-[10px] text-zinc-400 font-sans uppercase">Tags</div>
-                                <div className="font-bold text-blue-700 mt-0.5">
-                                  {job.tagsCount != null ? job.tagsCount : 0}
-                                </div>
-                              </div>
-                              <div className="p-2 rounded-lg bg-zinc-50 border border-zinc-100">
-                                <div className="text-[10px] text-zinc-400 font-sans uppercase">LFS Blobs</div>
-                                <div className="font-bold text-purple-700 mt-0.5">
-                                  {job.lfsObjectsCount != null ? job.lfsObjectsCount : 0}
-                                </div>
-                              </div>
-                              <div className="p-2 rounded-lg bg-zinc-50 border border-zinc-100">
-                                <div className="text-[10px] text-zinc-400 font-sans uppercase">Pull Requests</div>
-                                <div className="font-bold text-amber-700 mt-0.5">
-                                  {job.prsSyncedCount != null ? job.prsSyncedCount : 0}
-                                </div>
-                              </div>
-                            </div>
-                          </div>
+                          <JobExecutionSummary job={job} pipeline={pipeline} elapsedMs={elapsedMs} />
 
                           {/* Failure / interrupted root cause */}
                           {(isFailed || isInterrupted) && (

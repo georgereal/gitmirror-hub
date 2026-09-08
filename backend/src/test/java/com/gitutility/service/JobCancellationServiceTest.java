@@ -1,30 +1,17 @@
 package com.gitutility.service;
 
-import com.gitutility.repository.SyncJobRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-
-import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.Mockito.when;
 
-@ExtendWith(MockitoExtension.class)
 class JobCancellationServiceTest {
-
-    @Mock
-    private SyncJobRepository syncJobRepository;
 
     private JobCancellationService service;
 
     @BeforeEach
     void setUp() {
-        service = new JobCancellationService(syncJobRepository);
-        when(syncJobRepository.findById(anyLong())).thenReturn(Optional.empty());
+        service = new JobCancellationService();
     }
 
     @Test

@@ -49,6 +49,8 @@ class PullRequestOriginationTest {
     @Mock
     private ActionsTriggerSuppressionService actionsTriggerSuppressionService;
     @Mock
+    private PairCatchupLedger pairCatchupLedger;
+    @Mock
     private ScmProviderAdapter githubAdapter;
 
     private PullRequestSyncService service;
@@ -68,6 +70,8 @@ class PullRequestOriginationTest {
                 jobCancellationService,
                 pairDiffSnapshotService,
                 actionsTriggerSuppressionService,
+                pairCatchupLedger,
+                null,
                 prCreateExecutor
         );
         ReflectionTestUtils.setField(service, "prForkLazyMaterialize", true);

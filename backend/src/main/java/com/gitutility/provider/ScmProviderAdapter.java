@@ -63,7 +63,14 @@ public interface ScmProviderAdapter {
      */
     default PrListPage listOpenPullRequestsPage(String repoFullName, String cursor, int pageSize) {
         List<SyncDiffReport.PrSyncDetail> all = listOpenPullRequests(repoFullName);
-        return new PrListPage(all, null, false, all.size());
+        return new PrListPage(all, null, false, all.size(), false);
+    }
+
+    /**
+     * One page of recently updated closed/merged PRs (GraphQL or REST). Default empty.
+     */
+    default PrListPage listRecentlyClosedPullRequestsPage(String repoFullName, String cursor, int pageSize) {
+        return PrListPage.empty();
     }
 
     /**

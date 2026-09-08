@@ -50,6 +50,8 @@ public class GitComparisonService {
     private final RefOriginService refOriginService;
     private final PairDiffSnapshotService pairDiffSnapshotService;
     private final DiffInspectionProgressService diffInspectionProgressService;
+    private final PairCatchupLedger pairCatchupLedger;
+    private final SyncCheckpointService syncCheckpointService;
 
     private static final long QUICK_DIFF_CACHE_TTL_MS = 45_000;
     private static final long BRANCH_LIST_CACHE_TTL_MS = 120_000;
@@ -355,26 +357,26 @@ public class GitComparisonService {
                 log.debug("RevWalk branch analysis notice: {}", ex.getMessage());
             }
 
-            // 3. Tags — itemized only with metadata; quick mode uses prefix counts only
+            // 3. Tags — always list local refs for the Tags tab; full annotated messages only on Refresh Diff
             List<SyncDiffReport.TagDetail> tagDetails = new ArrayList<>();
             int srcTags = refMaps.tagAndNoteCount();
-            if (inspect.includeMetadata()) {
-                try (RevWalk revWalk = new RevWalk(repository)) {
-                    srcTags = 0;
-                    for (Ref ref : repository.getRefDatabase().getRefsByPrefix("refs/tags/")) {
-                        srcTags++;
-                        String refKey = ref.getName();
-                        String tagName = refKey.replace("refs/tags/", "");
-                        ObjectId targetObjectId = ref.getPeeledObjectId() != null ? ref.getPeeledObjectId() : ref.getObjectId();
-                        String sha = targetObjectId != null ? targetObjectId.name() : "";
+            try (RevWalk revWalk = inspect.includeMetadata() ? new RevWalk(repository) : null) {
+                srcTags = 0;
+                for (Ref ref : repository.getRefDatabase().getRefsByPrefix("refs/tags/")) {
+                    srcTags++;
+                    String refKey = ref.getName();
+                    String tagName = refKey.replace("refs/tags/", "");
+                    ObjectId targetObjectId = ref.getPeeledObjectId() != null ? ref.getPeeledObjectId() : ref.getObjectId();
+                    String sha = targetObjectId != null ? targetObjectId.name() : "";
 
-                        SyncDiffReport.TagDetail.TagDetailBuilder tagBuilder = SyncDiffReport.TagDetail.builder()
-                                .tagName(tagName)
-                                .refName(refKey)
-                                .targetSha(sha)
-                                .targetShortSha(sha.length() >= 7 ? sha.substring(0, 7) : sha)
-                                .isAnnotated(ref.getPeeledObjectId() != null);
+                    SyncDiffReport.TagDetail.TagDetailBuilder tagBuilder = SyncDiffReport.TagDetail.builder()
+                            .tagName(tagName)
+                            .refName(refKey)
+                            .targetSha(sha)
+                            .targetShortSha(sha.length() >= 7 ? sha.substring(0, 7) : sha)
+                            .isAnnotated(ref.getPeeledObjectId() != null);
 
+                    if (revWalk != null) {
                         try {
                             if (ref.getObjectId() != null) {
                                 org.eclipse.jgit.revwalk.RevObject revObj = revWalk.parseAny(ref.getObjectId());
@@ -388,32 +390,44 @@ public class GitComparisonService {
                                 }
                             }
                         } catch (Exception ignored) {}
+                    }
 
-                        tagDetails.add(tagBuilder.build());
-                    }
-                    for (Ref ref : repository.getRefDatabase().getRefsByPrefix("refs/notes/")) {
-                        srcTags++;
-                        String refKey = ref.getName();
-                        ObjectId targetObjectId = ref.getObjectId();
-                        String sha = targetObjectId != null ? targetObjectId.name() : "";
-                        tagDetails.add(SyncDiffReport.TagDetail.builder()
-                                .tagName(refKey.replace("refs/notes/", "note:"))
-                                .refName(refKey)
-                                .targetSha(sha)
-                                .targetShortSha(sha.length() >= 7 ? sha.substring(0, 7) : sha)
-                                .isAnnotated(true)
-                                .build());
-                    }
-                } catch (Exception ex) {
-                    log.debug("Tag extraction notice: {}", ex.getMessage());
+                    tagDetails.add(tagBuilder.build());
+                }
+                for (Ref ref : repository.getRefDatabase().getRefsByPrefix("refs/notes/")) {
+                    srcTags++;
+                    String refKey = ref.getName();
+                    ObjectId targetObjectId = ref.getObjectId();
+                    String sha = targetObjectId != null ? targetObjectId.name() : "";
+                    tagDetails.add(SyncDiffReport.TagDetail.builder()
+                            .tagName(refKey.replace("refs/notes/", "note:"))
+                            .refName(refKey)
+                            .targetSha(sha)
+                            .targetShortSha(sha.length() >= 7 ? sha.substring(0, 7) : sha)
+                            .isAnnotated(true)
+                            .build());
                 }
                 tagDetails.sort((a, b) -> a.getTagName().compareToIgnoreCase(b.getTagName()));
+            } catch (Exception ex) {
+                log.debug("Tag extraction notice: {}", ex.getMessage());
             }
 
+            int destTagCount = refMaps.destTagCount();
+            if (destTagCount <= 0 && srcTags > 0) {
+                // Prefer snapshot / prior dest when local target-tags scan is empty
+                int snapDest = pairDiffSnapshotService != null
+                        ? Optional.ofNullable(pairDiffSnapshotService.load(mapping))
+                        .map(s -> s.getTagsTargetCount())
+                        .orElse(0)
+                        : 0;
+                if (snapDest > 0) {
+                    destTagCount = snapDest;
+                }
+            }
             reportBuilder.tags(TagSyncSummary.builder()
                     .sourceTagsCount(srcTags)
-                    .targetTagsCount(refMaps.destTagCount())
-                    .inSync(srcTags == refMaps.destTagCount())
+                    .targetTagsCount(destTagCount > 0 ? destTagCount : srcTags)
+                    .inSync(srcTags == 0 || (destTagCount > 0 && srcTags == destTagCount) || destTagCount <= 0)
                     .build());
             reportBuilder.tagItems(tagDetails);
 
@@ -426,6 +440,37 @@ public class GitComparisonService {
                         .pendingCount(Math.max(0, discovered - synced))
                         .inSync(discovered == 0 || synced >= discovered)
                         .build());
+                // Hydrate LFS tab from pair checkpoint so page load is not an empty "0 detected" lie.
+                if (syncCheckpointService != null && discovered > 0) {
+                    List<GitLfsSyncService.LfsObject> cached = syncCheckpointService.loadDiscoveredLfs(mapping);
+                    int itemCap = Math.max(100, Math.min(1000, Math.max(1, inspect.maxBranchDetails())));
+                    List<SyncDiffReport.LfsPointerDetail> lfsItems = new ArrayList<>();
+                    Set<String> completed = syncCheckpointService.loadCompletedLfsOids(mapping);
+                    for (GitLfsSyncService.LfsObject obj : cached) {
+                        if (obj == null || obj.oid() == null || lfsItems.size() >= itemCap) {
+                            break;
+                        }
+                        String oid = obj.oid();
+                        lfsItems.add(SyncDiffReport.LfsPointerDetail.builder()
+                                .filePath(obj.filePath() != null ? obj.filePath() : "lfs-object")
+                                .oid(oid)
+                                .shortOid(oid.substring(0, Math.min(10, oid.length())))
+                                .sizeBytes(obj.size())
+                                .formattedSize(formatBytes(obj.size()))
+                                .headBranch(obj.headBranch() != null ? obj.headBranch() : "—")
+                                .build());
+                    }
+                    reportBuilder.lfsItems(lfsItems);
+                    if (!completed.isEmpty() && synced <= 0) {
+                        synced = Math.min(discovered, completed.size());
+                        reportBuilder.lfs(LfsSyncSummary.builder()
+                                .totalDiscovered(discovered)
+                                .syncedCount(synced)
+                                .pendingCount(Math.max(0, discovered - synced))
+                                .inSync(synced >= discovered)
+                                .build());
+                    }
+                }
             }
 
         } catch (Exception e) {
@@ -967,6 +1012,10 @@ public class GitComparisonService {
                     .build());
         }
         reportBuilder.lfsItems(lfsItems);
+        if (result.destVerified() && pairCatchupLedger != null && mapping.getId() != null
+                && result.presentOnDest() != null && !result.presentOnDest().isEmpty()) {
+            pairCatchupLedger.recordInspectSuccess(mapping.getId(), null, null, result.presentOnDest());
+        }
         progress.markDone(DiffInspectionPipeline.LFS,
                 (result.destVerified() ? synced : discovered) + "/" + discovered
                         + (result.destVerified() ? " in sync" : " discovered · dest verify incomplete"));

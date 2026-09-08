@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.gitutility.model.dto.PrListPage;
 import com.gitutility.model.dto.SyncDiffReport;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -48,10 +49,22 @@ public final class GithubPullRequestGraphQl {
                         .commentsCount(pr.path("comments").path("totalCount").asInt(0))
                         .reviewCommentsCount(pr.path("reviewThreads").path("totalCount").asInt(0))
                         .draft(pr.path("isDraft").asBoolean(false))
+                        .updatedAt(parseInstant(pr.path("updatedAt").asText(null)))
                         .build());
             }
         }
-        return new PrListPage(items, hasNext ? endCursor : null, hasNext, totalCount);
+        return new PrListPage(items, hasNext ? endCursor : null, hasNext, totalCount, true);
+    }
+
+    static Instant parseInstant(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return Instant.parse(raw.trim());
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     public static int parseOpenPullRequestTotal(JsonNode data) {

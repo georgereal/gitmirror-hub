@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gitutility.model.dto.PrListPage;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 class GithubPullRequestGraphQlTest {
@@ -24,6 +26,7 @@ class GithubPullRequestGraphQlTest {
                           "title": "feat: bulk sync",
                           "body": "hello",
                           "url": "https://github.com/microsoft/vscode/pull/42",
+                          "updatedAt": "2026-09-07T12:00:00Z",
                           "isDraft": true,
                           "author": { "login": "alice" },
                           "headRefName": "feature/bulk",
@@ -44,12 +47,14 @@ class GithubPullRequestGraphQlTest {
 
         assertEquals(2501, page.totalCount());
         assertTrue(page.hasNextPage());
+        assertTrue(page.graphql());
         assertEquals("Y3Vyc29yOjEwMA==", page.nextCursor());
         assertEquals(1, page.items().size());
         var pr = page.items().getFirst();
         assertEquals(42L, pr.getSourcePrNumber());
         assertEquals("alice", pr.getAuthorLogin());
         assertEquals("hello", pr.getBody());
+        assertEquals(Instant.parse("2026-09-07T12:00:00Z"), pr.getUpdatedAt());
         assertEquals(3, pr.getCommentsCount());
         assertEquals(7, pr.getReviewCommentsCount());
         assertTrue(pr.isDraft());

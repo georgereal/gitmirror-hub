@@ -1,6 +1,10 @@
 # Build artifacts
 target/
 backend/target/
+.gradle/
+build/
+backend/.gradle/
+backend/build/
 frontend/dist/
 frontend/node_modules/
 webhook-worker/node_modules/
@@ -23,7 +27,7 @@ additionalinstructions_gitignore
 .env
 .env.local
 
-# Crash dumps and accidental local Maven cache
+# Crash dumps and accidental local build caches
 hs_err_pid*.log
 .m2/
 

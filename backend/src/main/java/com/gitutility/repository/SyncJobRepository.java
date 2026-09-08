@@ -57,4 +57,12 @@ public interface SyncJobRepository extends JpaRepository<SyncJob, Long> {
 
     @Query("SELECT COUNT(j) FROM SyncJob j WHERE j.status = 'SUCCESS' AND j.createdAt >= :since")
     long countSuccessJobsSince(@Param("since") java.time.Instant since);
+
+    @Query("""
+            SELECT j FROM SyncJob j
+            WHERE (j.startedAt IS NOT NULL AND j.startedAt >= :since)
+               OR j.status IN ('IN_PROGRESS', 'QUEUED', 'PAUSED')
+            ORDER BY j.startedAt DESC
+            """)
+    List<SyncJob> findForUsageWindow(@Param("since") java.time.Instant since);
 }

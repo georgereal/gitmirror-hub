@@ -1,5 +1,6 @@
 package com.gitutility.service;
 
+import com.gitutility.model.dto.JobUsageResponse;
 import com.gitutility.model.entity.RepoMapping;
 import com.gitutility.model.entity.SyncAuditLog;
 import com.gitutility.model.entity.SyncJob;
@@ -396,5 +397,79 @@ public class SyncJobService {
         if (jobId != null) {
             lastDurationPersistMs.remove(jobId);
         }
+    }
+
+    public JobUsageResponse getJobUsage(Instant since, int limit) {
+        Instant windowStart = since != null ? since : Instant.now().minus(6, ChronoUnit.HOURS);
+        int cap = Math.min(Math.max(limit, 1), 100);
+        List<SyncJob> found = syncJobRepository.findForUsageWindow(windowStart);
+        List<JobUsageResponse.JobUsageRow> rows = found.stream()
+                .sorted((a, b) -> {
+                    int cmp = Integer.compare(usageScore(b), usageScore(a));
+                    if (cmp != 0) {
+                        return cmp;
+                    }
+                    Instant as = a.getStartedAt() != null ? a.getStartedAt() : Instant.EPOCH;
+                    Instant bs = b.getStartedAt() != null ? b.getStartedAt() : Instant.EPOCH;
+                    return bs.compareTo(as);
+                })
+                .limit(cap)
+                .map(SyncJobService::toUsageRow)
+                .toList();
+        return JobUsageResponse.builder()
+                .since(windowStart)
+                .capturedAt(Instant.now())
+                .jobs(rows)
+                .build();
+    }
+
+    static int usageScore(SyncJob job) {
+        if (job == null) {
+            return 0;
+        }
+        return nz(job.getRestCallCount())
+                + nz(job.getGraphqlCallCount())
+                + nz(job.getLfsApiCallCount())
+                + nz(job.getLfsTransferHttpCount())
+                + nz(job.getGitHttpFetchCount())
+                + nz(job.getGitHttpPushBatchCount());
+    }
+
+    private static int nz(Integer value) {
+        return value != null ? value : 0;
+    }
+
+    private static JobUsageResponse.JobUsageRow toUsageRow(SyncJob job) {
+        Long duration = job.getDurationMs();
+        if ((duration == null || duration <= 0) && job.getStartedAt() != null && job.getCompletedAt() != null) {
+            duration = Math.max(0L, Duration.between(job.getStartedAt(), job.getCompletedAt()).toMillis());
+        }
+        return JobUsageResponse.JobUsageRow.builder()
+                .id(job.getId())
+                .mappingId(job.getMappingId())
+                .pairName(job.getPairName())
+                .status(job.getStatus() != null ? job.getStatus().name() : null)
+                .triggerType(job.getTriggerType() != null ? job.getTriggerType().name() : null)
+                .branch(job.getBranch())
+                .startedAt(job.getStartedAt())
+                .completedAt(job.getCompletedAt())
+                .durationMs(duration)
+                .restCallCount(nz(job.getRestCallCount()))
+                .graphqlCallCount(nz(job.getGraphqlCallCount()))
+                .graphqlPointsUsed(nz(job.getGraphqlPointsUsed()))
+                .graphql429Count(nz(job.getGraphql429Count()))
+                .lfsApiCallCount(nz(job.getLfsApiCallCount()))
+                .lfsTransferHttpCount(nz(job.getLfsTransferHttpCount()))
+                .gitHttpFetchCount(nz(job.getGitHttpFetchCount()))
+                .gitHttpPushBatchCount(nz(job.getGitHttpPushBatchCount()))
+                .rateLimit429Count(nz(job.getRateLimit429Count()))
+                .gitHttpThrottleCount(nz(job.getGitHttpThrottleCount()))
+                .gitReadBytes(job.getGitReadBytes())
+                .gitWriteBytes(job.getGitWriteBytes())
+                .lfsBytes(job.getLfsBytes())
+                .bytesTransferred(job.getBytesTransferred())
+                .provider(job.getProviderTrafficProvider())
+                .usageScore(usageScore(job))
+                .build();
     }
 }

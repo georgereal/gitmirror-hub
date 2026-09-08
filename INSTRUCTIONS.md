@@ -12,7 +12,8 @@ Before running the application, ensure the following tools are installed:
 | Component        | Minimum Version | Verified Version                  | Notes                                 |
 | ---------------- | --------------- | --------------------------------- | ------------------------------------- |
 | **Java JDK**     | 21+             | JDK 23 (Oracle / OpenJDK)         | Required for Spring Boot 3 & JGit     |
-| **Apache Maven** | 3.8+            | Maven 3.9.9                       | Backend build & dependency resolution |
+| **Gradle**       | 8.10+ (Wrapper) | Gradle 8.10.2                     | Default backend build via `backend/gradlew` (no global install needed) |
+| **Apache Maven** | 3.8+ (optional) | Maven 3.9.9                       | Fallback only if restoring `backend/pom.xml` and running with `mvn -f` |
 | **Node.js**      | 18+             | Node.js v20.19.5                  | Frontend build & dev server           |
 | **npm**          | 9+              | npm 10.8.2                        | Frontend package management           |
 | **AMQP Broker**  | AMQP 0-9-1      | CloudAMQP (Free) / RabbitMQ 3.12+ | Message queue & DLQ orchestration     |
@@ -68,17 +69,12 @@ If you prefer running RabbitMQ locally:
 
 ### Step 1: Start the Spring Boot Backend
 
-Open a terminal at the **repo root** (same pattern as multi-pod):
+Open a terminal at the **repo root** (`gitUtility/`). The gitignored `env` file lives here (not under `backend/`).
 
 ```bash
-
 # Optional: JDK 21+ on PATH (macOS example: export JAVA_HOME="$(/usr/libexec/java_home -v 21)")
-
-# Load local secrets / paths (gitignored `env` / `env.pod-*` — copy from your workstation)
-# export SPRING_RABBITMQ_ADDRESSES=...   # or put them in `env`
-
-# Required: unique key used to encrypt PATs and App private keys at rest
-export GIT_UTILITY_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+# Required if not already in ./env: unique key used to encrypt PATs and App private keys at rest
+# export GIT_UTILITY_ENCRYPTION_KEY="$(openssl rand -hex 32)"
 
 # (Optional) Export CloudAMQP URL if using cloud broker:
 # export SPRING_RABBITMQ_ADDRESSES="amqps://user:pass@YOUR-INSTANCE.cloudamqp.com/YOUR_VHOST"
@@ -86,12 +82,26 @@ export GIT_UTILITY_ENCRYPTION_KEY="$(openssl rand -hex 32)"
 # (Optional) Enable the H2 web console on /h2-console
 # export GIT_H2_CONSOLE_ENABLED=true
 
-# Prefer a local gitignored env file, then:
-#   source env && mvn -f backend/pom.xml spring-boot:run
-source env && mvn -f backend/pom.xml spring-boot:run
+# Prefer the local gitignored env file for day-to-day secrets, then run Gradle from root.
+# `-p backend` is the Gradle equivalent of Maven's `-f backend/pom.xml` (sets the project directory).
+source env && ./backend/gradlew -p backend bootRun
 ```
 
 For **two backends on one machine**, see [`INSTRUCTIONS-MULTI-POD.md`](INSTRUCTIONS-MULTI-POD.md) (`source env.pod-a` / `env.pod-b`).
+
+**Gradle from `backend/`** (same result; use `../env` because `env` is at the repo root):
+
+```bash
+cd backend
+source ../env && ./gradlew bootRun
+```
+
+**Maven fallback** (only if you restore `backend/pom.xml` and want the previous workflow):
+
+```bash
+# From repo root — same pattern as before:
+source env && mvn -f backend/pom.xml spring-boot:run
+```
 
 - **Backend REST API Root**: `http://localhost:8080/api/v1` (or `http://localhost:8080/`)
   - **Repository Pairs**: `http://localhost:8080/api/v1/mappings`
@@ -194,11 +204,12 @@ When a sync appears stuck (job stays `IN_PROGRESS`, LFS/PR stage hangs, or queue
 3. Check **Rabbit lanes** on the active pod — `unacked` rising with listeners stopped means consumers are paused or the circuit breaker is open (pause/CB are cluster-wide).
 4. Check **Executor pools** — high `queued` on LFS/PR pools with saturated `active` means that pool is the bottleneck (tune `GIT_LFS_*` / `GIT_PR_CREATE_CONCURRENCY` **per pod**).
 5. Check **Heap** per pod — sustained >85% can stall JGit push/LFS transfers.
-6. In-flight jobs show `workerInstanceId` on Queues; job-level detail remains on Observability / Queues.
+6. Check **Usage by job** when remaining quota drops or 429s appear — remaining is shared; rank overlapping jobs by REST + GraphQL + Git call counts, then open the heavy job’s execution log.
+7. In-flight jobs show `workerInstanceId` on Queues; job-level detail remains on Observability / Queues.
 
 ---
 
-## Multi-pod / Kubernetes deploy (feature/multi-pod-cluster)
+## Multi-pod / Kubernetes deploy
 
 > **Local two-instance runbook:** see [`INSTRUCTIONS-MULTI-POD.md`](INSTRUCTIONS-MULTI-POD.md) for running two backends on one machine (`SERVER_PORT` + `GIT_UTILITY_INSTANCE_ID`).
 
@@ -388,8 +399,8 @@ export GIT_HTTP_POST_BUFFER_BYTES=524288000  # 500 MiB http.postBuffer
 
 # Git LFS parallel sync
 export GIT_LFS_BATCH_SIZE=50
-export GIT_LFS_DISCOVERY_THREADS=4           # Parallel tree walks for LFS pointer discovery
-export GIT_LFS_TRANSFER_CONCURRENCY=4        # Concurrent LFS blob uploads/downloads
+export GIT_LFS_DISCOVERY_THREADS=4           # Max in-pod parallel tree walks (extra tips wait for a free thread)
+export GIT_LFS_TRANSFER_CONCURRENCY=4        # Max in-pod concurrent LFS blob uploads/downloads
 
 # GitHub GraphQL fast path (PR pages, mirror snapshot, releases — REST fallback when disabled)
 export GITHUB_GRAPHQL_ENABLED=true

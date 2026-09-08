@@ -104,7 +104,10 @@ export interface SyncJob {
   releasesCount?: number;
   bytesTransferred?: number;
   objectsReceived?: number;
+  gitReadBytes?: number;
+  gitWriteBytes?: number;
   lfsBytes?: number;
+  lfsSyncedCount?: number;
   sourceAccessMode?: 'PUBLIC' | 'AUTHENTICATED' | string;
   skipReason?: string;
   rejectedPushRefs?: string;
@@ -113,12 +116,18 @@ export interface SyncJob {
   stageProgressJson?: string;
   restCallCount?: number;
   restCallsPerMinute?: number;
+  graphqlCallCount?: number;
+  graphqlPointsUsed?: number;
+  graphql429Count?: number;
+  lfsApiCallCount?: number;
+  lfsTransferHttpCount?: number;
   gitHttpFetchCount?: number;
   gitHttpPushBatchCount?: number;
   rateLimitRemaining?: number;
   rateLimitLimit?: number;
   rateLimit429Count?: number;
   providerTrafficProvider?: string;
+  providerTrafficSeriesJson?: string;
   gitPushPerMinute?: number;
   gitFetchPerMinute?: number;
   gitHttpThrottleCount?: number;
@@ -148,19 +157,48 @@ export interface SyncPipeline {
   stages: PipelineStage[];
 }
 
+export interface JobTrafficSample {
+  t: number;
+  rest?: number;
+  graphql?: number;
+  graphqlPoints?: number;
+  lfsApi?: number;
+  lfsHttp?: number;
+  gitFetch?: number;
+  gitPush?: number;
+  gitReadBytes?: number;
+  gitWriteBytes?: number;
+  lfsBytes?: number;
+}
+
+export interface JobTrafficSeries {
+  samples: JobTrafficSample[];
+  gitPushPerMinutePeak?: number;
+  gitFetchPerMinutePeak?: number;
+}
+
 export interface ProviderTraffic {
   restCallCount: number;
   restCallsPerMinute: number;
+  graphqlCallCount?: number;
+  graphqlPointsUsed?: number;
+  graphql429Count?: number;
+  lfsApiCallCount?: number;
+  lfsTransferHttpCount?: number;
   gitHttpFetchCount: number;
   gitHttpPushBatchCount: number;
   gitPushPerMinute?: number;
   gitFetchPerMinute?: number;
+  gitPushPerMinutePeak?: number;
+  gitFetchPerMinutePeak?: number;
   gitHttpThrottleCount?: number;
   gitPushRateGuideline?: number;
-  rateLimitRemaining?: number | null;
-  rateLimitLimit?: number | null;
   rateLimit429Count?: number;
+  gitReadBytes?: number;
+  gitWriteBytes?: number;
+  lfsBytes?: number;
   provider?: string | null;
+  series?: JobTrafficSeries | null;
 }
 
 export interface JobProgress {
@@ -285,12 +323,6 @@ export interface RuntimeMetrics {
     heapUsedPercent: number;
     nonHeapUsedBytes: number;
   };
-  threads?: {
-    live: number;
-    daemon: number;
-    peak: number;
-    started: number;
-  };
   circuitBreaker: {
     state: string;
     consecutiveFailures: number;
@@ -387,7 +419,6 @@ export interface ScmQuotas {
     heatScore: number;
     updatedAt?: string | null;
   }[];
-
 }
 
 export interface DashboardStats {
@@ -401,6 +432,40 @@ export interface DashboardStats {
   deadLetterCount: number;
   cancelledCount?: number;
   interruptedCount?: number;
+}
+
+export interface JobUsageRow {
+  id: number;
+  mappingId?: number;
+  pairName?: string;
+  status?: string;
+  triggerType?: string;
+  branch?: string;
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  restCallCount?: number;
+  graphqlCallCount?: number;
+  graphqlPointsUsed?: number;
+  graphql429Count?: number;
+  lfsApiCallCount?: number;
+  lfsTransferHttpCount?: number;
+  gitHttpFetchCount?: number;
+  gitHttpPushBatchCount?: number;
+  rateLimit429Count?: number;
+  gitHttpThrottleCount?: number;
+  gitReadBytes?: number;
+  gitWriteBytes?: number;
+  lfsBytes?: number;
+  bytesTransferred?: number;
+  provider?: string;
+  usageScore?: number;
+}
+
+export interface JobUsageResponse {
+  since: string;
+  capturedAt: string;
+  jobs: JobUsageRow[];
 }
 
 export interface ProviderConfig {

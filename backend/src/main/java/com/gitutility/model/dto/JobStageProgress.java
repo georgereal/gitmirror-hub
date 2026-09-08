@@ -40,6 +40,13 @@ public class JobStageProgress {
     /** True when the last job run finished listing all open PR pages. */
     private Boolean prListComplete;
 
+    /**
+     * Source PR numbers observed while listing open PRs this job (across resumes).
+     * Used so close-reconcile does not treat unread pages as closed.
+     */
+    @Builder.Default
+    private Set<Long> prSeenOpenSourceNumbers = new LinkedHashSet<>();
+
     public static JobStageProgress empty() {
         return JobStageProgress.builder().build();
     }
@@ -55,6 +62,9 @@ public class JobStageProgress {
             }
             if (parsed.completedLfsOids == null) {
                 parsed.completedLfsOids = new LinkedHashSet<>();
+            }
+            if (parsed.prSeenOpenSourceNumbers == null) {
+                parsed.prSeenOpenSourceNumbers = new LinkedHashSet<>();
             }
             return parsed;
         } catch (Exception e) {

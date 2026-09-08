@@ -6,6 +6,7 @@ import { JobLogModal } from '../components/JobLogModal';
 import { PairConfigModal } from '../components/PairConfigModal';
 import { ClusterFleetStrip } from '../components/ClusterFleetStrip';
 import { SyncJob, QueueStatus, RepoMapping, JobProgress } from '../types';
+import { mergeProviderTraffic } from '../components/ProviderTrafficStrip';
 import {
   getRecentJobs,
   getQueueStatus,
@@ -81,7 +82,20 @@ export const ObservabilityPage: React.FC = () => {
         setJobs((jobs) => {
           const job = jobs.find((j) => j.id === progress.jobId);
           if (!job || isLiveSyncStatus(job.status)) {
-            setProgressByJobId((prev) => ({ ...prev, [progress.jobId]: progress }));
+            setProgressByJobId((prev) => {
+              const existing = prev[progress.jobId];
+              const mergedTraffic = mergeProviderTraffic(
+                existing?.providerTraffic,
+                progress.providerTraffic
+              );
+              return {
+                ...prev,
+                [progress.jobId]: {
+                  ...progress,
+                  providerTraffic: mergedTraffic ?? progress.providerTraffic ?? existing?.providerTraffic,
+                },
+              };
+            });
           }
           return jobs;
         });

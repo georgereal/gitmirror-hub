@@ -46,7 +46,6 @@ class ActionsTriggerSuppressionServiceTest {
         service = new ActionsTriggerSuppressionService(
                 systemEngineConfigService, configRepository, scmProviderFacade, hubMetrics,
                 gitHubProviderService, gitHubEnterpriseProviderService, null);
-
     }
 
     @Test

@@ -87,12 +87,14 @@ public class CircuitBreakerManagerService {
     private synchronized void tripCircuitBreaker(String reason) {
         transitionTo(CircuitState.OPEN, "Tripped after " + currentConsecutiveFailures.get() + " consecutive failures. Reason: " + reason);
         log.error("CIRCUIT BREAKER TRIPPED to OPEN! Pausing AMQP consumer to preserve message durability in RabbitMQ.");
-        clusterRuntimeService.publishCircuitState(
-                CircuitState.OPEN.name(),
-                currentConsecutiveFailures.get(),
-                lastProbeMessage,
-                false,
-                true);
+        if (clusterRuntimeService != null) {
+            clusterRuntimeService.publishCircuitState(
+                    CircuitState.OPEN.name(),
+                    currentConsecutiveFailures.get(),
+                    lastProbeMessage,
+                    false,
+                    true);
+        }
         simulationService.pauseConsumer();
         broadcastStatus();
     }
@@ -126,18 +128,22 @@ public class CircuitBreakerManagerService {
             log.info("Circuit Breaker [Self-Healing SUCCESS]: Subsystems reachable. Auto-resuming AMQP consumer.");
             currentConsecutiveFailures.set(0);
             transitionTo(CircuitState.CLOSED, "Auto-healed: " + probe.message);
-            clusterRuntimeService.publishCircuitState(
-                    CircuitState.CLOSED.name(), 0, lastProbeMessage, true, false);
+            if (clusterRuntimeService != null) {
+                clusterRuntimeService.publishCircuitState(
+                        CircuitState.CLOSED.name(), 0, lastProbeMessage, true, false);
+            }
             simulationService.resumeConsumer();
         } else {
             log.warn("Circuit Breaker [Self-Healing FAILED]: Subsystems still degraded ({}). Returning to OPEN.", probe.message);
             transitionTo(CircuitState.OPEN, "Probe failed: " + probe.message);
-            clusterRuntimeService.publishCircuitState(
-                    CircuitState.OPEN.name(),
-                    currentConsecutiveFailures.get(),
-                    lastProbeMessage,
-                    false,
-                    true);
+            if (clusterRuntimeService != null) {
+                clusterRuntimeService.publishCircuitState(
+                        CircuitState.OPEN.name(),
+                        currentConsecutiveFailures.get(),
+                        lastProbeMessage,
+                        false,
+                        true);
+            }
         }
     }
 
@@ -157,18 +163,22 @@ public class CircuitBreakerManagerService {
             transitionTo(CircuitState.CLOSED, forceReset && !probe.success
                     ? "Admin force-reset: " + probe.message
                     : "Admin probe passed: " + probe.message);
-            clusterRuntimeService.publishCircuitState(
-                    CircuitState.CLOSED.name(), 0, lastProbeMessage, probe.success, false);
+            if (clusterRuntimeService != null) {
+                clusterRuntimeService.publishCircuitState(
+                        CircuitState.CLOSED.name(), 0, lastProbeMessage, probe.success, false);
+            }
             simulationService.resumeConsumer();
             return new ProbeResult(true, "Subsystems operational. Circuit Breaker CLOSED and consumer resumed.");
         } else {
             transitionTo(CircuitState.OPEN, "Admin probe failed: " + probe.message);
-            clusterRuntimeService.publishCircuitState(
-                    CircuitState.OPEN.name(),
-                    currentConsecutiveFailures.get(),
-                    lastProbeMessage,
-                    false,
-                    true);
+            if (clusterRuntimeService != null) {
+                clusterRuntimeService.publishCircuitState(
+                        CircuitState.OPEN.name(),
+                        currentConsecutiveFailures.get(),
+                        lastProbeMessage,
+                        false,
+                        true);
+            }
             return new ProbeResult(false, "Probe failed: " + probe.message + ". Use Force Reset to bypass.");
         }
     }

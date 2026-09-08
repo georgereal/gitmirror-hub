@@ -8,12 +8,7 @@
 
 ## 1. Executive Summary & Goal
 
-Currently, the GitMirror Hub engine processes each synchronization job using a sequential, single-threaded pipeline within a Spring AMQP message consumer. While this ensures strict ref serialization and deterministic error isolation, large repositories with hundreds of branches, Git LFS assets, and PRs take longer to sync than necessary.
-
-The goal of this architectural proposal is to implement an **in-job scatter-gather (fan-out / fan-in) concurrency pattern** **on the single Hub pod that owns that `SyncJob`** (see [`ARCHITECTURE.md`](../ARCHITECTURE.md) §3.6.1). It does **not** spread one Sync Repo across the fleet.
-
 The remaining goal is an **in-job scatter-gather (fan-out / fan-in)** for Git ref-push (and optionally releases):
-
 1. A single RabbitMQ sync event is consumed.
 2. The default/trunk branch is seeded synchronously.
 3. Execution **fans out** across a bounded worker pool for parallel ref push batches, Git LFS transfers, PR replication, and release asset uploads.

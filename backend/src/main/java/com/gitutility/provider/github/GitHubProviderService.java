@@ -552,6 +552,22 @@ public class GitHubProviderService implements ScmProviderAdapter {
         return listOpenPullRequestsRestPage(repoFullName, cursor, pageSize, token);
     }
 
+    @Override
+    public PrListPage listRecentlyClosedPullRequestsPage(String repoFullName, String cursor, int pageSize) {
+        String token = getEffectiveGitHubToken(null);
+        if (token == null || repoFullName == null) {
+            return PrListPage.empty();
+        }
+        if (graphqlEnabled && graphQlClient != null) {
+            PrListPage page = graphQlClient.fetchClosedPullRequestsPage(
+                    GITHUB_GRAPHQL_URL, token, repoFullName, cursor, pageSize);
+            if (page != null) {
+                return page;
+            }
+        }
+        return PrListPage.empty();
+    }
+
     private PrListPage listOpenPullRequestsRestPage(String repoFullName, String cursor, int pageSize, String token) {
         try {
             HttpHeaders headers = createHeaders(token);
@@ -597,6 +613,14 @@ public class GitHubProviderService implements ScmProviderAdapter {
             long prNum = root.path("number").asLong();
             log.info("Created GitHub Cloud Pull Request #{} on {}", prNum, repoFullName);
             return prNum;
+        } catch (org.springframework.web.client.HttpStatusCodeException e) {
+            String responseBody = e.getResponseBodyAsString();
+            String detail = (responseBody != null && !responseBody.isBlank())
+                    ? responseBody.substring(0, Math.min(responseBody.length(), 400))
+                    : e.getStatusCode().toString();
+            log.warn("Failed to create GitHub Cloud Pull Request on {} (head='{}', base='{}'): {} — {}",
+                    repoFullName, headRef, baseRef, e.getStatusCode(), detail);
+            return null;
         } catch (Exception e) {
             log.warn("Failed to create GitHub Cloud Pull Request on {} (head='{}', base='{}'): {}",
                     repoFullName, headRef, baseRef, e.getMessage());

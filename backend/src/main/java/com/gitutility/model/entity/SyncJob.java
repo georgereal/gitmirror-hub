@@ -84,6 +84,9 @@ public class SyncJob {
     private Long bytesTransferred;
     private Integer objectsReceived;
     private Long lfsBytes;
+    private Long gitReadBytes;
+    private Long gitWriteBytes;
+    private Integer lfsSyncedCount;
     private String sourceAccessMode;
 
     @Column(length = 4000)
@@ -102,6 +105,13 @@ public class SyncJob {
 
     private Integer restCallCount;
     private Double restCallsPerMinute;
+    private Integer graphqlCallCount;
+    private Integer graphqlPointsUsed;
+    private Integer graphql429Count;
+    /** Git LFS Batch API calls ({@code /info/lfs}) attributed to this run. */
+    private Integer lfsApiCallCount;
+    /** LFS object download/upload HTTP requests (media/CDN hosts) for this run. */
+    private Integer lfsTransferHttpCount;
     private Integer gitHttpFetchCount;
     private Integer gitHttpPushBatchCount;
     private Integer rateLimitRemaining;
@@ -109,19 +119,13 @@ public class SyncJob {
     private Integer rateLimit429Count;
     private String providerTrafficProvider;
 
+    /** Job-scoped call-volume samples (REST / GraphQL / Git) — not shared quota remaining. */
+    @Column(columnDefinition = "CLOB")
+    private String providerTrafficSeriesJson;
+
     private Double gitPushPerMinute;
     private Double gitFetchPerMinute;
     private Integer gitHttpThrottleCount;
-
-    /** Cross-pod cancel signal; any worker polls this while the job is in flight. */
-    @Column(nullable = false)
-    @Builder.Default
-    private boolean cancelRequested = false;
-
-    /** Cross-pod pause signal; any worker polls this while the job is in flight. */
-    @Column(nullable = false)
-    @Builder.Default
-    private boolean pauseRequested = false;
 
     /** Hub instance currently executing this job (best-effort). */
     @Column(length = 255)
@@ -148,6 +152,7 @@ public class SyncJob {
         pipelineJson = clip(pipelineJson, 8000);
         resumeStageId = clip(resumeStageId, 64);
         stageProgressJson = clip(stageProgressJson, 64_000);
+        providerTrafficSeriesJson = clip(providerTrafficSeriesJson, 64_000);
     }
 
     static String clip(String value, int maxChars) {

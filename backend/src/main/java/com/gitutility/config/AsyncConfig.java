@@ -11,6 +11,9 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.RejectedExecutionHandler;
+import java.util.concurrent.ThreadPoolExecutor;
 
 @Configuration
 @EnableAsync
@@ -59,7 +62,28 @@ public class AsyncConfig {
         executor.setQueueCapacity(Math.max(1, queueCapacity));
         executor.setThreadNamePrefix(threadPrefix);
         executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setRejectedExecutionHandler(blockingQueueHandler());
         executor.initialize();
         return ExecutorServiceMetrics.monitor(registry, executor.getThreadPoolExecutor(), metricName);
+    }
+
+    /**
+     * When the bounded work queue is full, wait for a slot instead of aborting
+     * ({@link ThreadPoolExecutor.AbortPolicy}). In-pod LFS/PR fan-out then
+     * throttles onto the configured thread count instead of throwing
+     * {@link RejectedExecutionException} mid-job.
+     */
+    static RejectedExecutionHandler blockingQueueHandler() {
+        return (task, executor) -> {
+            if (executor.isShutdown()) {
+                throw new RejectedExecutionException("Task rejected — executor is shutdown");
+            }
+            try {
+                executor.getQueue().put(task);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RejectedExecutionException("Interrupted while waiting for a worker thread", e);
+            }
+        };
     }
 }

@@ -17,6 +17,7 @@ import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.transport.CredentialsProvider;
+import org.eclipse.jgit.transport.FetchResult;
 import org.eclipse.jgit.transport.PushResult;
 import org.eclipse.jgit.transport.RefSpec;
 import org.eclipse.jgit.transport.RemoteRefUpdate;
@@ -45,6 +46,8 @@ public class PullRequestSyncService {
     private final JobCancellationService jobCancellationService;
     private final PairDiffSnapshotService pairDiffSnapshotService;
     private final ActionsTriggerSuppressionService actionsTriggerSuppressionService;
+    private final PairCatchupLedger pairCatchupLedger;
+    private final ProviderRateMeter providerRateMeter;
     private final ExecutorService prCreateExecutor;
 
     @Value("${git-utility.git.pr-fork-fetch-batch-size:32}")
@@ -89,6 +92,8 @@ public class PullRequestSyncService {
             JobCancellationService jobCancellationService,
             PairDiffSnapshotService pairDiffSnapshotService,
             ActionsTriggerSuppressionService actionsTriggerSuppressionService,
+            PairCatchupLedger pairCatchupLedger,
+            ProviderRateMeter providerRateMeter,
             @Qualifier("prCreateExecutor") ExecutorService prCreateExecutor) {
         this.prMappingRepository = prMappingRepository;
         this.scmProviderFacade = scmProviderFacade;
@@ -100,6 +105,8 @@ public class PullRequestSyncService {
         this.jobCancellationService = jobCancellationService;
         this.pairDiffSnapshotService = pairDiffSnapshotService;
         this.actionsTriggerSuppressionService = actionsTriggerSuppressionService;
+        this.pairCatchupLedger = pairCatchupLedger;
+        this.providerRateMeter = providerRateMeter;
         this.prCreateExecutor = prCreateExecutor;
     }
 
@@ -151,14 +158,40 @@ public class PullRequestSyncService {
                     ? jobExecutionStateService.loadStageProgressByJobId(jobId)
                     : JobStageProgress.empty();
 
+            Instant deltaCutoff = PairCatchupLedger.deltaCutoff(
+                    mapping != null ? mapping.getLastPrListCompletedAt() : null);
+            boolean deltaMode = deltaCutoff != null;
+            if (progress != null) {
+                if (deltaMode) {
+                    progress.accept("PR metadata · Catch-up listing since " + deltaCutoff
+                            + " (GraphQL UPDATED_AT DESC; stop when pages are older)");
+                } else {
+                    progress.accept("PR metadata · Full open-PR listing (no catch-up watermark yet)");
+                }
+            }
+
             String cursor = Boolean.TRUE.equals(stageProgress.getPrListComplete())
                     ? null
                     : stageProgress.getPrListCursor();
             boolean hasNext = true;
             int totalSynced = 0;
+            int totalMetadataUpdated = 0;
+            int totalClosed = 0;
             int totalListed = 0;
             int knownTotal = -1;
             int pageSize = Math.max(1, Math.min(prListPageSize, 100));
+            int fetchBatchSize = Math.max(1, prForkFetchBatchSize);
+            List<MutablePendingPr> pendingBuffer = new ArrayList<>();
+            PrForkFetchBudget forkBudget = new PrForkFetchBudget();
+            Set<Long> seenOpenSourceNumbers = stageProgress.getPrSeenOpenSourceNumbers() != null
+                    ? new LinkedHashSet<>(stageProgress.getPrSeenOpenSourceNumbers())
+                    : new LinkedHashSet<>();
+            // Fresh list from page 1 must not retain seen-ids from a prior completed pass.
+            if (cursor == null) {
+                seenOpenSourceNumbers.clear();
+            }
+            boolean loggedTransport = false;
+            boolean stoppedEarlyForDelta = false;
 
             while (hasNext) {
                 checkJobControl(jobId);
@@ -167,65 +200,120 @@ public class PullRequestSyncService {
                 try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(sourceCredId)) {
                     page = sourceAdapter.listOpenPullRequestsPage(sourceFullName, cursor, pageSize);
                 }
+                if (!loggedTransport && progress != null) {
+                    progress.accept(page.graphql()
+                            ? "PR metadata · GraphQL page · open PRs"
+                            : "PR metadata · REST page · open PRs");
+                    loggedTransport = true;
+                }
                 if (knownTotal < 0 && page.totalCount() >= 0) {
                     knownTotal = page.totalCount();
                 }
                 totalListed += page.items().size();
 
+                for (SyncDiffReport.PrSyncDetail pr : page.items()) {
+                    if (pr != null && pr.getSourcePrNumber() != null) {
+                        seenOpenSourceNumbers.add(pr.getSourcePrNumber());
+                    }
+                }
+                totalMetadataUpdated += reconcileMappedOpenPrsOnPage(
+                        mapping, page.items(), mappingIndex, sourceFullName, targetFullName,
+                        targetAdapter, targetCredId, progress);
+
+                List<MutablePendingPr> pagePending = buildPendingFromPage(page.items(), mappingIndex);
                 if (progress != null) {
                     String totalLabel = knownTotal >= 0 ? String.valueOf(knownTotal) : totalListed + "+";
-                    progress.accept("PR metadata · Listed " + totalListed + "/" + totalLabel + " open PR(s); "
-                            + mappingIndex.mappedSourceNumbers().size() + " already mirrored");
-                }
-
-                List<MutablePendingPr> pending = buildPendingFromPage(page.items(), mappingIndex);
-                if (repoDir != null && repoDir.exists() && mapping != null && !pending.isEmpty()) {
-                    materializePendingHeads(repoDir, mapping, pending, progress, mappingId,
-                            sourceFullName, targetFullName, mappingIndex);
-                } else if (mapping != null) {
-                    for (MutablePendingPr item : pending) {
-                        if (item.pr.isFork() && prForkLazyMaterialize) {
-                            item.headReady = false;
-                            item.objectsCached = true;
-                        } else if (item.destHead != null && !item.pr.isFork()
-                                && !GitSyncEngine.isTrunkBranch(item.destHead)) {
-                            // No local mirror to preflight base — create path may still 422.
-                            item.headReady = true;
-                            item.baseReady = true;
-                        }
+                    int mappedCount = mappingIndex.mappedSourceNumbers().size();
+                    if (pagePending.isEmpty()) {
+                        progress.accept("PR metadata · Listed " + totalListed + "/" + totalLabel
+                                + " open PR(s); " + mappedCount
+                                + " already mirrored — this page has no new PRs");
+                    } else {
+                        long forks = pagePending.stream().filter(item -> item.pr.isFork()).count();
+                        boolean forkOnly = forks == pagePending.size();
+                        progress.accept("PR metadata · Listed " + totalListed + "/" + totalLabel
+                                + " open PR(s); " + mappedCount + " already mirrored; "
+                                + pagePending.size() + " new this page"
+                                + (forkOnly ? " (fork tips queued for batched fetch)" : ""));
                     }
-                    persistForkObjectCachedStubs(mappingId, sourceFullName, targetFullName, pending, mappingIndex);
                 }
 
-                totalSynced += createPendingPullRequests(
-                        mappingId, sourceFullName, targetFullName, targetRepoUrl, jobId,
-                        targetAdapter, mappingIndex, pending, progress, targetCredId);
+                pendingBuffer.addAll(pagePending);
 
-                cursor = page.nextCursor();
-                hasNext = page.hasNextPage();
+                if (deltaMode && PairCatchupLedger.allItemsOlderThan(page.items(), deltaCutoff)) {
+                    stoppedEarlyForDelta = true;
+                    hasNext = false;
+                    cursor = null;
+                    if (progress != null) {
+                        progress.accept("PR metadata · Delta complete after " + totalListed
+                                + " open PR(s) — remaining pages are older than catch-up watermark");
+                    }
+                } else {
+                    cursor = page.nextCursor();
+                    hasNext = page.hasNextPage();
+                }
+                boolean lastPage = !hasNext || (page.items().isEmpty() && !hasNext);
+                boolean hasSameRepo = pendingBuffer.stream()
+                        .anyMatch(item -> item.pr != null && !item.pr.isFork());
+                if (shouldFlushPrPrep(pendingBuffer.size(), hasSameRepo, lastPage, fetchBatchSize)) {
+                    totalSynced += flushPendingPullRequests(
+                            mappingId, sourceFullName, targetFullName, targetRepoUrl, jobId,
+                            targetAdapter, mapping, mappingIndex, pendingBuffer,
+                            progress, repoDir, targetCredId, forkBudget);
+                    pendingBuffer.clear();
+                    stageProgress.setPrListCursor(cursor);
+                    stageProgress.setPrListComplete(!hasNext);
+                    stageProgress.setPrSeenOpenSourceNumbers(seenOpenSourceNumbers);
+                    persistPrListCheckpoint(jobId, stageProgress);
+                } else if (pendingBuffer.isEmpty()) {
+                    stageProgress.setPrListCursor(cursor);
+                    stageProgress.setPrListComplete(!hasNext);
+                    stageProgress.setPrSeenOpenSourceNumbers(seenOpenSourceNumbers);
+                    persistPrListCheckpoint(jobId, stageProgress);
+                }
+
                 if (page.items().isEmpty() && !hasNext) {
                     break;
                 }
-
-                stageProgress.setPrListCursor(cursor);
-                stageProgress.setPrListComplete(!hasNext);
-                persistPrListCheckpoint(jobId, stageProgress);
+            }
+            if (!pendingBuffer.isEmpty()) {
+                totalSynced += flushPendingPullRequests(
+                        mappingId, sourceFullName, targetFullName, targetRepoUrl, jobId,
+                        targetAdapter, mapping, mappingIndex, pendingBuffer,
+                        progress, repoDir, targetCredId, forkBudget);
             }
 
             stageProgress.setPrListCursor(null);
             stageProgress.setPrListComplete(true);
+            stageProgress.setPrSeenOpenSourceNumbers(seenOpenSourceNumbers);
             persistPrListCheckpoint(jobId, stageProgress);
+
+            if (deltaMode || stoppedEarlyForDelta) {
+                totalClosed = closeMappedPrsFromRecentlyClosed(
+                        mapping, mappingId, sourceFullName, targetFullName, sourceAdapter, sourceCredId,
+                        deltaCutoff, pageSize, progress);
+            } else {
+                totalClosed = closeMappedPrsMissingFromOpenList(
+                        mapping, mappingId, sourceFullName, targetFullName, seenOpenSourceNumbers, progress);
+            }
+
+            if (pairCatchupLedger != null) {
+                pairCatchupLedger.recordPrListCompleted(mappingId);
+            }
 
             if (progress != null) {
                 String totalLabel = knownTotal >= 0 ? String.valueOf(knownTotal) : String.valueOf(totalListed);
-                progress.accept("PR metadata · Finished: " + totalSynced + " newly mirrored of "
-                        + totalLabel + " open PR(s) on " + targetFullName);
+                progress.accept("PR metadata · Finished: " + totalSynced + " newly mirrored, "
+                        + totalMetadataUpdated + " metadata update(s), " + totalClosed + " closed of "
+                        + totalLabel + " open PR(s) on source → " + targetFullName
+                        + (stoppedEarlyForDelta ? " (delta listing)" : ""));
             }
             int sourceTotal = knownTotal >= 0 ? knownTotal : totalListed;
             int destMapped = 0;
             int objectsCached = 0;
             for (PrMapping pm : prMappingRepository.findByMappingId(mappingId)) {
-                if (pm.getTargetPrNumber() != null && pm.getTargetPrNumber() > 0) {
+                if (pm.getTargetPrNumber() != null && pm.getTargetPrNumber() > 0
+                        && !"closed".equalsIgnoreCase(pm.getState())) {
                     destMapped++;
                 } else if (STATE_OBJECTS_CACHED.equals(pm.getState()) || Boolean.TRUE.equals(pm.isForkPrHead())) {
                     objectsCached++;
@@ -234,13 +322,14 @@ public class PullRequestSyncService {
             if (pairDiffSnapshotService != null) {
                 pairDiffSnapshotService.updatePrs(mappingId, sourceTotal, destMapped, destMapped);
             }
-            log.info("Completed Pull Request sync: {} PR(s) newly replicated ({} open on source, {} dest PRs, {} fork tips cached for DR)",
-                    totalSynced, sourceTotal, destMapped, objectsCached);
+            log.info("Completed Pull Request sync: {} newly replicated, {} metadata updated, {} closed "
+                            + "({} open on source, {} dest PRs, {} fork tips cached for DR)",
+                    totalSynced, totalMetadataUpdated, totalClosed, sourceTotal, destMapped, objectsCached);
             if (progress != null && objectsCached > 0) {
                 progress.accept("PR metadata · " + objectsCached
                         + " fork PR tip(s) cached for DR (no dest branch/PR until materialized)");
             }
-            return totalSynced;
+            return totalSynced + totalMetadataUpdated + totalClosed;
         } catch (JobCancelledException | JobPausedException e) {
             throw e;
         } catch (Exception e) {
@@ -270,6 +359,311 @@ public class PullRequestSyncService {
             pending.add(new MutablePendingPr(pr, replicaHeadBranch(pr.getSourcePrNumber(), headRef, pr.isFork())));
         }
         return pending;
+    }
+
+    /**
+     * Cheap delta for already-mirrored open PRs: compare list payload to {@code lastPushed*}.
+     * Unchanged → 0 API calls. Changed → CAS GET + optional PATCH (same as edited webhook).
+     */
+    private int reconcileMappedOpenPrsOnPage(RepoMapping mapping,
+                                             List<SyncDiffReport.PrSyncDetail> openPrs,
+                                             PrMappingIndex mappingIndex,
+                                             String sourceFullName,
+                                             String targetFullName,
+                                             ScmProviderAdapter targetAdapter,
+                                             Long targetCredId,
+                                             Consumer<String> progress) {
+        if (mapping == null || openPrs == null || openPrs.isEmpty() || mappingIndex == null) {
+            return 0;
+        }
+        int updated = 0;
+        for (SyncDiffReport.PrSyncDetail pr : openPrs) {
+            if (pr == null || pr.getSourcePrNumber() == null) {
+                continue;
+            }
+            PrMapping pm = mappingIndex.mappingForSource(pr.getSourcePrNumber());
+            if (pm == null) {
+                continue;
+            }
+            if (STATE_OBJECTS_CACHED.equals(pm.getState()) || pm.getTargetPrNumber() == null || pm.getTargetPrNumber() <= 0) {
+                continue;
+            }
+            if ("closed".equalsIgnoreCase(pm.getState())) {
+                continue;
+            }
+            PairSide origin = PairSide.fromString(pm.getOriginSide());
+            if (origin == null) {
+                origin = PairSide.A;
+            }
+            if (origin != PairSide.A) {
+                // Bulk list is origin-A open PRs; reverse-origin rows are not reconciled here.
+                continue;
+            }
+            String mirrorBody = PrMirrorSupport.buildMirroredBody(
+                    sourceFullName,
+                    pr.getSourcePrNumber(),
+                    pr.getAuthorLogin(),
+                    pr.getSourcePrUrl(),
+                    pr.getBody());
+            String title = pr.getTitle() != null ? pr.getTitle() : "";
+            if (pm.getLastPushedTitle() == null && pm.getLastPushedBody() == null) {
+                // Legacy mapping without a push ledger — seed from origin list (0 dest API calls).
+                rememberLastPush(pm, title, mirrorBody);
+                prMappingRepository.save(pm);
+                mappingIndex.replace(pm);
+                continue;
+            }
+            if (Objects.equals(nullToEmpty(pm.getLastPushedTitle()), title)
+                    && Objects.equals(nullToEmpty(pm.getLastPushedBody()), nullToEmpty(mirrorBody))) {
+                continue;
+            }
+            boolean ok = applyOriginMetadataToReplica(
+                    mapping, pm, title, mirrorBody, sourceFullName, targetFullName,
+                    targetAdapter, targetCredId, pr.getSourcePrNumber());
+            if (ok) {
+                updated++;
+                mappingIndex.replace(pm);
+                if (progress != null) {
+                    progress.accept("PR metadata · Updated mirrored PR #" + pm.getTargetPrNumber()
+                            + " from origin #" + pr.getSourcePrNumber());
+                }
+            }
+        }
+        return updated;
+    }
+
+    /**
+     * After a complete open-PR listing, close replica rows whose origin PR is no longer open.
+     */
+    private int closeMappedPrsMissingFromOpenList(RepoMapping mapping,
+                                                  Long mappingId,
+                                                  String sourceFullName,
+                                                  String targetFullName,
+                                                  Set<Long> seenOpenSourceNumbers,
+                                                  Consumer<String> progress) {
+        if (mapping == null || mappingId == null || seenOpenSourceNumbers == null) {
+            return 0;
+        }
+        int closed = 0;
+        for (PrMapping pm : prMappingRepository.findByMappingId(mappingId)) {
+            if (pm.getSourcePrNumber() == null) {
+                continue;
+            }
+            if (seenOpenSourceNumbers.contains(pm.getSourcePrNumber())) {
+                continue;
+            }
+            if ("closed".equalsIgnoreCase(pm.getState())) {
+                continue;
+            }
+            PairSide origin = PairSide.fromString(pm.getOriginSide());
+            if (origin == null) {
+                origin = PairSide.A;
+            }
+            if (origin != PairSide.A) {
+                continue;
+            }
+            if (STATE_OBJECTS_CACHED.equals(pm.getState()) || pm.getTargetPrNumber() == null || pm.getTargetPrNumber() <= 0) {
+                pm.setState("closed");
+                pm.setUpdatedAt(Instant.now());
+                prMappingRepository.save(pm);
+                closed++;
+                continue;
+            }
+            try {
+                closeMappedPullRequest(mapping, PairSide.A, pm.getSourcePrNumber(), sourceFullName, targetFullName);
+                closed++;
+                if (progress != null) {
+                    progress.accept("PR metadata · Closed mirrored PR #" + pm.getTargetPrNumber()
+                            + " (origin #" + pm.getSourcePrNumber() + " no longer open)");
+                }
+            } catch (Exception e) {
+                log.warn("Close reconcile notice for origin PR #{}: {}", pm.getSourcePrNumber(), e.getMessage());
+            }
+        }
+        return closed;
+    }
+
+    /**
+     * Delta-mode close: page recently CLOSED/MERGED origin PRs until older than the watermark,
+     * then close matching replica rows. Avoids treating unread open pages as closed.
+     */
+    private int closeMappedPrsFromRecentlyClosed(RepoMapping mapping,
+                                                 Long mappingId,
+                                                 String sourceFullName,
+                                                 String targetFullName,
+                                                 ScmProviderAdapter sourceAdapter,
+                                                 Long sourceCredId,
+                                                 Instant cutoff,
+                                                 int pageSize,
+                                                 Consumer<String> progress) {
+        if (mapping == null || mappingId == null || sourceAdapter == null || cutoff == null) {
+            return 0;
+        }
+        PrMappingIndex mappingIndex = PrMappingIndex.load(prMappingRepository.findByMappingId(mappingId));
+        String cursor = null;
+        boolean hasNext = true;
+        int closed = 0;
+        int listed = 0;
+        boolean loggedTransport = false;
+        while (hasNext) {
+            PrListPage page;
+            try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(sourceCredId)) {
+                page = sourceAdapter.listRecentlyClosedPullRequestsPage(sourceFullName, cursor, pageSize);
+            }
+            if (page == null || page.items() == null || page.items().isEmpty()) {
+                break;
+            }
+            if (!loggedTransport && progress != null) {
+                progress.accept(page.graphql()
+                        ? "PR metadata · GraphQL page · recently closed/merged PRs"
+                        : "PR metadata · REST page · recently closed/merged PRs");
+                loggedTransport = true;
+            }
+            listed += page.items().size();
+            for (SyncDiffReport.PrSyncDetail pr : page.items()) {
+                if (pr == null || pr.getSourcePrNumber() == null) {
+                    continue;
+                }
+                PrMapping pm = mappingIndex.mappingForSource(pr.getSourcePrNumber());
+                if (pm == null || "closed".equalsIgnoreCase(pm.getState())) {
+                    continue;
+                }
+                PairSide origin = PairSide.fromString(pm.getOriginSide());
+                if (origin == null) {
+                    origin = PairSide.A;
+                }
+                if (origin != PairSide.A) {
+                    continue;
+                }
+                try {
+                    if (STATE_OBJECTS_CACHED.equals(pm.getState())
+                            || pm.getTargetPrNumber() == null
+                            || pm.getTargetPrNumber() <= 0) {
+                        pm.setState("closed");
+                        pm.setUpdatedAt(Instant.now());
+                        prMappingRepository.save(pm);
+                        mappingIndex.replace(pm);
+                        closed++;
+                    } else {
+                        closeMappedPullRequest(mapping, PairSide.A, pm.getSourcePrNumber(),
+                                sourceFullName, targetFullName);
+                        closed++;
+                        if (progress != null) {
+                            progress.accept("PR metadata · Closed mirrored PR #" + pm.getTargetPrNumber()
+                                    + " (origin #" + pm.getSourcePrNumber() + " no longer open)");
+                        }
+                    }
+                } catch (Exception e) {
+                    log.warn("Delta close notice for origin PR #{}: {}", pm.getSourcePrNumber(), e.getMessage());
+                }
+            }
+            if (PairCatchupLedger.allItemsOlderThan(page.items(), cutoff)) {
+                if (progress != null) {
+                    progress.accept("PR metadata · Closed-PR delta complete after " + listed
+                            + " recent close(s) — remaining pages are older than catch-up watermark");
+                }
+                break;
+            }
+            cursor = page.nextCursor();
+            hasNext = page.hasNextPage();
+        }
+        return closed;
+    }
+
+    /**
+     * @return true when replica metadata was updated (or already matched after CAS read)
+     */
+    private boolean applyOriginMetadataToReplica(RepoMapping mapping,
+                                                 PrMapping pm,
+                                                 String title,
+                                                 String mirrorBody,
+                                                 String sourceFullName,
+                                                 String targetFullName,
+                                                 ScmProviderAdapter targetAdapter,
+                                                 Long targetCredId,
+                                                 long originPrNumber) {
+        Long replicaPrNum = pm.getTargetPrNumber();
+        if (replicaPrNum == null || replicaPrNum <= 0 || targetFullName == null || targetAdapter == null) {
+            return false;
+        }
+        long replicaPr = replicaPrNum;
+        PullRequestSnapshot replica;
+        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(targetCredId)) {
+            replica = targetAdapter.getPullRequest(targetFullName, replicaPr);
+            if (replica != null && !replicaMatchesLastPush(pm, replica)) {
+                log.warn("PR metadata CAS miss on mapping {} replica PR #{} — origin title '{}' vs replica '{}'",
+                        mapping.getId(), replicaPr, title, replica.getTitle());
+                if (syncConflictService != null) {
+                    syncConflictService.recordMetadataConflict(
+                            mapping.getId(), null, "pr:" + originPrNumber, targetFullName,
+                            title, replica.getTitle(),
+                            "Origin edited title/body but replica was also edited since last push; replica not overwritten."
+                    );
+                }
+                return false;
+            }
+            boolean updated = targetAdapter.updatePullRequest(targetFullName, replicaPr, title, mirrorBody);
+            if (updated) {
+                rememberLastPush(pm, title, mirrorBody);
+                prMappingRepository.save(pm);
+                suppressActionsAfterWrite(mapping.getRepoBUrl(), null);
+                log.info("Replicated origin PR edit #{} → replica #{} on {}", originPrNumber, replicaPr, targetFullName);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Flush git/API work when we have same-repo PRs (create should not wait), a full
+     * fork-fetch batch, or the last list page. Fork-only leftovers otherwise queue so
+     * we do one Git negotiation instead of one per GraphQL page.
+     */
+    static boolean shouldFlushPrPrep(int pendingCount, boolean hasSameRepo, boolean lastPage, int batchSize) {
+        if (pendingCount <= 0) {
+            return false;
+        }
+        if (lastPage || hasSameRepo) {
+            return true;
+        }
+        return pendingCount >= Math.max(1, batchSize);
+    }
+
+    private int flushPendingPullRequests(Long mappingId,
+                                         String sourceFullName,
+                                         String targetFullName,
+                                         String targetRepoUrl,
+                                         Long jobId,
+                                         ScmProviderAdapter targetAdapter,
+                                         RepoMapping mapping,
+                                         PrMappingIndex mappingIndex,
+                                         List<MutablePendingPr> pending,
+                                         Consumer<String> progress,
+                                         File repoDir,
+                                         Long targetCredId,
+                                         PrForkFetchBudget forkBudget) {
+        if (pending == null || pending.isEmpty()) {
+            return 0;
+        }
+        if (repoDir != null && repoDir.exists() && mapping != null) {
+            materializePendingHeads(repoDir, mapping, pending, progress, mappingId,
+                    sourceFullName, targetFullName, mappingIndex, forkBudget);
+        } else if (mapping != null) {
+            for (MutablePendingPr item : pending) {
+                if (item.pr.isFork() && prForkLazyMaterialize) {
+                    item.headReady = false;
+                    item.objectsCached = true;
+                } else if (item.destHead != null && !item.pr.isFork()
+                        && !GitSyncEngine.isTrunkBranch(item.destHead)) {
+                    item.headReady = true;
+                    item.baseReady = true;
+                }
+            }
+            persistForkObjectCachedStubs(mappingId, sourceFullName, targetFullName, pending, mappingIndex);
+        }
+        return createPendingPullRequests(
+                mappingId, sourceFullName, targetFullName, targetRepoUrl, jobId,
+                targetAdapter, mappingIndex, pending, progress, targetCredId);
     }
 
     private void checkJobControl(Long jobId) {
@@ -305,7 +699,8 @@ public class PullRequestSyncService {
                                          Long mappingId,
                                          String sourceFullName,
                                          String targetFullName,
-                                         PrMappingIndex mappingIndex) {
+                                         PrMappingIndex mappingIndex,
+                                         PrForkFetchBudget forkBudget) {
         CredentialsProvider srcCreds = gitCreds(mapping, mapping.getRepoAUrl(), mapping.getTokenA());
         CredentialsProvider targetCreds = gitCreds(mapping, mapping.getRepoBUrl(), mapping.getTokenB());
         List<Long> forkPrNumbers = pending.stream()
@@ -331,19 +726,74 @@ public class PullRequestSyncService {
                     30, 30, TimeUnit.SECONDS);
         }
         try (Git git = Git.open(repoDir)) {
+            boolean attemptedForkFetch = false;
             if (!forkPrNumbers.isEmpty()) {
-                heartbeatStatus.set("prefetching " + forkPrNumbers.size() + " fork PR head ref(s)");
-                if (progress != null) {
-                    progress.accept("PR metadata · Prefetching " + forkPrNumbers.size()
-                            + " fork PR tip object(s) from source (DR cache; no dest branches)...");
+                if (forkBudget != null && forkBudget.skipFetches) {
+                    if (progress != null) {
+                        progress.accept("PR metadata · Skipping remaining fork tip fetches after repeated GitHub misses");
+                    }
+                } else {
+                    List<Long> fetchCandidates = new ArrayList<>();
+                    int skippedRecentMiss = 0;
+                    for (Long prNum : forkPrNumbers) {
+                        if (prNum == null) {
+                            continue;
+                        }
+                        if (pairCatchupLedger != null && pairCatchupLedger.shouldSkipForkFetch(mapping, prNum)) {
+                            skippedRecentMiss++;
+                            continue;
+                        }
+                        fetchCandidates.add(prNum);
+                    }
+                    if (skippedRecentMiss > 0 && progress != null) {
+                        progress.accept("PR metadata · Skipping " + skippedRecentMiss
+                                + " fork tip(s) with recent GitHub misses (cached TTL)");
+                    }
+                    List<Long> missingLocal = pullRefsMissingLocally(git, fetchCandidates);
+                    int alreadyLocal = fetchCandidates.size() - missingLocal.size();
+                    if (alreadyLocal > 0 && progress != null) {
+                        progress.accept("PR metadata · " + alreadyLocal
+                                + " fork tip(s) already in local mirror — skip fetch");
+                    }
+                    if (!missingLocal.isEmpty()) {
+                        attemptedForkFetch = true;
+                        heartbeatStatus.set("prefetching " + missingLocal.size() + " fork PR head ref(s)");
+                        if (progress != null) {
+                            progress.accept("PR metadata · Prefetching " + missingLocal.size()
+                                    + " fork PR tip object(s) from source (DR cache; no dest branches)...");
+                        }
+                        batchFetchForkPullRefs(git, repoDir, "source", srcCreds, missingLocal, progress, heartbeatStatus);
+                    }
                 }
-                batchFetchForkPullRefs(git, repoDir, "source", srcCreds, forkPrNumbers, progress, heartbeatStatus);
             }
 
             if (prForkLazyMaterialize) {
                 int[] cacheCounts = cacheForkTipsBatched(git, repoDir, targetCreds, pending, progress, heartbeatStatus);
                 int cached = cacheCounts[0];
                 int failed = cacheCounts[1];
+                if (forkBudget != null) {
+                    forkBudget.recordCacheResult(cached, failed, attemptedForkFetch);
+                }
+                Set<Long> missed = new LinkedHashSet<>();
+                Set<Long> recovered = new LinkedHashSet<>();
+                for (MutablePendingPr item : pending) {
+                    if (item.pr == null || !item.pr.isFork() || item.pr.getSourcePrNumber() == null) {
+                        continue;
+                    }
+                    if (item.objectsCached) {
+                        recovered.add(item.pr.getSourcePrNumber());
+                    } else {
+                        missed.add(item.pr.getSourcePrNumber());
+                    }
+                }
+                if (pairCatchupLedger != null) {
+                    if (!missed.isEmpty()) {
+                        pairCatchupLedger.recordForkMisses(mappingId, missed);
+                    }
+                    if (!recovered.isEmpty()) {
+                        pairCatchupLedger.clearForkMisses(mappingId, recovered);
+                    }
+                }
                 if (progress != null) {
                     progress.accept("PR metadata · Fork tip cache: " + cached + " stored for DR"
                             + (failed > 0 ? ", " + failed + " missing tip(s)" : "")
@@ -362,17 +812,14 @@ public class PullRequestSyncService {
                         progress.accept("PR metadata · Dest tracking already warm (" + allDestHeads.size()
                                 + " same-repo tip(s) from git lane) — skipping dest prefetch");
                     }
-                } else {
-                    heartbeatStatus.set("prefetching destination heads for skip checks");
-                    if (progress != null) {
-                        if (warm > 0) {
-                            progress.accept("PR metadata · Prefetching " + missingTracking.size()
-                                    + " dest head tip(s) missing locally (" + warm + " already on dest tracking)...");
-                        } else {
-                            progress.accept("PR metadata · Prefetching destination head tips for same-repo PRs...");
-                        }
-                    }
-                    prefetchTargetHeadRefs(git, repoDir, targetCreds, missingTracking, progress, heartbeatStatus);
+                } else if (progress != null) {
+                    // Heads absent from dest tracking after git-lane inspect are not on dest —
+                    // do not fetch them from dest (that fails with "Remote does not have …").
+                    // Same-repo head prep below pushes them from source instead.
+                    progress.accept("PR metadata · " + missingTracking.size()
+                            + " same-repo head(s) missing on dest tracking"
+                            + (warm > 0 ? " (" + warm + " already warm)" : "")
+                            + " — will push from source (skip dest prefetch)");
                 }
             }
 
@@ -448,15 +895,11 @@ public class PullRequestSyncService {
         List<String> baseNames = uniqueBaseBranches(candidates);
         if (!baseNames.isEmpty()) {
             List<String> missingTracking = destBranchesNeedingPrefetch(git, baseNames);
-            if (!missingTracking.isEmpty()) {
-                if (heartbeatStatus != null) {
-                    heartbeatStatus.set("prefetching " + missingTracking.size() + " dest base tip(s)");
-                }
-                if (progress != null) {
-                    progress.accept("PR metadata · Prefetching " + missingTracking.size()
-                            + " dest base tip(s) before PR create...");
-                }
-                prefetchTargetHeadRefs(git, repoDir, targetCreds, missingTracking, progress, heartbeatStatus);
+            if (!missingTracking.isEmpty() && progress != null) {
+                // After git-lane dest inspect, missing tracking means the base is not on dest.
+                // Push from source below — do not fetch-from-dest (fails with "Remote does not have …").
+                progress.accept("PR metadata · " + missingTracking.size()
+                        + " base tip(s) missing on dest tracking — will push from source (skip dest prefetch)");
             }
         }
 
@@ -917,6 +1360,29 @@ public class PullRequestSyncService {
                 "fork PR ref prefetch", "Fork head prefetch", progress, heartbeatStatus);
     }
 
+    static List<Long> pullRefsMissingLocally(Git git, List<Long> prNumbers) {
+        if (prNumbers == null || prNumbers.isEmpty()) {
+            return List.of();
+        }
+        if (git == null) {
+            return List.copyOf(prNumbers);
+        }
+        List<Long> missing = new ArrayList<>();
+        for (Long prNumber : prNumbers) {
+            if (prNumber == null) {
+                continue;
+            }
+            try {
+                if (git.getRepository().exactRef("refs/pull/" + prNumber + "/head") == null) {
+                    missing.add(prNumber);
+                }
+            } catch (Exception e) {
+                missing.add(prNumber);
+            }
+        }
+        return missing;
+    }
+
     private void fetchRefSpecBatches(Git git, File repoDir, String remote, CredentialsProvider creds,
                                      List<RefSpec> specs, String heartbeatPrefix, String progressPrefix,
                                      Consumer<String> progress,
@@ -938,15 +1404,28 @@ public class PullRequestSyncService {
                         + " (" + Math.min(offset + batch.size(), specs.size()) + "/" + specs.size() + " tips)");
             }
             try {
-                git.fetch()
+                FetchResult result = git.fetch()
                         .setRemote(remote)
                         .setRefSpecs(batch)
                         .setCredentialsProvider(creds)
                         .setTimeout(120)
                         .call();
                 BareRepoHousekeeping.prepareRepoDirectoryAfterPackIo(repoDir);
+                int updates = result != null && result.getTrackingRefUpdates() != null
+                        ? result.getTrackingRefUpdates().size() : 0;
+                if (updates == 0) {
+                    log.warn("Fetch {} completed with 0 ref updates for {} refspec(s)",
+                            heartbeatPrefix, batch.size());
+                    if (progress != null) {
+                        progress.accept("PR metadata · " + heartbeatPrefix
+                                + " wrote 0 refs — GitHub may not advertise those pull heads");
+                    }
+                }
             } catch (Exception e) {
-                log.debug("Batch {} notice ({} refs): {}", heartbeatPrefix, batch.size(), e.getMessage());
+                log.warn("Batch {} failed ({} refs): {}", heartbeatPrefix, batch.size(), e.getMessage());
+                if (progress != null) {
+                    progress.accept("PR metadata · " + heartbeatPrefix + " failed: " + e.getMessage());
+                }
             }
         }
     }
@@ -1039,6 +1518,10 @@ public class PullRequestSyncService {
                 if (git.getRepository().exactRef("refs/heads/" + localName) == null
                         && git.getRepository().exactRef("refs/remotes/target/" + localName) == null) {
                     specs.add(new RefSpec("+refs/heads/" + localName + ":refs/heads/" + localName));
+                    String pull = "refs/pull/" + item.pr.getSourcePrNumber() + "/head";
+                    if (git.getRepository().exactRef(pull) == null && seen.add(pull)) {
+                        specs.add(new RefSpec("+" + pull + ":" + pull));
+                    }
                 }
             } catch (Exception ignored) {
             }
@@ -1067,7 +1550,11 @@ public class PullRequestSyncService {
             if (localBranchRef == null) {
                 localBranchRef = git.getRepository().exactRef("refs/remotes/target/" + localName);
             }
-            return localBranchRef != null && localBranchRef.getObjectId() != null ? localBranchRef.getName() : null;
+            if (localBranchRef != null && localBranchRef.getObjectId() != null) {
+                return localBranchRef.getName();
+            }
+            Ref pullRef = git.getRepository().exactRef("refs/pull/" + item.pr.getSourcePrNumber() + "/head");
+            return pullRef != null && pullRef.getObjectId() != null ? pullRef.getName() : null;
         } catch (Exception e) {
             return null;
         }
@@ -1166,50 +1653,69 @@ public class PullRequestSyncService {
             List<Callable<Void>> tasks = new ArrayList<>();
             for (MutablePendingPr item : ready) {
                 tasks.add(() -> {
-                    SyncDiffReport.PrSyncDetail pr = item.pr;
-                    int done = evaluated.incrementAndGet();
-                    if (progress != null && (done == 1 || done % 50 == 0 || done == ready.size())) {
-                        progress.accept("PR metadata · Creating mirrors " + done + "/" + ready.size()
-                                + " · " + syncedCount.get() + " created");
+                    if (providerRateMeter != null && jobId != null) {
+                        providerRateMeter.attachJob(jobId);
                     }
-                    if (mappingIndex.isAlreadyMapped(pr)) {
+                    try {
+                        SyncDiffReport.PrSyncDetail pr = item.pr;
+                        int done = evaluated.incrementAndGet();
+                        if (progress != null && (done == 1 || done % 50 == 0 || done == ready.size())) {
+                            progress.accept("PR metadata · Creating mirrors " + done + "/" + ready.size()
+                                    + " · " + syncedCount.get() + " created");
+                        }
+                        if (mappingIndex.isAlreadyMapped(pr)) {
+                            return null;
+                        }
+                        String mirrorBody = PrMirrorSupport.buildMirroredBody(
+                                sourceFullName,
+                                pr.getSourcePrNumber(),
+                                pr.getAuthorLogin(),
+                                pr.getSourcePrUrl(),
+                                pr.getBody());
+                        Long targetPrNum;
+                        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(targetCredId)) {
+                            targetPrNum = targetAdapter.createPullRequest(
+                                    targetFullName, pr.getTitle(), mirrorBody, item.resolvedHead, pr.getBaseBranch());
+                        }
+                        if (targetPrNum != null) {
+                            suppressActionsAfterWrite(targetRepoUrl, jobId);
+                            PrMapping created = PrMapping.builder()
+                                    .mappingId(mappingId)
+                                    .sourceRepo(sourceFullName)
+                                    .targetRepo(targetFullName)
+                                    .sourcePrNumber(pr.getSourcePrNumber())
+                                    .targetPrNumber(targetPrNum)
+                                    .headBranch(item.resolvedHead)
+                                    .baseBranch(pr.getBaseBranch())
+                                    .title(pr.getTitle())
+                                    .state("open")
+                                    .forkPrHead(pr.isFork() || RefOriginService.isSyntheticForkPrHead(item.resolvedHead))
+                                    .originSide(PairSide.A.name())
+                                    .lastPushedTitle(pr.getTitle())
+                                    .lastPushedBody(mirrorBody)
+                                    .lastPushedAt(Instant.now())
+                                    .createdAt(Instant.now())
+                                    .updatedAt(Instant.now())
+                                    .build();
+                            toSave.add(created);
+                            mappingIndex.replace(created);
+                            syncedCount.incrementAndGet();
+                        } else {
+                            log.warn("Dest PR create returned null for source PR #{} (head='{}', base='{}') — "
+                                            + "check provider logs for 422/permissions (base missing, head invalid, or App cannot open PRs)",
+                                    pr.getSourcePrNumber(), item.resolvedHead, pr.getBaseBranch());
+                            if (progress != null) {
+                                progress.accept("PR metadata · Create failed for origin #" + pr.getSourcePrNumber()
+                                        + " (head='" + item.resolvedHead + "', base='" + pr.getBaseBranch()
+                                        + "') — see provider warn log");
+                            }
+                        }
                         return null;
+                    } finally {
+                        if (providerRateMeter != null) {
+                            providerRateMeter.detachJob();
+                        }
                     }
-                    String mirrorBody = PrMirrorSupport.buildMirroredBody(
-                            sourceFullName,
-                            pr.getSourcePrNumber(),
-                            pr.getAuthorLogin(),
-                            pr.getSourcePrUrl(),
-                            pr.getBody());
-                    Long targetPrNum;
-                    try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(targetCredId)) {
-                        targetPrNum = targetAdapter.createPullRequest(
-                                targetFullName, pr.getTitle(), mirrorBody, item.resolvedHead, pr.getBaseBranch());
-                    }
-                    if (targetPrNum != null) {
-                        suppressActionsAfterWrite(targetRepoUrl, jobId);
-                        toSave.add(PrMapping.builder()
-                                .mappingId(mappingId)
-                                .sourceRepo(sourceFullName)
-                                .targetRepo(targetFullName)
-                                .sourcePrNumber(pr.getSourcePrNumber())
-                                .targetPrNumber(targetPrNum)
-                                .headBranch(item.resolvedHead)
-                                .baseBranch(pr.getBaseBranch())
-                                .title(pr.getTitle())
-                                .state("open")
-                                .forkPrHead(pr.isFork() || RefOriginService.isSyntheticForkPrHead(item.resolvedHead))
-                                .originSide(PairSide.A.name())
-                                .lastPushedTitle(pr.getTitle())
-                                .lastPushedBody(mirrorBody)
-                                .lastPushedAt(Instant.now())
-                                .createdAt(Instant.now())
-                                .updatedAt(Instant.now())
-                                .build());
-                        mappingIndex.remember(pr.getSourcePrNumber(), pr.getHeadBranch(), pr.getBaseBranch());
-                        syncedCount.incrementAndGet();
-                    }
-                    return null;
                 });
             }
             for (Future<?> future : prCreateExecutor.invokeAll(tasks)) {
@@ -1226,6 +1732,26 @@ public class PullRequestSyncService {
             prMappingRepository.saveAll(toSave);
         }
         return syncedCount.get();
+    }
+
+    static final class PrForkFetchBudget {
+        private static final int MISS_BATCHES_BEFORE_SKIP = 2;
+        int consecutiveMissBatches;
+        boolean skipFetches;
+
+        void recordCacheResult(int cached, int missing, boolean fetchAttempted) {
+            if (!fetchAttempted) {
+                return;
+            }
+            if (cached == 0 && missing > 0) {
+                consecutiveMissBatches++;
+                if (consecutiveMissBatches >= MISS_BATCHES_BEFORE_SKIP) {
+                    skipFetches = true;
+                }
+            } else if (cached > 0) {
+                consecutiveMissBatches = 0;
+            }
+        }
     }
 
     private static final class MutablePendingPr {
@@ -1247,6 +1773,7 @@ public class PullRequestSyncService {
     private static final class PrMappingIndex {
         private final Set<Long> mappedSourceNumbers = new HashSet<>();
         private final Set<String> mappedHeadBaseKeys = new HashSet<>();
+        private final Map<Long, PrMapping> bySourceNumber = new HashMap<>();
 
         static PrMappingIndex load(List<PrMapping> mappings) {
             PrMappingIndex index = new PrMappingIndex();
@@ -1256,6 +1783,7 @@ public class PullRequestSyncService {
             for (PrMapping pm : mappings) {
                 if (pm.getSourcePrNumber() != null) {
                     index.mappedSourceNumbers.add(pm.getSourcePrNumber());
+                    index.bySourceNumber.put(pm.getSourcePrNumber(), pm);
                 }
                 if (pm.getHeadBranch() != null && pm.getBaseBranch() != null) {
                     index.mappedHeadBaseKeys.add(headBaseKey(pm.getHeadBranch(), pm.getBaseBranch()));
@@ -1266,6 +1794,18 @@ public class PullRequestSyncService {
 
         Set<Long> mappedSourceNumbers() {
             return mappedSourceNumbers;
+        }
+
+        PrMapping mappingForSource(Long sourcePrNumber) {
+            return sourcePrNumber == null ? null : bySourceNumber.get(sourcePrNumber);
+        }
+
+        void replace(PrMapping pm) {
+            if (pm == null || pm.getSourcePrNumber() == null) {
+                return;
+            }
+            bySourceNumber.put(pm.getSourcePrNumber(), pm);
+            remember(pm.getSourcePrNumber(), pm.getHeadBranch(), pm.getBaseBranch());
         }
 
         boolean isAlreadyMapped(SyncDiffReport.PrSyncDetail pr) {

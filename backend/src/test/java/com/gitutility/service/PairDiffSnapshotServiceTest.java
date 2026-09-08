@@ -104,16 +104,52 @@ class PairDiffSnapshotServiceTest {
     }
 
     @Test
-    void updateLfsStoresDiscoveredAndSyncedSeparately() {
+    void updateFromGitResultDoesNotClobberDestTagsWithZeroFill() throws Exception {
         RepoMapping mapping = new RepoMapping();
-        mapping.setId(3L);
-        when(repoMappingRepository.findById(3L)).thenReturn(Optional.of(mapping));
+        mapping.setId(8L);
+        PairDiffSnapshot prior = PairDiffSnapshot.builder()
+                .tagsSourceCount(388)
+                .tagsTargetCount(388)
+                .sourceBranchesCount(5119)
+                .destBranchesCount(5119)
+                .inSyncBranchesCount(5119)
+                .build();
+        mapping.setDiffSnapshotJson(new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(prior));
+        when(repoMappingRepository.findById(8L)).thenReturn(Optional.of(mapping));
 
-        service.updateLfs(3L, 98, 98);
+        GitSyncEngine.SyncResult result = new GitSyncEngine.SyncResult();
+        result.success = true;
+        result.branchesCount = 5119;
+        result.tagsCount = 388;
+        result.sourceBranchesCount = 0;
+        result.destBranchesCount = 0;
+        result.sourceTagsCount = 0;
+        result.destTagsCount = 0;
+
+        service.updateFromGitResult(8L, result);
 
         PairDiffSnapshot snapshot = service.load(mapping);
-        assertEquals(98, snapshot.getLfsTotal());
-        assertEquals(98, snapshot.getLfsSynced());
-        assertEquals(0, snapshot.getLfsPending());
+        assertEquals(388, snapshot.getTagsSourceCount());
+        assertEquals(388, snapshot.getTagsTargetCount());
+        assertEquals(5119, snapshot.getDestBranchesCount());
+    }
+
+    @Test
+    void updateFromGitResultSeedsDestTagsFromSourceWhenFillEmptyAndNoPrior() {
+        RepoMapping mapping = new RepoMapping();
+        mapping.setId(9L);
+        when(repoMappingRepository.findById(9L)).thenReturn(Optional.of(mapping));
+
+        GitSyncEngine.SyncResult result = new GitSyncEngine.SyncResult();
+        result.success = true;
+        result.tagsCount = 388;
+        result.sourceTagsCount = 388;
+        result.destTagsCount = 0;
+
+        service.updateFromGitResult(9L, result);
+
+        PairDiffSnapshot snapshot = service.load(mapping);
+        assertEquals(388, snapshot.getTagsSourceCount());
+        assertEquals(388, snapshot.getTagsTargetCount());
     }
 }

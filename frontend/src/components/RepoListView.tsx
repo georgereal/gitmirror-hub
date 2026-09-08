@@ -136,7 +136,7 @@ export const RepoListView: React.FC<RepoListViewProps> = ({
         </div>
       </div>
 
-      <div className="rounded-2xl border border-zinc-200/90 bg-white shadow-sm overflow-hidden">
+      <div className="rounded-2xl border border-zinc-200/90 bg-white shadow-sm">
         {filteredMappings.length === 0 ? (
           <div className="py-16 px-4 text-center space-y-3">
             <div className="w-10 h-10 rounded-full bg-zinc-100 flex items-center justify-center mx-auto text-zinc-400">
@@ -160,20 +160,21 @@ export const RepoListView: React.FC<RepoListViewProps> = ({
           </div>
         ) : (
           <div>
-            <div className="grid grid-cols-12 px-6 py-3 border-b border-zinc-100 text-xs font-medium text-zinc-500">
+            <div className="grid grid-cols-12 px-6 py-3 border-b border-zinc-100 text-xs font-medium text-zinc-500 rounded-t-2xl">
               <div className="col-span-8 sm:col-span-9">Repository / Fork Pair</div>
               <div className="col-span-4 sm:col-span-3 text-right">Last Synced ↓</div>
             </div>
 
             <div className="divide-y divide-zinc-100">
-              {filteredMappings.map((mapping) => {
+              {filteredMappings.map((mapping, index) => {
                 const sourceProvider = providerLabel(mapping.sourceProvider);
                 const targetProvider = providerLabel(mapping.targetProvider);
                 const chips = pairHealthChips(mapping);
+                const openMenuUp = index >= filteredMappings.length - 2;
                 return (
                   <div
                     key={mapping.id}
-                    className="grid grid-cols-12 px-6 py-4 items-center hover:bg-zinc-50/70 transition-colors group cursor-pointer"
+                    className="grid grid-cols-12 px-6 py-4 items-center hover:bg-zinc-50/70 transition-colors group cursor-pointer relative"
                     onClick={() => onSelectRepo(mapping)}
                   >
                     <div className="col-span-8 sm:col-span-9 flex items-start space-x-3 min-w-0">
@@ -248,7 +249,11 @@ export const RepoListView: React.FC<RepoListViewProps> = ({
                         </button>
 
                         {activeMenuId === mapping.id && (
-                          <div className="absolute right-0 mt-1 w-44 bg-white border border-zinc-200 rounded-xl shadow-lg py-1 z-20 text-xs">
+                          <div
+                            className={`absolute right-0 w-48 bg-white border border-zinc-200 rounded-xl shadow-lg py-1 z-30 text-xs ${
+                              openMenuUp ? 'bottom-full mb-1' : 'top-full mt-1'
+                            }`}
+                          >
                             <button
                               onClick={() => {
                                 setActiveMenuId(null);
@@ -278,7 +283,7 @@ export const RepoListView: React.FC<RepoListViewProps> = ({
                               className="w-full text-left px-3 py-2 text-rose-600 hover:bg-rose-50 flex items-center space-x-2"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
-                              <span>Delete Pair</span>
+                              <span>Remove from Mirror</span>
                             </button>
                           </div>
                         )}
@@ -289,7 +294,7 @@ export const RepoListView: React.FC<RepoListViewProps> = ({
               })}
             </div>
 
-            <div className="px-6 py-3 border-t border-zinc-100 flex items-center justify-between text-xs text-zinc-500">
+            <div className="px-6 py-3 border-t border-zinc-100 flex items-center justify-between text-xs text-zinc-500 rounded-b-2xl">
               <span>Showing 1-{filteredMappings.length} of {filteredMappings.length}</span>
 
               <div className="flex items-center space-x-2">

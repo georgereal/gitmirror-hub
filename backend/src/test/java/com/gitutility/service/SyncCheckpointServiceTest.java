@@ -111,6 +111,12 @@ class SyncCheckpointServiceTest {
         mapping.setCompletedPushRefs("refs/heads/main=abc\n");
         mapping.setDiscoveredLfsOids("aa".repeat(32) + "\t1024\n");
         mapping.setCompletedLfsOids("bb".repeat(32) + "\n");
+        mapping.setLfsScannedTipOids("cc".repeat(20) + "\n");
+        mapping.setLastPrListCompletedAt(java.time.Instant.parse("2026-09-07T12:00:00Z"));
+        mapping.setLastReleaseSyncAt(java.time.Instant.parse("2026-09-07T12:00:00Z"));
+        mapping.setLastSourceTipFingerprint("abc");
+        mapping.setLastDestTipFingerprint("def");
+        mapping.setForkPrMissJson("1\t2026-09-07T12:00:00Z\n");
         mapping.setLastMirrorLfsObjects(42);
 
         when(repoMappingRepository.findById(5L)).thenReturn(Optional.of(mapping));
@@ -121,7 +127,28 @@ class SyncCheckpointServiceTest {
         assertNull(mapping.getCompletedPushRefs());
         assertNull(mapping.getDiscoveredLfsOids());
         assertNull(mapping.getCompletedLfsOids());
+        assertNull(mapping.getLfsScannedTipOids());
+        assertNull(mapping.getLastPrListCompletedAt());
+        assertNull(mapping.getLastReleaseSyncAt());
+        assertNull(mapping.getLastSourceTipFingerprint());
+        assertNull(mapping.getLastDestTipFingerprint());
+        assertNull(mapping.getForkPrMissJson());
         assertNull(mapping.getLastMirrorLfsObjects());
+        verify(repoMappingRepository).save(mapping);
+    }
+
+    @Test
+    void appendCompletedLfsOidsMergesWithoutDuplicates() {
+        RepoMapping mapping = new RepoMapping();
+        mapping.setId(9L);
+        mapping.setCompletedLfsOids("a".repeat(64) + "\n");
+        when(repoMappingRepository.findById(9L)).thenReturn(Optional.of(mapping));
+
+        service.appendCompletedLfsOids(9L, java.util.List.of("a".repeat(64), "b".repeat(64)));
+
+        java.util.Set<String> oids = SyncCheckpointService.parseOidLines(mapping.getCompletedLfsOids());
+        assertEquals(2, oids.size());
+        assertTrue(oids.contains("b".repeat(64)));
         verify(repoMappingRepository).save(mapping);
     }
 }

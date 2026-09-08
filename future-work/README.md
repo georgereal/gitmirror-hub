@@ -13,14 +13,12 @@ Deferred design plans. These are **not** delivery schedules. Shipped plans live 
 | [multi-config-webhook-ingest.md](multi-config-webhook-ingest.md) | Parked | One Worker + one inbound queue; identity on envelope; no Kafka / per-card Worker |
 | [ephemeral-agentic-ref-webhooks.md](ephemeral-agentic-ref-webhooks.md) | Partial (core shipped) | Pair UI for prefixes; scheduled Smart sync; discard filter chips |
 | [fork-pr-lazy-dr-materialize.md](fork-pr-lazy-dr-materialize.md) | Partial (core shipped) | UI materialize action; legacy fork-pr cleanup; diff status for objects_cached |
-| [kafka-mirroring-partitions.md](kafka-mirroring-partitions.md) | Design | Future Kafka broker sketch only — product scale is ARCHITECTURE §3.6.1 |
 
 ## Done
 
 | Doc | Notes |
 | :--- | :--- |
 | [done/micrometer-internals-observability.md](done/micrometer-internals-observability.md) | Internals UI + Micrometer v1. Optional: Prometheus/Grafana |
-
 
 ## Conventions
 

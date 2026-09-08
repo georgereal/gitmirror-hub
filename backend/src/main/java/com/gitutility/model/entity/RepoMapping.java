@@ -126,6 +126,31 @@ public class RepoMapping {
     @Column(columnDefinition = "CLOB")
     private String discoveredLfsOids;
 
+    /**
+     * SHA-1 ObjectIds of branch tips included in the last LFS ObjectWalk.
+     * Next discovery uses these as {@code markUninteresting} (rev-list --not).
+     */
+    @Column(columnDefinition = "CLOB")
+    private String lfsScannedTipOids;
+
+    /** SHA-256 of sorted {@code ref=sha} source heads/tags/notes from the last successful git phase. */
+    @Column(length = 64)
+    private String lastSourceTipFingerprint;
+
+    /** SHA-256 of sorted dest advertisement heads/tags from the last successful git phase. */
+    @Column(length = 64)
+    private String lastDestTipFingerprint;
+
+    /** When a full (or GraphQL-delta) open-PR listing completed successfully. */
+    private Instant lastPrListCompletedAt;
+
+    /** When release metadata last completed successfully. */
+    private Instant lastReleaseSyncAt;
+
+    /** Source PR numbers whose pull-request head refs recently missed on GitHub (JSON). */
+    @Column(columnDefinition = "CLOB")
+    private String forkPrMissJson;
+
     /** Last known git mirror stats (persisted when git phases finish, even if PR metadata is still pending). */
     private Long lastMirrorJobId;
     private Instant lastMirrorStatsAt;

@@ -33,7 +33,7 @@ This exercises **pair-level fleet scale** (two pods can run **different** mappin
 Single-instance uses a gitignored root `env` file:
 
 ```bash
-source env && mvn -f backend/pom.xml spring-boot:run
+source env && ./backend/gradlew -p backend bootRun
 ```
 
 For multi-pod, use **one env file per JVM** (shared broker/workspace + distinct identity/port):
@@ -47,8 +47,7 @@ For multi-pod, use **one env file per JVM** (shared broker/workspace + distinct 
 ### First-time setup
 
 ```bash
-cd /Users/jacobgeorge/Workspace/gitUtility-multi-pod
-
+# From the repository root
 cp env.pod-a.example env.pod-a
 cp env.pod-b.example env.pod-b
 ```
@@ -62,7 +61,7 @@ Edit both files so they share the **same** `SPRING_RABBITMQ_ADDRESSES`, `GIT_UTI
 
 ## Prerequisites
 
-Same as the main runbook: JDK 21+, Maven 3.8+, and a running AMQP broker (local RabbitMQ or CloudAMQP).
+Same as the main runbook: JDK 21+, Gradle Wrapper (no global Gradle install), and a running AMQP broker (local RabbitMQ or CloudAMQP).
 
 Optional JDK export (if not already on `PATH`):
 
@@ -75,13 +74,13 @@ export PATH=$JAVA_HOME/bin:$PATH
 
 ## Run two backends on this machine
 
-Always start from the **repo root** so both processes share the same H2 file (`./data/gitutility`) and the `mvn -f backend/pom.xml` layout matches single-instance.
+Always start from the **repo root** so both processes share the same H2 file (`./data/gitutility`) and the `./backend/gradlew -p backend` layout matches single-instance.
 
 ### Terminal 1 — pod-a (port 8080)
 
 ```bash
-cd /Users/jacobgeorge/Workspace/gitUtility-multi-pod
-source env.pod-a && mvn -f backend/pom.xml spring-boot:run
+# From the repository root
+source env.pod-a && ./backend/gradlew -p backend bootRun
 ```
 
 - API: `http://localhost:8080/api/v1`
@@ -91,8 +90,8 @@ source env.pod-a && mvn -f backend/pom.xml spring-boot:run
 ### Terminal 2 — pod-b (port 8081)
 
 ```bash
-cd /Users/jacobgeorge/Workspace/gitUtility-multi-pod
-source env.pod-b && mvn -f backend/pom.xml spring-boot:run
+# From the repository root
+source env.pod-b && ./backend/gradlew -p backend bootRun
 ```
 
 - API: `http://localhost:8081/api/v1`
@@ -104,7 +103,7 @@ source env.pod-b && mvn -f backend/pom.xml spring-boot:run
 Point the Vite proxy / API base at **either** backend (e.g. `:8080`). Cluster Internals aggregates sibling heartbeats from the shared DB, so either pod’s cluster endpoint shows both.
 
 ```bash
-cd /Users/jacobgeorge/Workspace/gitUtility-multi-pod/frontend
+cd frontend
 npm run dev
 ```
 

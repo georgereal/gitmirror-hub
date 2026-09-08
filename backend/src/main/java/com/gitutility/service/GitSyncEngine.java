@@ -115,7 +115,6 @@ public class GitSyncEngine {
             JobExecutionStateService jobExecutionStateService,
             @Lazy ActionsTriggerSuppressionService actionsTriggerSuppressionService,
             @Lazy ScmCredentialService scmCredentialService) {
-
         this.auditLogRepository = auditLogRepository;
         this.dedupLedgerService = dedupLedgerService;
         this.gitLfsSyncService = gitLfsSyncService;
@@ -134,7 +133,6 @@ public class GitSyncEngine {
         this.jobExecutionStateService = jobExecutionStateService;
         this.actionsTriggerSuppressionService = actionsTriggerSuppressionService;
         this.scmCredentialService = scmCredentialService;
-
     }
 
     public static class SyncResult {
@@ -161,11 +159,16 @@ public class GitSyncEngine {
         public long bytesTransferred;
         public int objectsReceived;
         public long lfsBytes;
+        public long gitReadBytes;
+        public long gitWriteBytes;
         public String sourceAccessMode;
         public boolean sourceFetchedPublicly;
         public String pipelineJson;
         public String rejectedPushRefs;
         public SyncPipelineState pipeline;
+        public String sourceTipFingerprint;
+        public String destTipFingerprint;
+        public java.util.Set<String> lfsScannedTipOids;
     }
 
     /**
@@ -491,9 +494,9 @@ public class GitSyncEngine {
                             () -> touchRunningDuration(jobId)
                     );
                     inspectMonitor.setCancelCheck(() -> isStopRequested(jobId));
+                    Map<String, String> destAdvertised = new LinkedHashMap<>();
+                    boolean destAdsOk = false;
                     try {
-                        int advertisedHeads = 0;
-                        int advertisedTags = 0;
                         Collection<Ref> advertised = git.lsRemote()
                                 .setRemote("target")
                                 .setHeads(true)
@@ -501,29 +504,52 @@ public class GitSyncEngine {
                                 .setCredentialsProvider(inspectCreds)
                                 .setTimeout(httpTimeoutSeconds)
                                 .call();
-                        if (advertised != null) {
-                            for (Ref ref : advertised) {
-                                if (ref == null || ref.getName() == null || ref.getName().endsWith("^{}")) {
-                                    continue;
-                                }
-                                if (ref.getName().startsWith("refs/heads/")) {
-                                    advertisedHeads++;
-                                } else if (ref.getName().startsWith("refs/tags/")) {
-                                    advertisedTags++;
-                                }
+                        destAdvertised = advertisedDestTips(advertised);
+                        destAdsOk = true;
+                        int advertisedHeads = 0;
+                        int advertisedTags = 0;
+                        for (String name : destAdvertised.keySet()) {
+                            if (name.startsWith("refs/heads/")) {
+                                advertisedHeads++;
+                            } else if (name.startsWith("refs/tags/")) {
+                                advertisedTags++;
                             }
                         }
-                        logAudit(jobId, LogLevel.INFO, "Inspect destination · " + destLabel
-                                + ": destination advertises " + advertisedHeads + " branch tip(s) and "
-                                + advertisedTags + " tag(s); fetching any missing tip objects...");
-                        pipeline.markCurrent(SyncPipelineState.INSPECT_DEST,
-                                advertisedHeads + " heads / " + advertisedTags + " tags advertised");
-                        broadcastPipeline(jobId, event.getMappingId(), pipeline);
+                        Map<String, String> destTracking = collectDestTrackingTips(git);
+                        TipProbeResult destProbe = TipProbeResult.compare(destTracking, destAdvertised);
+                        if (!destTracking.isEmpty() && !destProbe.differ()) {
+                            targetReachable = true;
+                            result.destTipFingerprint = PairCatchupLedger.fingerprintTips(destAdvertised);
+                            // Tip probe matched — seed dest counts from advertisement so the
+                            // Release Tags card does not keep a stale 0 after skip-fetch remirrors.
+                            if (advertisedHeads > 0) {
+                                result.destBranchesCount = Math.max(result.destBranchesCount, advertisedHeads);
+                            }
+                            if (advertisedTags > 0) {
+                                result.destTagsCount = Math.max(result.destTagsCount, advertisedTags);
+                            }
+                            logAudit(jobId, LogLevel.INFO, "Inspect destination · " + destLabel
+                                    + ": destination advertises " + advertisedHeads + " branch tip(s) and "
+                                    + advertisedTags + " tag(s) matching local tracking — skipping dest pack fetch.");
+                            pipeline.markDone(SyncPipelineState.INSPECT_DEST,
+                                    advertisedHeads + " heads match tracking");
+                            broadcastPipeline(jobId, event.getMappingId(), pipeline);
+                        } else {
+                            logAudit(jobId, LogLevel.INFO, "Inspect destination · " + destLabel
+                                    + ": destination advertises " + advertisedHeads + " branch tip(s) and "
+                                    + advertisedTags + " tag(s)"
+                                    + (destProbe.differ() ? " (" + destProbe.summary() + ")" : "")
+                                    + "; fetching any missing tip objects...");
+                            pipeline.markCurrent(SyncPipelineState.INSPECT_DEST,
+                                    advertisedHeads + " heads / " + advertisedTags + " tags advertised");
+                            broadcastPipeline(jobId, event.getMappingId(), pipeline);
+                        }
                     } catch (Exception advertiseEx) {
                         logAudit(jobId, LogLevel.INFO, "Inspect destination · " + destLabel
                                 + ": tip advertisement preview failed (" + advertiseEx.getMessage()
                                 + "); continuing with tip fetch...");
                     }
+                    if (!targetReachable) {
                     runGitOpWithHeartbeat(jobId,
                             () -> {
                                 String live = inspectMonitor.lastProgressMessage();
@@ -556,6 +582,10 @@ public class GitSyncEngine {
                     int destHeads = destHeadBranchNames(git).size();
                     logAudit(jobId, LogLevel.INFO, "Destination inspection complete · " + destHeads
                             + " branch head(s) loaded from " + destLabel + ".");
+                    result.destTipFingerprint = destAdsOk
+                            ? PairCatchupLedger.fingerprintTips(destAdvertised)
+                            : PairCatchupLedger.fingerprintTips(collectDestTrackingTips(git));
+                    }
                 } else {
                     pipeline.markSkipped(SyncPipelineState.INSPECT_DEST, "Simulated target");
                 }
@@ -766,7 +796,12 @@ public class GitSyncEngine {
 
             persistPipeline(jobId, pipeline, result.rejectedPushRefs);
 
+            result.gitReadBytes = wireMeter.readBytes();
+            result.gitWriteBytes = wireMeter.writeBytes();
             result.bytesTransferred = wireMeter.gitWireBytes();
+            if (providerRateMeter != null) {
+                providerRateMeter.recordTransferBytes(result.gitReadBytes, result.gitWriteBytes, result.lfsBytes);
+            }
 
             // 6. Fallback: record the triggering job SHA if no per-ref ledger writes happened
             if (event.getAfterSha() != null && !event.getAfterSha().isBlank()
@@ -802,6 +837,13 @@ public class GitSyncEngine {
             }
             result.branchesCount = Math.max(result.branchesCount, bCount);
             result.tagsCount = Math.max(result.tagsCount, tCount);
+            try {
+                result.sourceTipFingerprint = PairCatchupLedger.fingerprintTips(collectLocalProbeTips(git));
+                if (result.destTipFingerprint == null) {
+                    result.destTipFingerprint = PairCatchupLedger.fingerprintTips(collectDestTrackingTips(git));
+                }
+            } catch (Exception ignored) {
+            }
 
             if (isFullMirror && !isSimulationOrTestUrl(event.getTargetRepoUrl())) {
                 persistCompletedPushRefs(event.getMappingId(), Map.of(), stageProgress);
@@ -912,74 +954,171 @@ public class GitSyncEngine {
                     }
                 };
                 java.util.Set<String> completedLfsOids = new java.util.LinkedHashSet<>(stageProgress.getCompletedLfsOids());
-                if (completedLfsOids.isEmpty() && mapping != null) {
+                if (mapping != null) {
                     completedLfsOids.addAll(syncCheckpointService.loadCompletedLfsOids(mapping));
                 }
                 List<GitLfsSyncService.LfsObject> lfsObjects;
+                boolean catchUpRemirror = false;
                 boolean hasJobDiscovery = stageProgress.getDiscoveredLfsBlob() != null
                         && !stageProgress.getDiscoveredLfsBlob().isBlank();
+                java.util.Set<String> previousTips = mapping != null
+                        ? syncCheckpointService.loadLfsScannedTips(mapping)
+                        : java.util.Set.of();
                 if (hasJobDiscovery) {
                     lfsObjects = SyncCheckpointService.parseLfsObjects(stageProgress.getDiscoveredLfsBlob());
                     pipeline.markCurrent(SyncPipelineState.LFS,
                             "cached discovery · " + lfsObjects.size() + " pointer(s)");
                     broadcastPipeline(jobId, event.getMappingId(), pipeline);
                     logAudit(jobId, LogLevel.INFO, "Using job-cached LFS discovery: " + lfsObjects.size() + " pointer(s).");
-                } else if (!resumingJob && checkpoint.ordinal() >= SyncCheckpointStage.LFS_DISCOVERY_DONE.ordinal()) {
+                    result.lfsScannedTipOids = previousTips;
+                    catchUpRemirror = previousTips != null && !previousTips.isEmpty();
+                } else if (checkpoint.ordinal() >= SyncCheckpointStage.LFS_DISCOVERY_DONE.ordinal()
+                        && mapping != null
+                        && gitLfsSyncService.currentTipsMatch(git.getRepository(), previousTips)) {
                     lfsObjects = syncCheckpointService.loadDiscoveredLfs(mapping);
+                    catchUpRemirror = true;
                     pipeline.markCurrent(SyncPipelineState.LFS,
                             "cached discovery · " + lfsObjects.size() + " pointer(s)");
                     broadcastPipeline(jobId, event.getMappingId(), pipeline);
-                    logAudit(jobId, LogLevel.INFO, "Using cached LFS discovery: " + lfsObjects.size() + " pointer(s).");
+                    logAudit(jobId, LogLevel.INFO, "LFS tips unchanged since last scan — skipping object walk ("
+                            + lfsObjects.size() + " pointer(s) cached).");
+                    result.lfsScannedTipOids = previousTips;
                 } else {
-                    lfsObjects = gitLfsSyncService.discoverLfsPointers(
-                            git.getRepository(), lfsProgress, () -> isStopRequested(jobId), jobId);
-                    if (lfsObjects != null && !lfsObjects.isEmpty()) {
-                        stageProgress.setDiscoveredLfsBlob(SyncCheckpointService.serializeLfsObjects(lfsObjects));
-                        syncCheckpointService.persistDiscoveredLfs(event.getMappingId(), lfsObjects);
+                    GitLfsSyncService.LfsDiscoveryResult discovered = gitLfsSyncService.discoverLfsPointers(
+                            git.getRepository(), previousTips, lfsProgress, () -> isStopRequested(jobId), jobId);
+                    result.lfsScannedTipOids = discovered.scannedTipOids();
+                    if (previousTips != null && !previousTips.isEmpty()) {
+                        catchUpRemirror = true;
+                        if (discovered.objects() != null && !discovered.objects().isEmpty()) {
+                            syncCheckpointService.mergeDiscoveredLfs(event.getMappingId(), discovered.objects());
+                        }
+                        // Catch-up: only queue NEW pointers since prior tips — never re-queue the
+                        // full historical catalog (that caused "644 remaining" after a 0-delta walk).
+                        lfsObjects = discovered.objects() != null ? discovered.objects() : java.util.List.of();
+                        int catalogSize = 0;
+                        if (mapping != null && event.getMappingId() != null) {
+                            RepoMapping fresh = repoMappingRepository.findById(event.getMappingId()).orElse(mapping);
+                            catalogSize = syncCheckpointService.loadDiscoveredLfs(fresh).size();
+                        }
+                        logAudit(jobId, LogLevel.INFO, "LFS catch-up: " + lfsObjects.size()
+                                + " new pointer(s) since prior tips"
+                                + (catalogSize > 0 ? " (" + catalogSize + " known in pair catalog)" : "")
+                                + ".");
+                    } else {
+                        lfsObjects = discovered.objects();
+                        if (lfsObjects != null && !lfsObjects.isEmpty()) {
+                            stageProgress.setDiscoveredLfsBlob(SyncCheckpointService.serializeLfsObjects(lfsObjects));
+                            syncCheckpointService.persistDiscoveredLfs(event.getMappingId(), lfsObjects);
+                        }
+                    }
+                    if (result.lfsScannedTipOids != null && !result.lfsScannedTipOids.isEmpty()) {
+                        syncCheckpointService.persistLfsScannedTips(event.getMappingId(), result.lfsScannedTipOids);
                     }
                 }
                 if (lfsObjects != null && !lfsObjects.isEmpty()) {
                     List<GitLfsSyncService.LfsObject> pending = lfsObjects.stream()
-                            .filter(o -> !completedLfsOids.contains(o.oid()))
+                            .filter(o -> o != null && o.oid() != null && !completedLfsOids.contains(o.oid()))
                             .toList();
-                    logAudit(jobId, LogLevel.INFO, "Discovered " + lfsObjects.size() + " Git LFS pointer(s). "
-                            + pending.size() + " remaining to transfer.");
-                    var lfsStats = gitLfsSyncService.syncLfsObjects(
-                            event.getSourceRepoUrl(), event.getTargetRepoUrl(), pending,
-                            lfsProgress, () -> isStopRequested(jobId), jobId,
-                            resolveSideToken(event.getTokenA(), event.getSourceCredentialId()),
-                            resolveSideToken(event.getTokenB(), event.getTargetCredentialId()),
-                            oid -> {
-                                completedLfsOids.add(oid);
-                                stageProgress.getCompletedLfsOids().add(oid);
-                                syncCheckpointService.appendCompletedLfsOid(event.getMappingId(), oid);
-                                persistPipeline(jobId, pipeline, null);
-                            });
-                    result.lfsObjectsCount = lfsObjects.size();
-                    result.lfsSyncedCount = (int) lfsObjects.stream()
-                            .filter(o -> completedLfsOids.contains(o.oid()))
-                            .count();
-                    if (result.lfsSyncedCount == 0 && lfsStats.count() > 0) {
-                        result.lfsSyncedCount = lfsStats.count();
+                    // Remirror safety net: completed-OID ledger may be empty after older runs /
+                    // Start fresh history, while destination already holds the blobs.
+                    if (!pending.isEmpty() && catchUpRemirror) {
+                        pipeline.markCurrent(SyncPipelineState.LFS,
+                                "verifying " + pending.size() + " on destination");
+                        broadcastPipeline(jobId, event.getMappingId(), pipeline);
+                        GitLfsSyncService.BatchVerifyResult verify = gitLfsSyncService.verifyObjectsPresentOnTarget(
+                                event.getTargetRepoUrl(),
+                                pending,
+                                lfsProgress,
+                                resolveSideToken(event.getTokenB(), event.getTargetCredentialId()));
+                        if (verify.apiSucceeded() && !verify.presentOids().isEmpty()) {
+                            java.util.Set<String> present = verify.presentOids();
+                            completedLfsOids.addAll(present);
+                            stageProgress.getCompletedLfsOids().addAll(present);
+                            syncCheckpointService.appendCompletedLfsOids(event.getMappingId(), present);
+                            int before = pending.size();
+                            pending = pending.stream()
+                                    .filter(o -> !present.contains(o.oid()))
+                                    .toList();
+                            logAudit(jobId, LogLevel.INFO, "LFS destination already has "
+                                    + (before - pending.size()) + " object(s); "
+                                    + pending.size() + " remaining to transfer.");
+                        } else {
+                            logAudit(jobId, LogLevel.INFO, "Discovered " + lfsObjects.size() + " Git LFS pointer(s). "
+                                    + pending.size() + " remaining to transfer.");
+                        }
+                    } else {
+                        logAudit(jobId, LogLevel.INFO, "Discovered " + lfsObjects.size() + " Git LFS pointer(s). "
+                                + pending.size() + " remaining to transfer.");
                     }
-                    result.lfsBytes = lfsStats.bytes();
-                    if (lfsStats.failed() > 0) {
-                        logAudit(jobId, LogLevel.WARN, "Git LFS transfer completed with "
-                                + lfsStats.failed() + " failure(s) out of " + lfsObjects.size() + " object(s).");
+                    if (pending.isEmpty()) {
+                        result.lfsObjectsCount = Math.max(lfsObjects.size(), completedLfsOids.size());
+                        result.lfsSyncedCount = completedLfsOids.size();
+                        pipeline.markDone(SyncPipelineState.LFS,
+                                result.lfsSyncedCount + " object(s) already on destination");
+                        logAudit(jobId, LogLevel.INFO, "Git LFS synchronization skipped — all "
+                                + result.lfsSyncedCount + " pointer(s) already present on destination.");
+                    } else {
+                        var lfsStats = gitLfsSyncService.syncLfsObjects(
+                                event.getSourceRepoUrl(), event.getTargetRepoUrl(), pending,
+                                lfsProgress, () -> isStopRequested(jobId), jobId,
+                                resolveSideToken(event.getTokenA(), event.getSourceCredentialId()),
+                                resolveSideToken(event.getTokenB(), event.getTargetCredentialId()),
+                                oid -> {
+                                    completedLfsOids.add(oid);
+                                    stageProgress.getCompletedLfsOids().add(oid);
+                                    syncCheckpointService.appendCompletedLfsOid(event.getMappingId(), oid);
+                                    persistPipeline(jobId, pipeline, null);
+                                });
+                        result.lfsObjectsCount = Math.max(lfsObjects.size(), completedLfsOids.size());
+                        result.lfsSyncedCount = (int) lfsObjects.stream()
+                                .filter(o -> completedLfsOids.contains(o.oid()))
+                                .count();
+                        if (result.lfsSyncedCount == 0 && lfsStats.count() > 0) {
+                            result.lfsSyncedCount = lfsStats.count();
+                        }
+                        result.lfsBytes = lfsStats.bytes();
+                        if (lfsStats.failed() > 0) {
+                            logAudit(jobId, LogLevel.WARN, "Git LFS transfer completed with "
+                                    + lfsStats.failed() + " failure(s) out of " + pending.size() + " object(s).");
+                        }
+                        pipeline.markDone(SyncPipelineState.LFS, result.lfsSyncedCount + " object(s) on destination"
+                                + (lfsStats.failed() > 0 ? " · " + lfsStats.failed() + " failed" : ""));
+                        logAudit(jobId, LogLevel.INFO, "Git LFS synchronization completed: "
+                                + result.lfsSyncedCount + " object(s) on destination, "
+                                + formatBytes(lfsStats.bytes()) + " replicated"
+                                + (lfsStats.alreadyPresent() > 0
+                                    ? " (" + lfsStats.alreadyPresent() + " already present)" : "")
+                                + ".");
                     }
-                    pipeline.markDone(SyncPipelineState.LFS, result.lfsSyncedCount + "/" + lfsObjects.size()
-                            + " object(s) on destination"
-                            + (lfsStats.failed() > 0 ? " · " + lfsStats.failed() + " failed" : ""));
-                    logAudit(jobId, LogLevel.INFO, "Git LFS synchronization completed: "
-                            + result.lfsSyncedCount + "/" + lfsObjects.size() + " object(s) on destination, "
-                            + formatBytes(lfsStats.bytes()) + " replicated.");
                 } else {
-                    pipeline.markSkipped(SyncPipelineState.LFS, "No LFS pointers");
-                    logAudit(jobId, LogLevel.INFO, "No Git LFS pointers found; skipping binary blob sync.");
+                    if (catchUpRemirror) {
+                        int catalogSize = 0;
+                        if (mapping != null && event.getMappingId() != null) {
+                            RepoMapping fresh = repoMappingRepository.findById(event.getMappingId()).orElse(mapping);
+                            catalogSize = syncCheckpointService.loadDiscoveredLfs(fresh).size();
+                        }
+                        result.lfsObjectsCount = catalogSize;
+                        result.lfsSyncedCount = completedLfsOids.size();
+                        pipeline.markDone(SyncPipelineState.LFS,
+                                "catch-up · 0 new"
+                                        + (catalogSize > 0 ? " · " + catalogSize + " known" : ""));
+                        logAudit(jobId, LogLevel.INFO, "No new Git LFS pointers since prior tips"
+                                + (catalogSize > 0 ? " (" + catalogSize + " already in pair catalog)" : "")
+                                + "; skipping binary blob sync.");
+                    } else {
+                        pipeline.markSkipped(SyncPipelineState.LFS, "No LFS pointers");
+                        logAudit(jobId, LogLevel.INFO, "No Git LFS pointers found; skipping binary blob sync.");
+                    }
                 }
             }
             persistPipeline(jobId, pipeline, result.rejectedPushRefs);
             result.bytesTransferred += result.lfsBytes;
+            if (providerRateMeter != null) {
+                providerRateMeter.recordTransferBytes(
+                        GitWireByteMeter.currentReadBytes(),
+                        GitWireByteMeter.currentWriteBytes(),
+                        result.lfsBytes);
+            }
             result.pipeline = pipeline;
             result.pipelineJson = pipeline.toJson();
         } catch (JobCancelledException e) {
@@ -1396,15 +1535,18 @@ public class GitSyncEngine {
                 }
             }
             // Dest tracking refs are updated as each push batch succeeds (applyPushedRefToDestTracking).
-            result.sourceBranchesCount = names.sourceBranchCount();
-            result.destBranchesCount = names.destBranchCount();
-            result.inSyncBranchesCount = inSync;
-            result.pendingBranchesCount = pending;
-            result.destOnlyBranchesCount = destOnly;
-            result.sourceTagsCount = names.sourceTags().size();
-            result.destTagsCount = names.destTags().size();
+            // Use max so tip-probe advertisement seeds survive an empty local scan.
+            result.sourceBranchesCount = Math.max(result.sourceBranchesCount, names.sourceBranchCount());
+            result.destBranchesCount = Math.max(result.destBranchesCount, names.destBranchCount());
+            if (names.destBranchCount() > 0 || inSync > 0 || pending > 0 || destOnly > 0) {
+                result.inSyncBranchesCount = inSync;
+                result.pendingBranchesCount = pending;
+                result.destOnlyBranchesCount = destOnly;
+            }
+            result.sourceTagsCount = Math.max(result.sourceTagsCount, names.sourceTags().size());
+            result.destTagsCount = Math.max(result.destTagsCount, names.destTags().size());
         } catch (Exception e) {
-            log.debug("Could not fill pair ref counts: {}", e.getMessage());
+            log.warn("Could not fill pair ref counts: {}", e.getMessage());
         }
     }
 
@@ -1734,14 +1876,61 @@ public class GitSyncEngine {
         return tips;
     }
 
+    static Map<String, String> collectDestTrackingTips(Git git) throws IOException {
+        Map<String, String> tips = new LinkedHashMap<>();
+        if (git == null || git.getRepository() == null) {
+            return tips;
+        }
+        Repository repo = git.getRepository();
+        for (Ref ref : repo.getRefDatabase().getRefsByPrefix("refs/remotes/target/")) {
+            if (ref == null || ref.getName() == null || ref.getObjectId() == null) {
+                continue;
+            }
+            String suffix = ref.getName().substring("refs/remotes/target/".length());
+            putProbeTip(tips, "refs/heads/" + suffix, ObjectId.toString(ref.getObjectId()));
+        }
+        for (Ref ref : repo.getRefDatabase().getRefsByPrefix("refs/remotes/target-tags/")) {
+            if (ref == null || ref.getName() == null || ref.getObjectId() == null) {
+                continue;
+            }
+            String suffix = ref.getName().substring("refs/remotes/target-tags/".length());
+            putProbeTip(tips, "refs/tags/" + suffix, ObjectId.toString(ref.getObjectId()));
+        }
+        return tips;
+    }
+
+    static Map<String, String> advertisedDestTips(Collection<Ref> advertised) {
+        Map<String, String> tips = new LinkedHashMap<>();
+        if (advertised == null) {
+            return tips;
+        }
+        for (Ref ref : advertised) {
+            if (ref == null || ref.getName() == null || ref.getObjectId() == null) {
+                continue;
+            }
+            if (!isProbeTipRef(ref.getName())) {
+                continue;
+            }
+            tips.put(ref.getName(), ObjectId.toString(ref.getObjectId()));
+        }
+        return tips;
+    }
+
     private static void putProbeTip(Map<String, String> tips, Ref ref) {
         if (ref == null || ref.getName() == null || ref.getObjectId() == null) {
             return;
         }
-        if (!isProbeTipRef(ref.getName())) {
+        putProbeTip(tips, ref.getName(), ObjectId.toString(ref.getObjectId()));
+    }
+
+    private static void putProbeTip(Map<String, String> tips, String name, String sha) {
+        if (tips == null || name == null || sha == null) {
             return;
         }
-        tips.put(ref.getName(), ObjectId.toString(ref.getObjectId()));
+        if (!isProbeTipRef(name)) {
+            return;
+        }
+        tips.put(name, sha);
     }
 
     static boolean isProbeTipRef(String name) {
@@ -2390,7 +2579,7 @@ public class GitSyncEngine {
                 pipeline.getCurrentStageId(),
                 pipeline.currentLabel(),
                 pipeline.toMap(),
-                trafficSnapshot()
+                trafficSnapshotOrNull()
         );
     }
 
@@ -2412,6 +2601,10 @@ public class GitSyncEngine {
                     job.setRejectedPushRefs(rejectedPushRefs);
                 }
                 if (providerRateMeter != null) {
+                    providerRateMeter.recordTransferBytes(
+                            GitWireByteMeter.currentReadBytes(),
+                            GitWireByteMeter.currentWriteBytes(),
+                            0L);
                     providerRateMeter.copyTo(job);
                 }
                 syncJobRepository.save(job);
@@ -2423,7 +2616,11 @@ public class GitSyncEngine {
     }
 
     private Map<String, Object> trafficSnapshot() {
-        return providerRateMeter != null ? providerRateMeter.snapshotMap() : Map.of();
+        return trafficSnapshotOrNull();
+    }
+
+    private Map<String, Object> trafficSnapshotOrNull() {
+        return providerRateMeter != null ? providerRateMeter.snapshotMap() : null;
     }
 
     private void touchRunningDuration(Long jobId) {

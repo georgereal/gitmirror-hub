@@ -25,14 +25,38 @@ public final class GithubGraphQlQueries {
                     title
                     body
                     url
+                    updatedAt
                     isDraft
                     author { login }
                     headRefName
                     baseRefName
                     isCrossRepository
                     headRepository { nameWithOwner }
-                    comments { totalCount }
-                    reviewThreads { totalCount }
+                  }
+                }
+              }
+            }
+            """;
+
+    public static final String CLOSED_PULL_REQUESTS_PAGE = """
+            query ClosedPullRequestsPage($owner: String!, $name: String!, $first: Int!, $after: String) {
+              rateLimit { cost remaining limit resetAt }
+              repository(owner: $owner, name: $name) {
+                pullRequests(states: [CLOSED, MERGED], first: $first, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {
+                  totalCount
+                  pageInfo { hasNextPage endCursor }
+                  nodes {
+                    number
+                    title
+                    body
+                    url
+                    updatedAt
+                    isDraft
+                    author { login }
+                    headRefName
+                    baseRefName
+                    isCrossRepository
+                    headRepository { nameWithOwner }
                   }
                 }
               }

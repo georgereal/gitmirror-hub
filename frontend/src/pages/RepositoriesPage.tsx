@@ -36,6 +36,11 @@ export const RepositoriesPage: React.FC = () => {
   };
 
   const handleDeletePair = async (id: number) => {
+    const mapping = mappings.find((m) => m.id === id);
+    const label = mapping?.name || `pair #${id}`;
+    if (!confirm(`Remove "${label}" from mirror?\n\nThis stops sync for this pair. Remote Git repositories are not deleted.`)) {
+      return;
+    }
     try {
       await deleteMapping(id);
       await loadData();

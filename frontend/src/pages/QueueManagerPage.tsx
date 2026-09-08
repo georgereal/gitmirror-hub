@@ -14,6 +14,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { JobProgress, QueueStatus, RepoMapping, SyncJob, SyncStatus } from '../types';
+import { mergeProviderTraffic } from '../components/ProviderTrafficStrip';
 import {
   cancelJob,
   cancelQueuedJobs,
@@ -121,7 +122,20 @@ export const QueueManagerPage: React.FC = () => {
         setHistoryJobs((jobs) => {
           const job = jobs.find((j) => j.id === progress.jobId);
           if (!job || isLiveSyncStatus(job.status)) {
-            setProgressByJobId((prev) => ({ ...prev, [progress.jobId]: progress }));
+            setProgressByJobId((prev) => {
+              const existing = prev[progress.jobId];
+              const mergedTraffic = mergeProviderTraffic(
+                existing?.providerTraffic,
+                progress.providerTraffic
+              );
+              return {
+                ...prev,
+                [progress.jobId]: {
+                  ...progress,
+                  providerTraffic: mergedTraffic ?? progress.providerTraffic ?? existing?.providerTraffic,
+                },
+              };
+            });
           }
           return jobs;
         });

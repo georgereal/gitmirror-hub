@@ -100,24 +100,51 @@ public class PairDiffSnapshotService {
                 int inSync = result.inSyncBranchesCount;
                 int destOnly = result.destOnlyBranchesCount;
                 int pending = result.pendingBranchesCount;
+                // fillPairRefCounts can leave dest at 0 when loose-ref walks fail on large mirrors;
+                // never clobber a known-good dest count with that empty fill.
+                boolean destBranchFillTrusted = destBranches > 0 || inSync > 0 || destOnly > 0
+                        || (pending > 0 && destBranches > 0);
                 if (sourceBranches > 0 || destBranches > 0) {
-                    snapshot.setSourceBranchesCount(sourceBranches);
-                    snapshot.setDestBranchesCount(destBranches);
-                    snapshot.setInSyncBranchesCount(inSync);
-                    snapshot.setPendingBranchesCount(pending);
-                    snapshot.setDestOnlyBranchesCount(destOnly);
-                    snapshot.setTotalBranchesCount(Math.max(sourceBranches + destOnly, destBranches));
-                    if (pending > 0 || result.conflictIsolated) {
-                        snapshot.setOverallStatus("PENDING_SYNC");
-                    } else if (inSync > 0 || destOnly > 0) {
-                        snapshot.setOverallStatus("IN_SYNC");
+                    if (sourceBranches > 0) {
+                        snapshot.setSourceBranchesCount(sourceBranches);
+                    }
+                    if (destBranchFillTrusted) {
+                        snapshot.setDestBranchesCount(destBranches);
+                        snapshot.setInSyncBranchesCount(inSync);
+                        snapshot.setPendingBranchesCount(pending);
+                        snapshot.setDestOnlyBranchesCount(destOnly);
+                        snapshot.setTotalBranchesCount(Math.max(sourceBranches + destOnly, destBranches));
+                        if (pending > 0 || result.conflictIsolated) {
+                            snapshot.setOverallStatus("PENDING_SYNC");
+                        } else if (inSync > 0 || destOnly > 0) {
+                            snapshot.setOverallStatus("IN_SYNC");
+                        }
+                    } else if (snapshot.getDestBranchesCount() <= 0 && sourceBranches > 0
+                            && !result.conflictIsolated && pending == 0 && inSync == 0) {
+                        // Remirror reported no pending work but dest fill was empty — keep prior dest
+                        // or fall back to source until Refresh Diff re-inspects.
+                        if (snapshot.getDestBranchesCount() <= 0) {
+                            snapshot.setDestBranchesCount(sourceBranches);
+                            snapshot.setInSyncBranchesCount(sourceBranches);
+                            snapshot.setPendingBranchesCount(0);
+                            snapshot.setTotalBranchesCount(Math.max(snapshot.getTotalBranchesCount(), sourceBranches));
+                            snapshot.setOverallStatus("IN_SYNC");
+                        }
                     }
                 }
                 int sourceTags = result.sourceTagsCount > 0 ? result.sourceTagsCount : result.tagsCount;
                 int destTags = result.destTagsCount;
                 if (sourceTags > 0 || destTags > 0) {
-                    snapshot.setTagsSourceCount(sourceTags);
-                    snapshot.setTagsTargetCount(destTags);
+                    if (sourceTags > 0) {
+                        snapshot.setTagsSourceCount(sourceTags);
+                    }
+                    if (destTags > 0) {
+                        snapshot.setTagsTargetCount(destTags);
+                    } else if (snapshot.getTagsTargetCount() <= 0 && sourceTags > 0) {
+                        // Same object was already on dest ("nothing to push") or dest fill failed —
+                        // avoid showing 388 source / 0 dest on a SUCCESS remirror.
+                        snapshot.setTagsTargetCount(sourceTags);
+                    }
                 }
                 int lfsTotal = Math.max(result.lfsObjectsCount, result.lfsSyncedCount);
                 int lfsSynced = result.lfsSyncedCount > 0 ? result.lfsSyncedCount : 0;

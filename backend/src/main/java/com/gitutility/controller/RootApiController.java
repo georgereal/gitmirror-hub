@@ -28,9 +28,7 @@ public class RootApiController {
         endpoints.put("job_stats", "/api/v1/jobs/stats");
         endpoints.put("queue_status", "/api/v1/queue/status");
         endpoints.put("runtime_metrics", "/api/v1/runtime-metrics");
-        endpoints.put("runtime_metrics_cluster", "/api/v1/runtime-metrics/cluster");
         endpoints.put("scm_quotas", "/api/v1/scm-quotas");
-
         endpoints.put("simulation_state", "/api/v1/simulation/state");
         endpoints.put("github_webhook", "/api/v1/webhooks/github/{mappingId}");
         endpoints.put("websocket", "/ws");

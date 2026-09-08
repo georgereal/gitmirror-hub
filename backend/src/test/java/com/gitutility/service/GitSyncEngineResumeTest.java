@@ -158,6 +158,35 @@ class GitSyncEngineResumeTest {
     }
 
     @Test
+    void destTrackingTipsMatchAdvertisementWhenInSync(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("mirror.git").toFile();
+        try (Git git = Git.init().setBare(true).setDirectory(repoDir).call()) {
+            ObjectId commitId = insertEmptyCommit(git);
+            GitSyncEngine.applyPushedRefToDestTracking(git, "refs/heads/main", commitId);
+            Map<String, String> tracking = GitSyncEngine.collectDestTrackingTips(git);
+            Map<String, String> advertised = Map.of("refs/heads/main", ObjectId.toString(commitId));
+            assertFalse(GitSyncEngine.TipProbeResult.compare(tracking, advertised).differ());
+            advertised = Map.of("refs/heads/main", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+            assertTrue(GitSyncEngine.TipProbeResult.compare(tracking, advertised).differ());
+        }
+    }
+
+    private static ObjectId insertEmptyCommit(Git git) throws Exception {
+        org.eclipse.jgit.lib.Repository repo = git.getRepository();
+        org.eclipse.jgit.lib.ObjectInserter inserter = repo.newObjectInserter();
+        org.eclipse.jgit.lib.TreeFormatter tree = new org.eclipse.jgit.lib.TreeFormatter();
+        ObjectId treeId = inserter.insert(tree);
+        org.eclipse.jgit.lib.CommitBuilder commit = new org.eclipse.jgit.lib.CommitBuilder();
+        commit.setTreeId(treeId);
+        commit.setAuthor(new org.eclipse.jgit.lib.PersonIdent("t", "t@t"));
+        commit.setCommitter(commit.getAuthor());
+        commit.setMessage("empty");
+        ObjectId commitId = inserter.insert(commit);
+        inserter.flush();
+        return commitId;
+    }
+
+    @Test
     void warmMirrorFetchRefSpecsOmitPullHeads() {
         SyncEventMessage full = SyncEventMessage.builder().branch("*").build();
         var withPull = GitSyncEngine.sourceFetchRefSpecs(full, true);

@@ -48,7 +48,7 @@ public class QueueConsumerService {
     @Lazy
     private final QueueProducerService queueProducerService;
     private final ScmInstallationKeyResolver installationKeyResolver;
-
+    private final PairCatchupLedger pairCatchupLedger;
 
     @Value("${git-utility.throttle.max-concurrent-git-pushes:5}")
     private volatile int maxConcurrentPushes;
@@ -57,8 +57,6 @@ public class QueueConsumerService {
     private volatile int metadataSyncIntervalSeconds;
 
     private final Map<Long, ReentrantLock> repoLocks = new ConcurrentHashMap<>();
-    private final Map<Long, Instant> lastPrSyncTimes = new ConcurrentHashMap<>();
-    private final Map<Long, Instant> lastReleaseSyncTimes = new ConcurrentHashMap<>();
 
     private volatile Semaphore pushConcurrencyLimiter;
 
@@ -165,8 +163,6 @@ public class QueueConsumerService {
         job.setDurationMs(null);
         job.setCompletedAt(null);
         job.setAttemptCount(job.getAttemptCount() + 1);
-        job.setCancelRequested(false);
-        job.setPauseRequested(false);
         if (instanceIdentity != null) {
             job.setWorkerInstanceId(instanceIdentity.getInstanceId());
         }
@@ -245,8 +241,12 @@ public class QueueConsumerService {
             int prsSynced = 0;
             SyncPipelineState pipeline = result.pipeline;
             boolean pairMetadata = SyncLaneRouter.includePairMetadata(event);
+            var pairWatermarks = event.getMappingId() != null
+                    ? mappingRepository.findById(event.getMappingId()).orElse(null)
+                    : null;
             // Pair-wide PR/release REST sync only on full-mirror jobs (and dedicated UI actions).
-            if (!result.fastPathShortCircuited && pairMetadata && shouldSyncMetadata(event.getMappingId(), lastPrSyncTimes)
+            if (!result.fastPathShortCircuited && pairMetadata
+                    && shouldSyncMetadata(pairCatchupLedger.lastPrListCompletedAt(pairWatermarks))
                     && (pipeline == null || !pipeline.isStageSettled(SyncPipelineState.PR_METADATA))) {
                 if (pipeline != null) {
                     pipeline.markCurrent(SyncPipelineState.PR_METADATA);
@@ -270,7 +270,6 @@ public class QueueConsumerService {
                                     broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
                                 }
                             });
-                    lastPrSyncTimes.put(event.getMappingId(), Instant.now());
                     if (pipeline != null) {
                         pipeline.markDone(SyncPipelineState.PR_METADATA, prsSynced + " PR(s)");
                         broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
@@ -299,7 +298,8 @@ public class QueueConsumerService {
             }
 
             int releasesSynced = 0;
-            if (!result.fastPathShortCircuited && pairMetadata && shouldSyncMetadata(event.getMappingId(), lastReleaseSyncTimes)
+            if (!result.fastPathShortCircuited && pairMetadata
+                    && shouldSyncMetadata(pairCatchupLedger.lastReleaseSyncAt(pairWatermarks))
                     && (pipeline == null || !pipeline.isStageSettled(SyncPipelineState.RELEASES))) {
                 if (pipeline != null) {
                     pipeline.markCurrent(SyncPipelineState.RELEASES);
@@ -321,7 +321,7 @@ public class QueueConsumerService {
                                     broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
                                 }
                             });
-                    lastReleaseSyncTimes.put(event.getMappingId(), Instant.now());
+                    pairCatchupLedger.recordReleaseSyncCompleted(event.getMappingId());
                     if (pipeline != null) {
                         pipeline.markDone(SyncPipelineState.RELEASES, releasesSynced + " release(s)");
                         broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
@@ -381,6 +381,9 @@ public class QueueConsumerService {
             job.setBytesTransferred(result.bytesTransferred);
             job.setObjectsReceived(result.objectsReceived);
             job.setLfsBytes(result.lfsBytes);
+            job.setGitReadBytes(result.gitReadBytes);
+            job.setGitWriteBytes(result.gitWriteBytes);
+            job.setLfsSyncedCount(result.lfsSyncedCount);
             job.setSourceAccessMode(result.sourceAccessMode);
             job.setRejectedPushRefs(result.rejectedPushRefs);
             if (pipeline != null) {
@@ -446,7 +449,7 @@ public class QueueConsumerService {
 
             if (job.getStatus() == SyncStatus.SUCCESS) {
                 jobExecutionStateService.clearProgress(job.getId());
-                syncCheckpointService.clearCheckpoint(event.getMappingId());
+                pairCatchupLedger.recordGitSuccess(event.getMappingId(), result);
             }
 
         } catch (JobPausedException e) {
@@ -578,6 +581,9 @@ public class QueueConsumerService {
         job.setBytesTransferred(result.bytesTransferred);
         job.setObjectsReceived(result.objectsReceived);
         job.setLfsBytes(result.lfsBytes);
+        job.setGitReadBytes(result.gitReadBytes);
+        job.setGitWriteBytes(result.gitWriteBytes);
+        job.setLfsSyncedCount(result.lfsSyncedCount);
         job.setSourceAccessMode(result.sourceAccessMode);
         job.setRejectedPushRefs(result.rejectedPushRefs);
         if (result.pipeline != null) {
@@ -632,10 +638,10 @@ public class QueueConsumerService {
         ScmQuotaContext.bind(provider, install, repo);
     }
 
-    private boolean shouldSyncMetadata(Long mappingId, Map<Long, Instant> lastSyncMap) {
-        if (mappingId == null) return false;
-        Instant last = lastSyncMap.get(mappingId);
-        if (last == null) return true;
+    private boolean shouldSyncMetadata(Instant last) {
+        if (last == null) {
+            return true;
+        }
         return Duration.between(last, Instant.now()).getSeconds() >= metadataSyncIntervalSeconds;
     }
 
@@ -643,7 +649,7 @@ public class QueueConsumerService {
         if (webSocketNotificationService == null || jobId == null || pipeline == null) {
             return;
         }
-        Map<String, Object> traffic = providerRateMeter != null ? providerRateMeter.snapshotMap() : Map.of();
+        Map<String, Object> traffic = providerRateMeter != null ? providerRateMeter.snapshotMap() : null;
         webSocketNotificationService.notifyPipeline(
                 jobId,
                 mappingId,

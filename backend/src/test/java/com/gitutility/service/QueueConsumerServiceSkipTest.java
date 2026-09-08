@@ -44,7 +44,7 @@ class QueueConsumerServiceSkipTest {
     @Mock private InstanceIdentity instanceIdentity;
     @Mock private QueueProducerService queueProducerService;
     @Mock private ScmInstallationKeyResolver installationKeyResolver;
-
+    @Mock private PairCatchupLedger pairCatchupLedger;
 
     private QueueConsumerService consumer;
     private ConsumerRuntimeRegistry registry;
@@ -73,8 +73,8 @@ class QueueConsumerServiceSkipTest {
                 pairLeaseService,
                 instanceIdentity,
                 queueProducerService,
-                installationKeyResolver
-
+                installationKeyResolver,
+                pairCatchupLedger
         );
     }
 

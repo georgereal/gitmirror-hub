@@ -10,7 +10,6 @@ A Spring Boot 3 & React-based bidirectional GitHub repository mirroring utility 
 * Supports mirroring between **Repo A ↔ Repo B** across multiple SCM platforms (**GitHub Cloud**, **GitHub Enterprise Server (GHES)**, **Bitbucket Cloud**, **GitLab**, **Cursor Origin**, and **Azure DevOps / Generic Git remotes**).
 * **Automated Echo / Loop Filter**: When Repo A pushes to Repo B, the target platform fires an automated webhook for Repo B. The built-in deduplication ledger recognizes that the commit SHA was pushed by this mirror utility, silently skipping it as `SKIPPED (LOOP_DETECTED_SYSTEM_ECHO)` to avoid endless push cycles.
 * **Mutual Exclusion & Conflict Isolation**: Per-pair locking ensures sequential push serialization. If trunk branches diverge, the engine quarantines incoming commits onto `sync-conflict/<branch>-<timestamp>`, records a `sync_conflicts` row, and opens a destination PR. Pair policy can instead skip the trunk (`FAIL_JOB`) or force origin (`ORIGIN_WINS`). PR title/body edits use origin-owns compare-and-swap so replica edits are not clobbered.
-* **Multi-pod scale**: replicas run **many pairs in parallel**. A long Sync Repo stays on **one** worker (`ARCHITECTURE.md` §3.6.1). Rabbit/CloudAMQP is for webhooks and async drain, not sharding Git across pods.
 
 ### 2. Message Queue & DLQ Resilience (CloudAMQP / RabbitMQ)
 * **Async Webhook Ingestion**: Webhook endpoints validate HMAC-SHA256 signatures and respond with HTTP `202 Accepted` in <50ms.
@@ -38,7 +37,7 @@ A Spring Boot 3 & React-based bidirectional GitHub repository mirroring utility 
 
 ### Prerequisites
 * **Java 21+** (JDK 21 or JDK 23)
-* **Maven 3.8+**
+* **Gradle Wrapper** (no global Gradle install required; use `./gradlew` in `backend/`)
 * **Node.js 18+** & **npm**
 * **AMQP Broker**: Any free cloud broker like [CloudAMQP](https://www.cloudamqp.com/) (Free "Little Lemur" plan) or a local RabbitMQ instance (`brew install rabbitmq` or `docker run -d -p 5672:5672 -p 15672:15672 rabbitmq:3-management`).
 
@@ -64,7 +63,7 @@ cd backend
 export GIT_UTILITY_ENCRYPTION_KEY="$(openssl rand -hex 32)"
 # Optional for large public mirrors (avoid /tmp; raise Git HTTP timeout)
 # export GIT_WORKSPACE_DIR="$HOME/git-utility-mirrors"
-mvn spring-boot:run
+./gradlew bootRun
 ```
 * **REST API**: `http://localhost:8080/api/v1`
 * **H2 Database Console** (off by default): `export GIT_H2_CONSOLE_ENABLED=true` then open `http://localhost:8080/h2-console` (JDBC URL: `jdbc:h2:file:./data/gitutility`, User: `sa`, Password: empty)

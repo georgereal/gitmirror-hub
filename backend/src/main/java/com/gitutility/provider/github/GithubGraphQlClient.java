@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gitutility.model.dto.MirrorMetadataSnapshot;
 import com.gitutility.model.dto.PrListPage;
 import com.gitutility.model.dto.SyncDiffReport;
+import com.gitutility.service.ProviderRateMeter;
 import com.gitutility.service.ScmInstallationKeyResolver;
 import com.gitutility.service.ScmQuotaContext;
 import com.gitutility.service.ScmQuotaTracker;
@@ -30,6 +31,7 @@ public class GithubGraphQlClient {
     private final RestTemplate restTemplate;
     private final ScmQuotaTracker scmQuotaTracker;
     private final ScmInstallationKeyResolver installationKeyResolver;
+    private final ProviderRateMeter providerRateMeter;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public JsonNode execute(String graphqlUrl, String token, String query, Map<String, Object> variables) {
@@ -75,7 +77,7 @@ public class GithubGraphQlClient {
                                     ResponseEntity<String> response,
                                     JsonNode root,
                                     String repoFullName) {
-        if (scmQuotaTracker == null || response == null) {
+        if (response == null) {
             return;
         }
         try {
@@ -90,7 +92,7 @@ public class GithubGraphQlClient {
             }
             String install = ctx != null && ctx.installationKey() != null
                     ? ctx.installationKey()
-                    : installationKeyResolver.resolve(provider);
+                    : (installationKeyResolver != null ? installationKeyResolver.resolve(provider) : "default");
             String repo = repoFullName != null ? repoFullName
                     : (ctx != null ? ctx.repoFullName() : null);
 
@@ -111,7 +113,12 @@ public class GithubGraphQlClient {
                 }
             }
             boolean rateLimited = response.getStatusCode().value() == 429;
-            scmQuotaTracker.recordGraphqlQuota(provider, install, repo, remaining, limit, cost, rateLimited);
+            if (scmQuotaTracker != null) {
+                scmQuotaTracker.recordGraphqlQuota(provider, install, repo, remaining, limit, cost, rateLimited);
+            }
+            if (providerRateMeter != null) {
+                providerRateMeter.recordGraphqlPoints(cost);
+            }
         } catch (Exception e) {
             log.debug("GraphQL quota record notice: {}", e.getMessage());
         }
@@ -147,6 +154,29 @@ public class GithubGraphQlClient {
             variables.put("after", cursor);
         }
         JsonNode data = execute(graphqlUrl, token, GithubGraphQlQueries.OPEN_PULL_REQUESTS_PAGE, variables, repoFullName);
+        if (data == null) {
+            return null;
+        }
+        return GithubPullRequestGraphQl.parseOpenPullRequestsPage(data, repoFullName);
+    }
+
+    public PrListPage fetchClosedPullRequestsPage(String graphqlUrl,
+                                                 String token,
+                                                 String repoFullName,
+                                                 String cursor,
+                                                 int pageSize) {
+        String[] parts = splitRepoFullName(repoFullName);
+        if (parts == null) {
+            return PrListPage.empty();
+        }
+        Map<String, Object> variables = new HashMap<>();
+        variables.put("owner", parts[0]);
+        variables.put("name", parts[1]);
+        variables.put("first", Math.max(1, Math.min(pageSize, 100)));
+        if (cursor != null && !cursor.isBlank()) {
+            variables.put("after", cursor);
+        }
+        JsonNode data = execute(graphqlUrl, token, GithubGraphQlQueries.CLOSED_PULL_REQUESTS_PAGE, variables, repoFullName);
         if (data == null) {
             return null;
         }

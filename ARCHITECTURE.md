@@ -17,8 +17,6 @@
 4. **CI/CD Disaster Recovery Readiness**: In addition to Git commit trees and tags, the system mirrors PR refs (`refs/pull/*`), review decisions, and CI status checks so CI/CD pipelines can fail over without re-running long build matrices.
 5. **Agentic Churn Tolerance**: Short-lived agent/CI branches (`agents/…`, bots) must not exhaust the incremental webhook lane. Live auto-sync prioritizes durable refs (trunks, releases, pair `branchPattern`); Smart full sync tip-probes remaining churn for DR completeness. See §3.7.
 6. **Envelope Encryption & Secret Security**: Repository tokens and secrets are encrypted at rest using AES-256-GCM via `CryptoService` and JPA converter attributes.
-7. **Scale out by pairs, not by sharded Git jobs**: Fleet replicas run **many mappings in parallel**. A long **Sync Repo** / `GitSyncEngine.executeSync` stays on **one Hub pod** (in-JVM LFS/PR threads). See §3.6.1.
-
 
 ---
 
@@ -149,7 +147,7 @@ In bidirectional setups, simultaneous commits to trunk branches (`main`, `master
 * **Observability**: Job status is recorded as `CONFLICT_ISOLATED` with a detailed audit log trace and amber UI indicator.
 
 ### 3.4 Comprehensive Metadata Synchronization Subsystems
-* **Git LFS Binary Streaming**: `GitLfsSyncService` scans commit trees for `.gitattributes` and LFS pointers (`version https://git-lfs.github.com/spec/v1`), invoking the Git LFS Batch API (`/info/lfs/objects/batch`) to stream missing binary blobs directly from source to destination. Discovery walks run in parallel (`git-utility.git.lfs-discovery-threads`, default 4); transfers use a bounded worker pool (`git-utility.git.lfs-transfer-concurrency`, default 4) with batch size `git-utility.git.lfs-batch-size` (default 50). Completed OIDs persist on `repo_mappings.completed_lfs_oids` so resume skips already-transferred blobs.
+* **Git LFS Binary Streaming**: `GitLfsSyncService` scans commit trees for `.gitattributes` and LFS pointers (`version https://git-lfs.github.com/spec/v1`), invoking the Git LFS Batch API (`/info/lfs/objects/batch`) to stream missing binary blobs directly from source to destination. Discovery and transfer share **per-pod** bounded pools (`GIT_LFS_DISCOVERY_THREADS` / `GIT_LFS_TRANSFER_CONCURRENCY`, default 4). Discovery `invokeAll`s at most that many tree walks at a time; when a pool queue is full the submitter **waits for a free worker** instead of aborting. Transfer batches use `git-utility.git.lfs-batch-size` (default 50). Completed OIDs persist on `repo_mappings.completed_lfs_oids` so resume skips already-transferred blobs.
 * **Pull Requests & Code Reviews**: `PullRequestSyncService` runs on **full-mirror** jobs (`*`) and the dedicated Sync PRs action. Incremental branch jobs (webhook, Sync main, overwrite) do not bulk-replicate PRs. Real-time PR webhooks still create/update/close mapped same-repo PRs (ephemeral agent heads skipped per §3.7). Fork PRs **cache tip objects** for DR (`state=objects_cached`, optional hidden `refs/gitmirror/fork-pr/{n}`) and do **not** create dest `fork-pr-*` branches or GitHub PRs until `POST …/materialize-fork`. Open PR listing uses GitHub GraphQL when enabled. `RefOriginService` prevents reverse-sync of synthetic and bot heads.
 * **Releases & Binary Assets**: `ReleaseAndStatusSyncService` replicates GitHub Releases on full-mirror jobs and the dedicated Sync Releases action, not on single-branch Git jobs.
 * **CI Commit Statuses**: Replicates commit statuses (`POST /repos/{owner}/{repo}/statuses/{sha}`) across mirrors.
@@ -270,7 +268,7 @@ To enable granular verification of synchronization accuracy beyond simple branch
 * **CI/CD Commit Status Checks**: Queries SCM check runs (`GET /repos/{owner}/{repo}/commits/{ref}/check-runs`) to capture test suite conclusions, app names, start/completion times, and run links for instant operational disaster recovery verification.
 
 ### 3.11 Live Progress, Dual-Write Audit & Resumable Bootstrap Push
-* **Audit dual-write**: `GitSyncEngine.logAudit` writes every phase line to SLF4J first (`[job-{id}] …` on stdout), then to `sync_audit_logs`, then to `EnterpriseLoggingService`. The default `CONSOLE` sink is therefore visible in `mvn spring-boot:run` output, not only in the UI Logs drawer.
+* **Audit dual-write**: `GitSyncEngine.logAudit` writes every phase line to SLF4J first (`[job-{id}] …` on stdout), then to `sync_audit_logs`, then to `EnterpriseLoggingService`. The default `CONSOLE` sink is therefore visible in `./gradlew bootRun` output, not only in the UI Logs drawer.
 * **Live JGit progress**: `LiveGitProgressMonitor` attaches to source fetch and target push. Phase changes (`beginTask`) are INFO audit rows. `update()` ticks are DEBUG-only and are **not** persisted. Throttled (~400ms) ticks broadcast `JOB_PROGRESS` on `/topic/sync-events` (`jobId`, `operation`, `phase`, `current`, `total`, `percent`, `message`, `etaMs`, `elapsedMs`, `remoteRole`, `remoteLabel`, `pipeline`, `providerTraffic`). Copy names the remote (`Source fetch · github.com/org/repo`) and always says **objects**, not files. The Logs console overlays the last 0% phase line from these ticks.
 * **Destination write preflight**: Before any source fetch (and on resume-push), `ScmProviderFacade.testConnection(..., requiredAccess=WRITE)` must report Contents write. Fail the job immediately if the dest token/App cannot push. REST “can write” does not detect every GitHub ruleset or missing **Workflows** permission; those still surface as `REJECTED_*`.
 * **Destination ref rejects**: `OK` / `UP_TO_DATE` are the only statuses persisted on `completed_push_refs`. `REJECTED_*` is an ERROR with the remote message. On a full-mirror, the **first** destination reject (or dest 401/403 after a remint) **aborts remaining batches** so a vscode-scale pack is not re-sent 600+ times. Resume skips a head only when the destination already has that SHA (a poisoned ledger cannot hide a failed `main`).
@@ -396,12 +394,14 @@ To fulfill SOC2, ISO 27001, and enterprise security telemetry compliance, GitMir
 ```
 
 ### Key Capabilities:
-- **CONSOLE (default)**: `GitSyncEngine.logAudit` already dual-writes to SLF4J stdout; the CONSOLE sink does not re-emit (avoids duplicate lines). Maven / Docker logs show `[job-{id}]` phase messages at INFO.
+- **CONSOLE (default)**: `GitSyncEngine.logAudit` already dual-writes to SLF4J stdout; the CONSOLE sink does not re-emit (avoids duplicate lines). Gradle / Docker logs show `[job-{id}]` phase messages at INFO.
 - **Splunk HEC (HTTP Event Collector)**: Streams line-by-line structured JSON sync audits and error traces directly to Splunk indices with bearer token authentication.
 - **Logstash & Elasticsearch**: Streams audit records via HTTP JSON payloads for centralized kibana dashboarding.
 - **Syslog Forwarder**: Emits RFC 5424 formatted syslog packets via UDP socket connection.
 - **Dynamic Hot-Reloadable Log Levels**: Logback loggers can be reconfigured between `INFO`, `DEBUG`, `WARN`, and `ERROR` at runtime directly from the UI without service restarts.
 - **Test Probe Endpoint**: Operators can test sink reachability with instant latency and HTTP response reporting from the admin dashboard.
+
+**Job-attributable SCM usage vs shared quota:** Installation REST/GraphQL remaining is a token-wide health signal (Internals sparkline). Each `SyncJob` records its own REST calls, GraphQL calls/points, Git fetch/push batches, 429s on that job’s requests, and a sampled call-volume series. Internals **Usage by job** ranks overlapping runs so a rate-limit incident can be attributed without treating remaining quota as per-job spend.
 
 ---
 

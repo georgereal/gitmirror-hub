@@ -1,5 +1,6 @@
 package com.gitutility.controller;
 
+import com.gitutility.model.dto.JobUsageResponse;
 import com.gitutility.model.entity.SyncAuditLog;
 import com.gitutility.model.entity.SyncJob;
 import com.gitutility.model.enums.SyncStatus;
@@ -11,6 +12,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
@@ -36,6 +38,13 @@ public class SyncJobController {
     @GetMapping("/recent")
     public ResponseEntity<List<SyncJob>> getRecentJobs() {
         return ResponseEntity.ok(syncJobService.getRecentJobs());
+    }
+
+    @GetMapping("/usage")
+    public ResponseEntity<JobUsageResponse> getJobUsage(
+            @RequestParam(required = false) Instant since,
+            @RequestParam(defaultValue = "40") int limit) {
+        return ResponseEntity.ok(syncJobService.getJobUsage(since, limit));
     }
 
     @GetMapping("/{id}")

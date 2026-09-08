@@ -430,6 +430,23 @@ public class GitHubEnterpriseProviderService implements ScmProviderAdapter {
         return listOpenPullRequestsRestPage(host, repoFullName, cursor, pageSize, token);
     }
 
+    @Override
+    public PrListPage listRecentlyClosedPullRequestsPage(String repoFullName, String cursor, int pageSize) {
+        String host = getNormalizedHostUrl();
+        String token = getEffectiveGhesToken(null);
+        if (host == null || token == null || repoFullName == null) {
+            return PrListPage.empty();
+        }
+        if (graphqlEnabled && graphQlClient != null) {
+            PrListPage page = graphQlClient.fetchClosedPullRequestsPage(
+                    host + "/api/graphql", token, repoFullName, cursor, pageSize);
+            if (page != null) {
+                return page;
+            }
+        }
+        return PrListPage.empty();
+    }
+
     private PrListPage listOpenPullRequestsRestPage(String host,
                                                     String repoFullName,
                                                     String cursor,

@@ -8,20 +8,21 @@ This document provides a comprehensive navigation guide to the **GitMirror Hub**
 
 ```
 gitUtility/
-├── ARCHITECTURE.md                     # Master design (incl. §3.6.1 enterprise throughput / one-job-one-pod)
+├── ARCHITECTURE.md                     # Master system design & architecture specification
 ├── REPO_MAP.md                         # Codebase map and component index (this file)
 ├── INSTRUCTIONS.md                     # Operational guide, runbook, and failover instructions
 ├── INSTRUCTIONS-MULTI-POD.md           # Local multi-pod (2+ backend JVMs) runbook
+├── README.md                           # Quickstart summary
 ├── SECURITY.md                         # Localhost-only threat model & secret handling
 ├── LICENSE                             # MIT
 ├── env.pod-a.example                   # Template env for pod-a (copy → gitignored env.pod-a)
 ├── env.pod-b.example                   # Template env for pod-b (copy → gitignored env.pod-b)
-├── README.md                           # Quickstart summary
 ├── future-work/                        # Deferred backlog design plans (not shipped behavior)
 │   ├── README.md                       # Pending vs done index
 │   ├── cache-resume-worker-affinity.md # Resume, cache, affinity (partial)
 │   ├── pr-sync-parity.md               # Richer PR sync (shell shipped; A–E pending)
 │   ├── fanout-concurrency.md           # In-job fan-out (LFS/PR pools shipped)
+│   ├── kafka-mirroring-partitions.md   # Future broker partitioning sketch
 │   ├── scm-credential-vault-and-hub-hmac.md # Vault refs; Hub HMAC on consume (parked)
 │   └── done/                           # Fully shipped plans
 │       ├── README.md
@@ -39,13 +40,16 @@ gitUtility/
 │       └── index.ts                    # Edge router: WebCrypto HMAC validation & RabbitMQ HTTP publish
 │
 ├── backend/                            # Spring Boot 3.3.3 Backend Application (Java 21/23)
-│   ├── pom.xml                         # Maven project configuration (Web, JPA, AMQP, JGit, H2)
+│   ├── build.gradle.kts                # Gradle Kotlin DSL (Web, JPA, AMQP, JGit, H2)
+│   ├── settings.gradle.kts             # Gradle root project name
+│   ├── gradlew / gradlew.bat           # Gradle Wrapper scripts
+│   ├── gradle/wrapper/                 # Wrapper JAR + properties (Gradle 8.10.2)
 │   └── src/
 │       ├── main/
 │       │   ├── java/com/gitutility/
 │       │   │   ├── GitUtilityApplication.java   # Spring Boot entry point & seed data runner
 │       │   │   ├── config/                      # Infrastructure & Spring bean configurations
-│       │   │   │   ├── AsyncConfig.java         # Thread pool task executor configuration
+│       │   │   │   ├── AsyncConfig.java         # Thread pools; LFS/PR pools block when queue is full
 │       │   │   │   ├── CorsConfig.java          # Localhost-only CORS for the operator UI (override via GIT_CORS_*)
 │       │   │   │   ├── DatabaseSchemaMigrator.java # Automatic schema evolution & missing column migration on startup
 │       │   │   │   ├── ScmRestTemplateFactory.java # Shared RestTemplate + ProviderRateMeter interceptor
@@ -57,7 +61,7 @@ gitUtility/
 │       │   │   │   ├── GitHubAppController.java # Legacy god-row GitLab/Bitbucket/Origin config + GitHub shim
 │       │   │   │   ├── ScmCredentialController.java # GitHub/GHES credential list CRUD, picker search, webhook URLs
 │       │   │   │   ├── QueueController.java     # Queue stats, DLQ redrive, main/inbound/DLQ purge
-│       │   │   │   ├── RuntimeMetricsController.java # Micrometer snapshot for Internals UI (/api/v1/runtime-metrics)
+│       │   │   │   ├── RuntimeMetricsController.java # Micrometer snapshot + cluster heartbeats (/api/v1/runtime-metrics)
 │       │   │   │   ├── RepoMappingController.java# Repo mapping CRUD, manual sync, PRs/LFS/Releases sync & diff endpoints
 │       │   │   │   ├── SimulationController.java# Fault injection & synthetic webhook emitter
 │       │   │   │   ├── StorageController.java   # Local & NAS mirror disk quota & LRU eviction API
@@ -95,6 +99,7 @@ gitUtility/
 │       │   │   │   │   ├── GitHubRepoOption.java    # Multi-provider repository option with provider, namespace & permissions
 │       │   │   │   │   ├── InboundWebhookMessage.java
 │       │   │   │   │   ├── JobStageProgress.java    # Per-stage resume progress (PR/LFS cursors)
+│       │   │   │   │   ├── JobUsageResponse.java    # Ranked per-job REST/GraphQL/Git usage for Internals
 │       │   │   │   │   ├── MirrorMetadataSnapshot.java # GraphQL mirror snapshot DTO
 │       │   │   │   │   ├── PairDiffSnapshot.java  # Cached pair diff counts for repo detail
 │       │   │   │   │   ├── PermissionCheckReport.java
@@ -161,11 +166,6 @@ gitUtility/
 │       │   │       ├── GitLfsSyncService.java   # Parallel LFS pointer scan & batched blob streaming with checkpoint resume
 │       │   │       ├── GitSyncEngine.java       # JGit public-first fetch, dest WRITE preflight, resumable batched push, full-mirror FF/isolate, conflict PR open
 │       │   │       ├── HubMetrics.java          # Low-cardinality Micrometer gauges/timers for Internals UI
-│       │   │       ├── InstallApiUsageTracker.java # Process REST usage by GitHub App install / PAT key
-│       │   │       ├── InstanceIdentity.java    # Pod/JVM instance id (HOSTNAME / GIT_UTILITY_INSTANCE_ID)
-│       │   │       ├── InstanceHeartbeatService.java # Micrometer heartbeat writer + cluster Internals aggregate
-│       │   │       ├── PairLeaseService.java    # DB lease per mappingId for multi-pod safety
-│       │   │       ├── ClusterRuntimeService.java # Shared consumer pause / CB desired state
 │       │   │       ├── GitWireByteMeter.java    # JGit smart-HTTP byte counter for transfer metrics
 │       │   │       ├── JobExecutionStateService.java # Per-job pipeline cursor & stage progress for pause/resume
 │       │   │       ├── JobCancelledException.java / JobPausedException.java # Cooperative cancel/pause signals
@@ -184,6 +184,7 @@ gitUtility/
 │       │   │       ├── InboundWebhookConsumerService.java # Consumes edge messages from git.sync.inbound.queue
 │       │   │       ├── PullRequestSyncService.java# Pull Request, review comment, and issue comment sync
 │       │   │       ├── QueueConsumerService.java# Full + incremental @RabbitListener workers; skip-ACK cancelled jobs
+│       │   │       ├── PairLeaseService.java    # DB lease per mappingId for multi-pod safety
 │       │   │       ├── ConsumerRuntimeRegistry.java # In-process unacked slots (job, thread, lane)
 │       │   │       ├── QueueObservabilityService.java # Ready vs Unacked + listener thread snapshot
 │       │   │       ├── QueueProducerService.java# Routes full vs webhook jobs onto separate AMQP keys
@@ -226,8 +227,8 @@ gitUtility/
         ├── pages/                              # Isolated URL-routed page modules
         │   ├── RepositoriesPage.tsx            # Repository pairs dashboard & quick actions
         │   ├── RepoDetailPage.tsx              # Deep-dive view for specific repo pair (/repos/:id)
-        │   ├── ObservabilityPage.tsx           # Activity stream + cluster fleet strip (pods / install API usage)
-        │   ├── InternalsPage.tsx               # Cluster Micrometer (pods, threads, executors, install API) at /observability/internals
+        │   ├── ObservabilityPage.tsx           # Activity stream (STOMP JOB_UPDATE + JOB_PROGRESS), queue metrics & unmapped webhooks
+        │   ├── InternalsPage.tsx               # Process gauges, shared SCM quotas, usage-by-job ranking at /observability/internals
         │   ├── QueueManagerPage.tsx            # Job history, Ready vs Unacked consumer runtime, cancel, purge, DLQ redrive
         │   ├── SimulationPage.tsx              # Fault injection & chaos sandbox
         │   └── settings/                       # Dedicated Settings Subsystem
@@ -248,7 +249,6 @@ gitUtility/
         └── components/
             ├── Header.tsx                      # Top navigation bar & global link routing
             ├── BannerHero.tsx                  # Top banner with KPI summaries and quick actions
-            ├── ClusterFleetStrip.tsx           # Live/known pods, thread chips, install API fleet table
             ├── BranchComparisonTable.tsx       # Paginated branch ahead/behind table with search/filter
             ├── ConsumerRuntimePanel.tsx        # Per-lane Ready/Unacked consumer thread snapshot
             ├── DiffInspectionModal.tsx         # Async sync-diff inspection progress modal
@@ -260,7 +260,9 @@ gitUtility/
             ├── JobProgressBar.tsx              # Shared fetch/push object progress bar with elapsed/ETA
             ├── SyncPipelineStepper.tsx         # Outer sync recipe (done/current/failed/pending); skip-stage actions
             ├── SyncRunsHistoryModal.tsx        # Job run history with pause/resume/retry actions
-            ├── ProviderTrafficStrip.tsx        # Per-job REST vs Git-smart-HTTP usage on log details
+            ├── ProviderTrafficStrip.tsx        # Per-job REST/GraphQL/Git call totals + this-run volume chart
+            ├── ClusterFleetStrip.tsx           # Live/known pods, thread chips, install API fleet table
+            ├── JobExecutionSummary.tsx         # Run recap: stage timings, git/LFS bytes, artifact counts
             ├── ProviderSettingsView.tsx        # Legacy/alternate provider settings component
             ├── QueueControlPanel.tsx           # Consumer pause/resume & 1-click DLQ Redrive panel
             ├── SimulationLab.tsx               # Chaos sandbox: outage toggles & synthetic webhook form
@@ -288,7 +290,7 @@ gitUtility/
 | **Backend** | `GitSyncEngine` | Executes JGit bare repository operations with destination WRITE preflight, public-first source fetch, skip re-fetch when packs exist, destination credential refresh per push batch, resumable ref-batched push (`completed_push_refs` only for OK/UP_TO_DATE), abort remaining full-mirror batches on first `REJECTED_*`, dual-write audit, pack/LFS volume metrics, and conflict-isolated push (full-mirror and incremental). |
 | **Backend** | `SyncConflictService` | Persists split-brain / tag / PR-metadata conflicts and opens destination PRs from `sync-conflict/*` isolation branches. |
 | **Backend** | `LiveGitProgressMonitor` | Throttled JGit `ProgressMonitor` (~400ms). Phase changes are INFO audit rows; ticks are DEBUG-only and emit `JOB_PROGRESS` (ETA, source/destination labels, pipeline, provider traffic) over STOMP. |
-| **Backend** | `ProviderRateMeter` | ThreadLocal job-scoped REST interceptor plus Git smart HTTP counters. WARN audit on 429 or remaining &lt; 20%. |
+| **Backend** | `ProviderRateMeter` | ThreadLocal job-scoped REST vs GraphQL vs Git counters and a sampled call-volume series. WARN audit on REST 429 or remaining &lt; 20%. Remaining quota is installation-wide; job attribution uses call counts. |
 | **Backend** | `SyncPipelineState` | Outer mirror stages persisted on `sync_jobs.pipeline_json` and live on `JOB_PROGRESS`. |
 | **Backend** | `PublicReadProbe` | Shared anonymous HTTPS / `git ls-remote` probe used by all SCM adapters so public read is the primary Check Access path. |
 | **Backend** | `DedupLedgerService` | In-memory deduplication ledger tracking recent commits pushed by this utility to eliminate bidirectional webhook ping-pong loops. |
@@ -342,6 +344,7 @@ gitUtility/
 * `POST /api/v1/github-app/create-repo`: On-demand remote repository creation via provider adapter.
 * `GET /api/v1/unmapped-webhooks`: Discarded webhook audit log with 7-day retention.
 * `GET /api/v1/jobs`: Paginated job history (`status`, `mappingId`, `triggerType`, `lane=FULL|INCREMENTAL`).
+* `GET /api/v1/jobs/usage`: Rank jobs by attributable REST + GraphQL + Git call volume (`since`, `limit`) for Internals rate-limit triage.
 * `POST /api/v1/jobs/:id/pause` / `resume` / `skip-stage`: Cooperative job control for long-running mirrors.
 * `POST /api/v1/jobs/dispatch`: Manually dispatch a queued/resumable job after startup consumer pause.
 * `POST /api/v1/jobs/:id/cancel`: Cancel a queued or in-progress job (in-flight JGit abort via ProgressMonitor; AMQP ACK on pickup).
@@ -349,5 +352,4 @@ gitUtility/
 * `POST /api/v1/queue/purge`: Purge waiting full + incremental queue messages and mark remaining queued jobs cancelled.
 * `POST /api/v1/queue/inbound/purge`: Purge buffered inbound webhook queue.
 * `GET /api/v1/runtime-metrics`: Process Micrometer snapshot for Internals (JVM, executors, lanes, CB, job outcomes).
-* `GET /api/v1/runtime-metrics/cluster`: Aggregated sibling heartbeats — live/known pods, JVM threads, executors, fleet `apiUsageByInstall` by GitHub App install key.
 

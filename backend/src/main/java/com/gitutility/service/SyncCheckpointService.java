@@ -8,8 +8,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 @Service
@@ -87,7 +89,7 @@ public class SyncCheckpointService {
     }
 
     /**
-     * Clears resume checkpoint data (LFS/push ledgers) without wiping mirror display stats.
+     * Clears in-flight push resume ledger without wiping pair-durable LFS/PR watermarks.
      */
     public void clearResumeCheckpoint(Long mappingId) {
         if (mappingId == null) {
@@ -96,14 +98,72 @@ public class SyncCheckpointService {
         try {
             repoMappingRepository.findById(mappingId).ifPresent(mapping -> {
                 mapping.setSyncCheckpointStage(null);
-                mapping.setCompletedLfsOids(null);
-                mapping.setDiscoveredLfsOids(null);
                 mapping.setCompletedPushRefs(null);
                 repoMappingRepository.save(mapping);
                 log.info("Cleared resume checkpoint for mapping #{} ({})", mappingId, mapping.getName());
             });
         } catch (Exception e) {
             log.debug("Could not clear resume checkpoint: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Job finished successfully: drop in-flight push resume ledger, keep LFS/PR catch-up watermarks.
+     */
+    public void markCaughtUp(Long mappingId) {
+        if (mappingId == null) {
+            return;
+        }
+        try {
+            repoMappingRepository.findById(mappingId).ifPresent(mapping -> {
+                mapping.setCompletedPushRefs(null);
+                mapping.setSyncCheckpointStage(SyncCheckpointStage.GIT_SYNC_DONE.name());
+                repoMappingRepository.save(mapping);
+            });
+        } catch (Exception e) {
+            log.debug("Could not mark pair caught up for mapping #{}: {}", mappingId, e.getMessage());
+        }
+    }
+
+    public void persistLfsScannedTips(Long mappingId, Set<String> tipOids) {
+        if (mappingId == null || tipOids == null) {
+            return;
+        }
+        try {
+            repoMappingRepository.findById(mappingId).ifPresent(mapping -> {
+                mapping.setLfsScannedTipOids(serializeOidLines(tipOids));
+                repoMappingRepository.save(mapping);
+            });
+        } catch (Exception e) {
+            log.debug("Could not persist LFS scanned tips: {}", e.getMessage());
+        }
+    }
+
+    public Set<String> loadLfsScannedTips(RepoMapping mapping) {
+        return parseOidLines(mapping != null ? mapping.getLfsScannedTipOids() : null);
+    }
+
+    public void mergeDiscoveredLfs(Long mappingId, List<GitLfsSyncService.LfsObject> additional) {
+        if (mappingId == null || additional == null || additional.isEmpty()) {
+            return;
+        }
+        try {
+            repoMappingRepository.findById(mappingId).ifPresent(mapping -> {
+                Map<String, GitLfsSyncService.LfsObject> byOid = new LinkedHashMap<>();
+                for (GitLfsSyncService.LfsObject obj : parseLfsObjects(mapping.getDiscoveredLfsOids())) {
+                    byOid.put(obj.oid(), obj);
+                }
+                for (GitLfsSyncService.LfsObject obj : additional) {
+                    if (obj != null && obj.oid() != null) {
+                        byOid.put(obj.oid(), obj);
+                    }
+                }
+                mapping.setDiscoveredLfsOids(serializeLfsObjects(new ArrayList<>(byOid.values())));
+                mapping.setSyncCheckpointStage(SyncCheckpointStage.LFS_DISCOVERY_DONE.name());
+                repoMappingRepository.save(mapping);
+            });
+        } catch (Exception e) {
+            log.debug("Could not merge discovered LFS OIDs: {}", e.getMessage());
         }
     }
 
@@ -119,7 +179,13 @@ public class SyncCheckpointService {
                 mapping.setSyncCheckpointStage(null);
                 mapping.setCompletedLfsOids(null);
                 mapping.setDiscoveredLfsOids(null);
+                mapping.setLfsScannedTipOids(null);
                 mapping.setCompletedPushRefs(null);
+                mapping.setLastSourceTipFingerprint(null);
+                mapping.setLastDestTipFingerprint(null);
+                mapping.setLastPrListCompletedAt(null);
+                mapping.setLastReleaseSyncAt(null);
+                mapping.setForkPrMissJson(null);
                 mapping.setLastMirrorJobId(null);
                 mapping.setLastMirrorStatsAt(null);
                 mapping.setLastMirrorBranchesCount(null);
@@ -155,17 +221,30 @@ public class SyncCheckpointService {
         if (mappingId == null || oid == null || oid.isBlank()) {
             return;
         }
+        appendCompletedLfsOids(mappingId, Set.of(oid.trim()));
+    }
+
+    public void appendCompletedLfsOids(Long mappingId, java.util.Collection<String> oids) {
+        if (mappingId == null || oids == null || oids.isEmpty()) {
+            return;
+        }
         try {
             repoMappingRepository.findById(mappingId).ifPresent(mapping -> {
-                Set<String> oids = parseOidLines(mapping.getCompletedLfsOids());
-                if (oids.add(oid.trim())) {
-                    mapping.setCompletedLfsOids(serializeOidLines(oids));
+                Set<String> existing = parseOidLines(mapping.getCompletedLfsOids());
+                boolean changed = false;
+                for (String oid : oids) {
+                    if (oid != null && !oid.isBlank() && existing.add(oid.trim())) {
+                        changed = true;
+                    }
+                }
+                if (changed) {
+                    mapping.setCompletedLfsOids(serializeOidLines(existing));
                     mapping.setSyncCheckpointStage(SyncCheckpointStage.LFS_TRANSFER_PARTIAL.name());
                     repoMappingRepository.save(mapping);
                 }
             });
         } catch (Exception e) {
-            log.debug("Could not append completed LFS OID: {}", e.getMessage());
+            log.debug("Could not append completed LFS OIDs: {}", e.getMessage());
         }
     }
 
@@ -217,7 +296,7 @@ public class SyncCheckpointService {
         return sb.isEmpty() ? null : sb.toString();
     }
 
-    static Set<String> parseOidLines(String blob) {
+    public static Set<String> parseOidLines(String blob) {
         Set<String> oids = new LinkedHashSet<>();
         if (blob == null || blob.isBlank()) {
             return oids;
@@ -231,7 +310,7 @@ public class SyncCheckpointService {
         return oids;
     }
 
-    static String serializeOidLines(Set<String> oids) {
+    public static String serializeOidLines(Set<String> oids) {
         if (oids == null || oids.isEmpty()) {
             return null;
         }

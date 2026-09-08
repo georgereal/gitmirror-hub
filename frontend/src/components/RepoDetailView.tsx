@@ -1372,7 +1372,7 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
                 <Activity className="w-3.5 h-3.5 text-amber-600" />
                 <span>CI Checks</span>
                 <span className="text-[10px] bg-zinc-200 text-zinc-700 px-1.5 py-0.2 rounded-full font-mono">
-                  {diffReport?.ciCheckRuns?.length ?? 1}
+                  {diffReport?.ciCheckRuns?.length ?? 0}
                 </span>
               </button>
             </div>
@@ -1450,8 +1450,29 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
                       </div>
                     ))
                   ) : (
-                    <div className="py-12 text-center text-xs text-zinc-400">
-                      {tagSearchQuery ? 'No tags match the search query.' : 'No release tags or annotated Git notes discovered in bare repository.'}
+                    <div className="py-12 text-center text-xs text-zinc-400 space-y-2">
+                      {(diffReport?.tags?.sourceTagsCount ?? 0) > 0 || (diffReport?.tags?.targetTagsCount ?? 0) > 0 ? (
+                        <>
+                          <p className="font-medium text-zinc-600">
+                            {(diffReport?.tags?.sourceTagsCount ?? diffReport?.tags?.targetTagsCount ?? 0).toLocaleString()} tag refs known — list not loaded yet
+                          </p>
+                          <p className="text-[11px] text-zinc-400 max-w-md mx-auto">
+                            Counts come from the last sync snapshot. Run Refresh Diff to list every tag and note from the bare mirror.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={handleRefreshDiffClick}
+                            className="inline-flex items-center space-x-1.5 mt-2 px-3 py-1.5 bg-zinc-900 text-white rounded-lg text-xs font-medium"
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                            <span>Refresh Diff</span>
+                          </button>
+                        </>
+                      ) : tagSearchQuery ? (
+                        'No tags match the search query.'
+                      ) : (
+                        'No release tags or annotated Git notes discovered in bare repository.'
+                      )}
                     </div>
                   )}
                 </div>
@@ -1552,8 +1573,29 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
                       </div>
                     ))
                   ) : (
-                    <div className="py-12 text-center text-xs text-zinc-400">
-                      No releases published on the source repository. When you publish a release with tarballs or assets, GitMirror Hub replicates it automatically.
+                    <div className="py-12 text-center text-xs text-zinc-400 space-y-2">
+                      {(diffReport?.releases?.sourceReleasesCount ?? 0) > 0 ? (
+                        <>
+                          <p className="font-medium text-zinc-600">
+                            Release summary is known — item list needs Refresh Diff
+                          </p>
+                          <button
+                            type="button"
+                            onClick={handleRefreshDiffClick}
+                            className="inline-flex items-center space-x-1.5 mt-2 px-3 py-1.5 bg-zinc-900 text-white rounded-lg text-xs font-medium"
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                            <span>Refresh Diff</span>
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <p className="font-medium text-zinc-600">No GitHub Releases on source</p>
+                          <p className="text-[11px] text-zinc-400 max-w-md mx-auto">
+                            vscode ships version history as git tags (see Tags &amp; Notes). Published GitHub Releases with assets would appear here after Refresh Diff.
+                          </p>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1614,11 +1656,32 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
                       </div>
                     ))
                   ) : (
-                    <div className="py-12 text-center text-xs text-zinc-400 space-y-1">
-                      <p className="font-medium text-zinc-600">0 Git LFS pointer files detected</p>
-                      <p className="text-[11px] text-zinc-400 max-w-md mx-auto">
-                        This repository currently uses standard Git objects. When files are tracked via <code>git lfs track</code>, GitMirror Hub will automatically stream their binary blobs via the Git LFS Batch API.
-                      </p>
+                    <div className="py-12 text-center text-xs text-zinc-400 space-y-2">
+                      {(diffReport?.lfs?.totalDiscovered ?? 0) > 0 ? (
+                        <>
+                          <p className="font-medium text-zinc-600">
+                            {(diffReport?.lfs?.totalDiscovered ?? 0).toLocaleString()} LFS objects known from sync — list not loaded yet
+                          </p>
+                          <p className="text-[11px] text-zinc-400 max-w-md mx-auto">
+                            Summary counts come from the pair checkpoint. Restart the backend (or Refresh Diff) to list OIDs here.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={handleRefreshDiffClick}
+                            className="inline-flex items-center space-x-1.5 mt-2 px-3 py-1.5 bg-zinc-900 text-white rounded-lg text-xs font-medium"
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                            <span>Refresh Diff</span>
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <p className="font-medium text-zinc-600">0 Git LFS pointer files detected</p>
+                          <p className="text-[11px] text-zinc-400 max-w-md mx-auto">
+                            This repository currently uses standard Git objects. When files are tracked via <code>git lfs track</code>, GitMirror Hub will automatically stream their binary blobs via the Git LFS Batch API.
+                          </p>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1633,7 +1696,7 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
                 <div className="px-6 py-3.5 border-b border-zinc-100 flex items-center justify-between bg-zinc-50/50">
                   <h4 className="text-xs font-semibold text-zinc-900">Live CI/CD Commit Checks & Status Replication</h4>
                   <span className="text-[11px] text-zinc-400">
-                    {diffReport?.ciCheckRuns?.length ?? 1} Check(s) Inspected
+                    {diffReport?.ciCheckRuns?.length ?? 0} Check(s) Inspected
                   </span>
                 </div>
 
@@ -1693,22 +1756,23 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
                       </div>
                     ))
                   ) : (
-                    <div className="p-6 flex items-center justify-between">
-                      <div className="space-y-1">
-                        <div className="flex items-center space-x-2">
-                          <CheckCircle className="w-4 h-4 text-emerald-600" />
-                          <span className="text-xs font-semibold text-zinc-900">continuous-integration/gitmirror</span>
-                          <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full text-[10px] font-medium">
-                            success
-                          </span>
-                        </div>
-                        <p className="text-[11px] text-zinc-500 font-mono">
-                          Replicated automatically across both remotes upon webhook push events.
-                        </p>
-                      </div>
-                      <span className="text-[11px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded font-medium">
-                        Active Mirroring
-                      </span>
+                    <div className="py-12 text-center text-xs text-zinc-400 space-y-2">
+                      <p className="font-medium text-zinc-600">
+                        {diffReport?.metadataDeferred
+                          ? 'CI check runs load on Refresh Diff'
+                          : 'No commit check runs returned for trunk tips'}
+                      </p>
+                      <p className="text-[11px] text-zinc-400 max-w-md mx-auto">
+                        Page load stays SHA-only. Refresh Diff inspects GitHub check runs on the pair&apos;s trunk commits.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handleRefreshDiffClick}
+                        className="inline-flex items-center space-x-1.5 mt-2 px-3 py-1.5 bg-zinc-900 text-white rounded-lg text-xs font-medium"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                        <span>Refresh Diff</span>
+                      </button>
                     </div>
                   )}
                 </div>

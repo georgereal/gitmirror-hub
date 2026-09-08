@@ -4,11 +4,14 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gitutility.model.entity.RepoMapping;
 import lombok.extern.slf4j.Slf4j;
+import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
-import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.ObjectLoader;
+import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.revwalk.ObjectWalk;
 import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.revwalk.RevObject;
 import org.eclipse.jgit.revwalk.RevTree;
 import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.treewalk.TreeWalk;
@@ -39,6 +42,7 @@ public class GitLfsSyncService {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final GitHubAuthService gitHubAuthService;
     private final SyncCheckpointService syncCheckpointService;
+    private final ProviderRateMeter providerRateMeter;
     private final ExecutorService lfsDiscoveryExecutor;
     private final ExecutorService lfsTransferExecutor;
 
@@ -52,11 +56,13 @@ public class GitLfsSyncService {
             RestTemplate restTemplate,
             GitHubAuthService gitHubAuthService,
             SyncCheckpointService syncCheckpointService,
+            ProviderRateMeter providerRateMeter,
             @Qualifier("lfsDiscoveryExecutor") ExecutorService lfsDiscoveryExecutor,
             @Qualifier("lfsTransferExecutor") ExecutorService lfsTransferExecutor) {
         this.restTemplate = restTemplate;
         this.gitHubAuthService = gitHubAuthService;
         this.syncCheckpointService = syncCheckpointService;
+        this.providerRateMeter = providerRateMeter;
         this.lfsDiscoveryExecutor = lfsDiscoveryExecutor;
         this.lfsTransferExecutor = lfsTransferExecutor;
     }
@@ -82,10 +88,16 @@ public class GitLfsSyncService {
             boolean inSync,
             List<LfsObject> objects,
             String mode,
-            boolean destVerified) {
+            boolean destVerified,
+            List<LfsObject> presentOnDest) {
         public LfsInspectResult(int totalDiscovered, int syncedCount, int pendingCount, boolean inSync,
                                 List<LfsObject> objects, String mode) {
-            this(totalDiscovered, syncedCount, pendingCount, inSync, objects, mode, true);
+            this(totalDiscovered, syncedCount, pendingCount, inSync, objects, mode, true, List.of());
+        }
+
+        public LfsInspectResult(int totalDiscovered, int syncedCount, int pendingCount, boolean inSync,
+                                List<LfsObject> objects, String mode, boolean destVerified) {
+            this(totalDiscovered, syncedCount, pendingCount, inSync, objects, mode, destVerified, List.of());
         }
     }
 
@@ -100,21 +112,32 @@ public class GitLfsSyncService {
                                                     Repository repository,
                                                     LfsProgressListener listener) {
         if (repository == null) {
-            return new LfsInspectResult(0, 0, 0, true, List.of(), "no-repo", false);
+            return new LfsInspectResult(0, 0, 0, true, List.of(), "no-repo", false, List.of());
         }
 
         if (listener != null) {
-            listener.onProgress("discover", "scanning every unique branch tip for LFS pointers");
+            listener.onProgress("discover", "scanning unique objects (rev-list) for LFS pointers");
         }
-        List<LfsObject> discovered = discoverLfsPointers(repository, listener, null, null);
-        String mode = "full-tips";
-
-        if (mapping != null && mapping.getId() != null && discovered != null && !discovered.isEmpty()) {
+        Set<String> previousTips = mapping != null
+                ? syncCheckpointService.loadLfsScannedTips(mapping)
+                : Set.of();
+        LfsDiscoveryResult discovery = discoverLfsPointers(repository, previousTips, listener, null, null);
+        List<LfsObject> discovered = discovery.objects();
+        if (previousTips != null && !previousTips.isEmpty() && mapping != null) {
+            if (discovered != null && !discovered.isEmpty()) {
+                syncCheckpointService.mergeDiscoveredLfs(mapping.getId(), discovered);
+            }
+            discovered = syncCheckpointService.loadDiscoveredLfs(mapping);
+        } else if (mapping != null && mapping.getId() != null && discovered != null && !discovered.isEmpty()) {
             syncCheckpointService.persistDiscoveredLfs(mapping.getId(), discovered);
         }
+        if (discovery.scannedTipOids() != null && !discovery.scannedTipOids().isEmpty() && mapping != null) {
+            syncCheckpointService.persistLfsScannedTips(mapping.getId(), discovery.scannedTipOids());
+        }
+        String mode = previousTips.isEmpty() ? "object-walk" : "object-walk-delta";
 
         if (discovered == null || discovered.isEmpty()) {
-            return new LfsInspectResult(0, 0, 0, true, List.of(), mode + "+none", true);
+            return new LfsInspectResult(0, 0, 0, true, List.of(), mode + "+none", true, List.of());
         }
 
         if (listener != null) {
@@ -127,10 +150,12 @@ public class GitLfsSyncService {
                 targetRepoUrl, discovered, listener, targetToken);
         Set<String> presentOnTarget = verify.presentOids();
 
+        List<LfsObject> present = new ArrayList<>();
         int synced = 0;
         for (LfsObject obj : discovered) {
             if (presentOnTarget.contains(obj.oid())) {
                 synced++;
+                present.add(obj);
             }
         }
 
@@ -149,7 +174,8 @@ public class GitLfsSyncService {
                 total == 0 || (verify.apiSucceeded() && synced >= total),
                 discovered,
                 mode,
-                verify.apiSucceeded());
+                verify.apiSucceeded(),
+                present);
     }
 
     public List<LfsObject> discoverLfsPointersForBranchTips(Repository repository,
@@ -195,15 +221,15 @@ public class GitLfsSyncService {
         return new ArrayList<>(lfsObjects);
     }
 
-    record BatchVerifyResult(Set<String> presentOids, boolean apiSucceeded) {}
+    public record BatchVerifyResult(Set<String> presentOids, boolean apiSucceeded) {}
 
-    Set<String> verifyObjectsPresentOnTarget(String targetRepoUrl,
+    public Set<String> verifyObjectsPresentOnTarget(String targetRepoUrl,
                                              List<LfsObject> objects,
                                              LfsProgressListener listener) {
         return verifyObjectsPresentOnTarget(targetRepoUrl, objects, listener, null).presentOids();
     }
 
-    BatchVerifyResult verifyObjectsPresentOnTarget(String targetRepoUrl,
+    public BatchVerifyResult verifyObjectsPresentOnTarget(String targetRepoUrl,
                                                    List<LfsObject> objects,
                                                    LfsProgressListener listener,
                                                    String targetTokenOverride) {
@@ -255,6 +281,24 @@ public class GitLfsSyncService {
         return present;
     }
 
+    public record LfsDiscoveryResult(List<LfsObject> objects, Set<String> scannedTipOids) {
+        public static LfsDiscoveryResult empty() {
+            return new LfsDiscoveryResult(List.of(), Set.of());
+        }
+    }
+
+    public boolean currentTipsMatch(Repository repository, Set<String> previouslyScannedTips) {
+        if (repository == null || previouslyScannedTips == null || previouslyScannedTips.isEmpty()) {
+            return false;
+        }
+        try {
+            Set<String> current = PairCatchupLedger.tipOidHexes(BareRepoHousekeeping.uniqueBranchTipObjectIds(repository));
+            return current.equals(previouslyScannedTips);
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
     public List<LfsObject> discoverLfsPointers(Repository repository) {
         return discoverLfsPointers(repository, null, null, null);
     }
@@ -263,6 +307,14 @@ public class GitLfsSyncService {
                                                LfsProgressListener listener,
                                                BooleanSupplier cancelCheck,
                                                Long jobId) {
+        return discoverLfsPointers(repository, Set.of(), listener, cancelCheck, jobId).objects();
+    }
+
+    public LfsDiscoveryResult discoverLfsPointers(Repository repository,
+                                                  Set<String> previouslyScannedTips,
+                                                  LfsProgressListener listener,
+                                                  BooleanSupplier cancelCheck,
+                                                  Long jobId) {
         Set<ObjectId> uniqueCommits;
         try {
             uniqueCommits = BareRepoHousekeeping.uniqueBranchTipObjectIds(repository);
@@ -270,67 +322,143 @@ public class GitLfsSyncService {
             log.warn("Could not list branch tips for LFS discovery: {}", e.getMessage());
             uniqueCommits = Set.of();
         }
+        Set<String> scannedHex = PairCatchupLedger.tipOidHexes(uniqueCommits);
         if (uniqueCommits.isEmpty()) {
-            return List.of();
+            return new LfsDiscoveryResult(List.of(), scannedHex);
         }
 
-        int totalCommits = uniqueCommits.size();
-        Set<LfsObject> lfsObjects = ConcurrentHashMap.newKeySet();
-        AtomicInteger doneCommits = new AtomicInteger(0);
-        AtomicLong lastEmitMs = new AtomicLong(0);
-        int threads = Math.max(1, Math.min(lfsDiscoveryThreads, totalCommits));
+        Set<ObjectId> uninteresting = new LinkedHashSet<>();
+        if (previouslyScannedTips != null) {
+            for (String hex : previouslyScannedTips) {
+                if (hex == null || hex.isBlank()) {
+                    continue;
+                }
+                try {
+                    uninteresting.add(ObjectId.fromString(hex.trim()));
+                } catch (Exception ignored) {
+                    // skip malformed
+                }
+            }
+        }
 
         if (listener != null) {
-            listener.onProgress("discover",
-                    "scanning " + totalCommits + " unique commit tip(s) with "
-                            + threads + " parallel worker(s)");
+            if (uninteresting.isEmpty()) {
+                listener.onProgress("discover",
+                        "scanning unique objects (rev-list) from " + uniqueCommits.size() + " tip(s)");
+            } else {
+                listener.onProgress("discover",
+                        "scanning new objects (rev-list --not " + uninteresting.size() + " prior tip(s))");
+            }
         }
 
-        List<Future<?>> futures = new ArrayList<>();
-        try {
-            for (ObjectId commitId : uniqueCommits) {
-                futures.add(lfsDiscoveryExecutor.submit(() -> {
-                    throwIfCancelled(cancelCheck, jobId);
-                    lfsObjects.addAll(scanCommitForLfsPointers(repository, commitId));
-                    int completed = doneCommits.incrementAndGet();
-                    long now = System.currentTimeMillis();
-                    if (listener != null && (completed == 1 || completed == totalCommits
-                            || now - lastEmitMs.get() >= 2000)) {
-                        lastEmitMs.set(now);
-                        listener.onProgress("discover",
-                                "scanning commits · " + completed + "/" + totalCommits);
-                    }
-                }));
+        Set<LfsObject> found = scanReachableBlobsForLfsPointers(
+                repository, uniqueCommits, uninteresting, listener, cancelCheck, jobId);
+        if (listener != null) {
+            listener.onProgress("discover", "discovered " + found.size() + " pointer(s)");
+        }
+        return new LfsDiscoveryResult(new ArrayList<>(found), scannedHex);
+    }
+
+    private Set<LfsObject> scanReachableBlobsForLfsPointers(Repository repository,
+                                                            Set<ObjectId> startTips,
+                                                            Set<ObjectId> uninterestingTips,
+                                                            LfsProgressListener listener,
+                                                            BooleanSupplier cancelCheck,
+                                                            Long jobId) {
+        Set<LfsObject> found = new LinkedHashSet<>();
+        if (repository == null || startTips == null || startTips.isEmpty()) {
+            return found;
+        }
+        AtomicInteger blobs = new AtomicInteger(0);
+        AtomicLong lastEmitMs = new AtomicLong(0);
+        try (ObjectWalk walk = new ObjectWalk(repository)) {
+            for (ObjectId tip : startTips) {
+                throwIfCancelled(cancelCheck, jobId);
+                try {
+                    walk.markStart(walk.parseAny(tip));
+                } catch (Exception e) {
+                    log.debug("LFS ObjectWalk skip start {}: {}", tip.name(), e.getMessage());
+                }
             }
-            for (Future<?> future : futures) {
-                future.get();
+            if (uninterestingTips != null) {
+                for (ObjectId old : uninterestingTips) {
+                    try {
+                        walk.markUninteresting(walk.parseAny(old));
+                    } catch (Exception ignored) {
+                        // tip may have been gc'd
+                    }
+                }
+            }
+            while (walk.next() != null) {
+                throwIfCancelled(cancelCheck, jobId);
+            }
+            RevObject obj;
+            while ((obj = walk.nextObject()) != null) {
+                throwIfCancelled(cancelCheck, jobId);
+                if (obj.getType() != Constants.OBJ_BLOB) {
+                    continue;
+                }
+                int seen = blobs.incrementAndGet();
+                long now = System.currentTimeMillis();
+                if (listener != null && (seen == 1 || now - lastEmitMs.get() >= 2000)) {
+                    lastEmitMs.set(now);
+                    listener.onProgress("discover", "scanning unique objects · " + seen + " blob(s)");
+                }
+                LfsObject pointer = pointerFromBlob(repository, obj);
+                if (pointer != null) {
+                    found.add(pointer);
+                }
             }
         } catch (JobCancelledException e) {
             throw e;
         } catch (JobPausedException e) {
             throw e;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.warn("LFS pointer discovery interrupted");
-        } catch (ExecutionException e) {
-            Throwable cause = e.getCause();
-            if (cause instanceof JobCancelledException jce) {
-                throw jce;
-            }
-            if (cause instanceof JobPausedException jpe) {
-                throw jpe;
-            }
-            log.warn("LFS pointer discovery failed: {}", cause != null ? cause.getMessage() : e.getMessage());
-        } finally {
-            for (Future<?> future : futures) {
-                future.cancel(true);
-            }
+        } catch (Exception e) {
+            log.warn("LFS ObjectWalk discovery notice: {}", e.getMessage());
         }
+        return found;
+    }
 
-        if (listener != null) {
-            listener.onProgress("discover", "discovered " + lfsObjects.size() + " pointer(s)");
+    static LfsObject pointerFromBlob(Repository repository, RevObject blob) {
+        if (repository == null || blob == null) {
+            return null;
         }
-        return new ArrayList<>(lfsObjects);
+        try {
+            ObjectLoader loader = repository.open(blob);
+            long size = loader.getSize();
+            if (size < 42 || size >= 500) {
+                return null;
+            }
+            byte[] bytes = loader.getBytes();
+            if (!looksLikeLfsPointer(bytes)) {
+                return null;
+            }
+            String content = new String(bytes, StandardCharsets.UTF_8);
+            Matcher matcher = LFS_POINTER_PATTERN.matcher(content);
+            if (matcher.find()) {
+                return new LfsObject(matcher.group(1), Long.parseLong(matcher.group(2)));
+            }
+        } catch (Exception e) {
+            log.debug("LFS blob inspect {}: {}", blob.name(), e.getMessage());
+        }
+        return null;
+    }
+
+    static boolean looksLikeLfsPointer(byte[] bytes) {
+        if (bytes == null || bytes.length < 42) {
+            return false;
+        }
+        String prefix = "version https://git-lfs.github.com/spec/v1";
+        byte[] expected = prefix.getBytes(StandardCharsets.US_ASCII);
+        if (bytes.length < expected.length) {
+            return false;
+        }
+        for (int i = 0; i < expected.length; i++) {
+            if (bytes[i] != expected[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     static Set<LfsObject> scanCommitForLfsPointers(Repository repository, ObjectId commitId) {
@@ -481,7 +609,18 @@ public class GitLfsSyncService {
                                 String downloadUrl = downloadAction.path("href").asText();
                                 String uploadUrl = uploadAction.path("href").asText();
                                 transfers.add(new TransferTask(oid,
-                                        () -> transferLfsBlob(downloadUrl, downloadAction, uploadUrl, uploadAction)));
+                                        () -> {
+                                            if (providerRateMeter != null && jobId != null) {
+                                                providerRateMeter.attachJob(jobId);
+                                            }
+                                            try {
+                                                return transferLfsBlob(downloadUrl, downloadAction, uploadUrl, uploadAction);
+                                            } finally {
+                                                if (providerRateMeter != null) {
+                                                    providerRateMeter.detachJob();
+                                                }
+                                            }
+                                        }));
                             } else {
                                 failedCount++;
                             }
@@ -579,6 +718,10 @@ public class GitLfsSyncService {
             return refName.substring("refs/heads/".length());
         }
         return refName;
+    }
+
+    static int discoveryChunkSize(int configuredThreads, int totalCommits) {
+        return Math.max(1, Math.min(configuredThreads, totalCommits));
     }
 
     static <T> List<List<T>> partition(List<T> items, int batchSize) {

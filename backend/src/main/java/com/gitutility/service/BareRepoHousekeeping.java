@@ -209,8 +209,13 @@ public final class BareRepoHousekeeping {
             }
         }
         Path looseDir = repository.getDirectory().toPath().resolve(prefix);
-        if (Files.isDirectory(looseDir)) {
-            collectLooseRefSuffixes(looseDir, "", names);
+        try {
+            if (Files.isDirectory(looseDir)) {
+                collectLooseRefSuffixes(looseDir, "", names);
+            }
+        } catch (Exception e) {
+            // Packed-refs already counted; loose walks on large mirrors (esp. external disks) can fail.
+            log.debug("Loose ref scan incomplete for {}: {}", prefix, e.getMessage());
         }
         return names;
     }
