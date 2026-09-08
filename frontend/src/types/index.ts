@@ -323,6 +323,12 @@ export interface RuntimeMetrics {
     heapUsedPercent: number;
     nonHeapUsedBytes: number;
   };
+  threads?: {
+    live: number;
+    daemon: number;
+    peak: number;
+    started: number;
+  };
   circuitBreaker: {
     state: string;
     consecutiveFailures: number;

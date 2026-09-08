@@ -5,7 +5,6 @@ import {
   cancelJob,
   getJob,
   getJobUsage,
-  getRuntimeMetrics,
   getScmQuotas,
   pauseJob,
   retryJob,
@@ -101,6 +100,157 @@ const ActionCell: React.FC<{ meta: ActionMeta; meterId?: string }> = ({ meta, me
     </p>
   </div>
 );
+
+const InstanceDetail: React.FC<{ metrics: RuntimeMetrics }> = ({ metrics }) => {
+  const cbOpen = metrics.circuitBreaker?.state === 'OPEN';
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+        <div className="rounded-lg border border-zinc-200 bg-zinc-50/50 p-3">
+          <p className="text-[11px] uppercase tracking-wide text-zinc-400 font-medium">Heap</p>
+          <p className="text-xl font-semibold text-zinc-900 mt-1 tabular-nums">
+            {metrics.jvm?.heapUsedPercent?.toFixed(1) ?? '—'}%
+          </p>
+          <p className="text-xs text-zinc-500 mt-1">
+            {formatBytes(metrics.jvm?.heapUsedBytes ?? 0)} / {formatBytes(metrics.jvm?.heapMaxBytes ?? 0)}
+          </p>
+        </div>
+        <div className="rounded-lg border border-zinc-200 bg-zinc-50/50 p-3">
+          <p className="text-[11px] uppercase tracking-wide text-zinc-400 font-medium">JVM threads</p>
+          <p className="text-xl font-semibold text-zinc-900 mt-1 tabular-nums">
+            {metrics.threads?.live ?? '—'}
+          </p>
+          <p className="text-xs text-zinc-500 mt-1">
+            daemon {metrics.threads?.daemon ?? '—'} · peak {metrics.threads?.peak ?? '—'}
+          </p>
+        </div>
+        <div className={`rounded-lg border p-3 ${cbOpen ? 'border-red-300 bg-red-50' : 'border-zinc-200 bg-zinc-50/50'}`}>
+          <p className="text-[11px] uppercase tracking-wide text-zinc-400 font-medium">Circuit breaker</p>
+          <p className={`text-xl font-semibold mt-1 ${cbOpen ? 'text-red-700' : 'text-zinc-900'}`}>
+            {metrics.circuitBreaker?.state ?? '—'}
+          </p>
+          <p className="text-xs text-zinc-500 mt-1">
+            {metrics.circuitBreaker?.consecutiveFailures ?? 0} consecutive failure(s)
+          </p>
+        </div>
+        <div className="rounded-lg border border-zinc-200 bg-zinc-50/50 p-3">
+          <p className="text-[11px] uppercase tracking-wide text-zinc-400 font-medium">Consumers</p>
+          <p className="text-xl font-semibold text-zinc-900 mt-1">
+            {metrics.consumerPaused ? 'Paused' : 'Running'}
+          </p>
+        </div>
+        <div className="rounded-lg border border-zinc-200 bg-zinc-50/50 p-3">
+          <p className="text-[11px] uppercase tracking-wide text-zinc-400 font-medium">Actions cancels</p>
+          <p className="text-xl font-semibold text-zinc-900 mt-1 tabular-nums">
+            {Math.round(metrics.actionsCancelsTotal ?? 0)}
+          </p>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto rounded-lg border border-zinc-200">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-[11px] uppercase tracking-wide text-zinc-400 border-b border-zinc-100 bg-zinc-50/80">
+              <th className="px-3 py-2 font-medium">Executor action</th>
+              <th className="px-3 py-2 font-medium">Active</th>
+              <th className="px-3 py-2 font-medium">Queued</th>
+              <th className="px-3 py-2 font-medium">Pool</th>
+              <th className="px-3 py-2 font-medium">Completed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[...(metrics.executors ?? [])]
+              .sort((a, b) => poolMeta(a.name).sort - poolMeta(b.name).sort)
+              .map((ex) => (
+                <tr key={ex.name} className="border-b border-zinc-50 last:border-0 align-top">
+                  <td className="px-3 py-2"><ActionCell meta={poolMeta(ex.name)} meterId={ex.name} /></td>
+                  <td className="px-3 py-2 tabular-nums">{Math.round(ex.active)}</td>
+                  <td className={`px-3 py-2 tabular-nums ${ex.queued > 0 ? 'text-amber-700 font-medium' : ''}`}>
+                    {Math.round(ex.queued)}
+                  </td>
+                  <td className="px-3 py-2 tabular-nums">
+                    {Math.round(ex.poolSize)}
+                    {ex.maxPoolSize != null ? ` / ${Math.round(ex.maxPoolSize)}` : ''}
+                  </td>
+                  <td className="px-3 py-2 tabular-nums">{Math.round(ex.completed)}</td>
+                </tr>
+              ))}
+            {(metrics.executors ?? []).length === 0 && (
+              <tr>
+                <td colSpan={5} className="px-3 py-4 text-center text-zinc-500">No executor meters yet on this pod.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="overflow-x-auto rounded-lg border border-zinc-200">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-[11px] uppercase tracking-wide text-zinc-400 border-b border-zinc-100 bg-zinc-50/80">
+              <th className="px-3 py-2 font-medium">Lane action</th>
+              <th className="px-3 py-2 font-medium">Unacked</th>
+              <th className="px-3 py-2 font-medium">Consumers</th>
+              <th className="px-3 py-2 font-medium">Listener</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[...(metrics.lanes ?? [])]
+              .sort((a, b) => laneMeta(a.lane).sort - laneMeta(b.lane).sort)
+              .map((lane) => (
+                <tr key={lane.lane} className="border-b border-zinc-50 last:border-0 align-top">
+                  <td className="px-3 py-2"><ActionCell meta={laneMeta(lane.lane)} meterId={lane.lane} /></td>
+                  <td className="px-3 py-2 tabular-nums">{lane.unacked}</td>
+                  <td className="px-3 py-2 tabular-nums">
+                    {lane.activeConsumers} / {lane.configuredConsumers}
+                  </td>
+                  <td className="px-3 py-2">
+                    <span className={`text-xs font-medium ${lane.running ? 'text-emerald-700' : 'text-amber-700'}`}>
+                      {lane.running ? 'Running' : 'Stopped'}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+      </div>
+
+      {(metrics.jobOutcomes ?? []).length > 0 && (
+        <div className="overflow-x-auto rounded-lg border border-zinc-200">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-[11px] uppercase tracking-wide text-zinc-400 border-b border-zinc-100 bg-zinc-50/80">
+                <th className="px-3 py-2 font-medium">Job outcomes (this pod)</th>
+                <th className="px-3 py-2 font-medium">Status</th>
+                <th className="px-3 py-2 font-medium">Count</th>
+                <th className="px-3 py-2 font-medium">Mean ms</th>
+              </tr>
+            </thead>
+            <tbody>
+              {metrics.jobOutcomes.map((row) => (
+                <tr key={`${row.lane}-${row.status}`} className="border-b border-zinc-50 last:border-0">
+                  <td className="px-3 py-2 font-mono text-xs">{row.lane}</td>
+                  <td className="px-3 py-2">{row.status}</td>
+                  <td className="px-3 py-2 tabular-nums">{Math.round(row.count)}</td>
+                  <td className="px-3 py-2 tabular-nums">
+                    {row.meanDurationMs != null ? row.meanDurationMs.toFixed(1) : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {metrics.circuitBreaker?.lastProbeMessage && (
+        <p className="text-xs text-zinc-500">
+          Last CB probe: {metrics.circuitBreaker.lastProbeSuccess ? 'ok' : 'fail'} —{' '}
+          {metrics.circuitBreaker.lastProbeMessage}
+        </p>
+      )}
+    </div>
+  );
+};
 
 type QuotaSeriesPoint = NonNullable<ScmQuotas['installations'][number]['series']>[number];
 
@@ -311,45 +461,57 @@ const InstallQuotaCard: React.FC<{
 };
 
 export const InternalsPage: React.FC = () => {
-  const { cluster, refresh: refreshCluster } = useClusterRuntimeMetrics(3000);
-  const [metrics, setMetrics] = useState<RuntimeMetrics | null>(null);
+  const { cluster, error: clusterError, loading: clusterLoading, refresh: refreshCluster } =
+    useClusterRuntimeMetrics(3000);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [quotas, setQuotas] = useState<ScmQuotas | null>(null);
   const [jobUsage, setJobUsage] = useState<JobUsageResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [quotaError, setQuotaError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [expandedQuotaKey, setExpandedQuotaKey] = useState<string | null>(null);
   const [selectedJob, setSelectedJob] = useState<SyncJob | null>(null);
 
-  const load = async () => {
+  const loadQuotasAndUsage = async () => {
     setLoading(true);
     try {
-      const [runtime, scm, usage] = await Promise.all([
-        getRuntimeMetrics(),
+      const [scm, usage] = await Promise.all([
         getScmQuotas(),
         getJobUsage(6, 40).catch(() => null),
       ]);
-      setMetrics(runtime);
       setQuotas(scm);
       setJobUsage(usage);
-      setError(null);
+      setQuotaError(null);
     } catch (e) {
-      console.error('Failed to load runtime metrics:', e);
-      setError('Could not load runtime metrics');
+      console.error('Failed to load SCM quotas / job usage:', e);
+      setQuotaError('Could not load SCM quotas');
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    load();
-    const timer = setInterval(load, 3000);
+    if (!cluster) return;
+    setSelectedId((prev) => {
+      if (prev && cluster.instances.some((i) => i.instanceId === prev)) return prev;
+      const live = cluster.instances.find((i) => !i.stale) ?? cluster.instances[0];
+      return live?.instanceId ?? null;
+    });
+  }, [cluster]);
+
+  useEffect(() => {
+    void loadQuotasAndUsage();
+    const timer = setInterval(() => void loadQuotasAndUsage(), 3000);
     return () => clearInterval(timer);
   }, []);
 
-  const cbOpen = metrics?.circuitBreaker?.state === 'OPEN';
+  const selected = cluster?.instances.find((i) => i.instanceId === selectedId) ?? null;
+  const totals = cluster?.totals;
+  const error = clusterError || quotaError;
+  const busy = loading || clusterLoading;
+
   const onRefresh = () => {
     refreshCluster();
-    void load();
+    void loadQuotasAndUsage();
   };
 
   return (
@@ -361,17 +523,17 @@ export const InternalsPage: React.FC = () => {
             Internals
           </h1>
           <p className="text-sm text-zinc-500 mt-1 max-w-2xl">
-            Cluster heartbeats across Hub pods, plus this process&apos;s executor pools, Rabbit lanes,
-            circuit breaker, SCM quotas, and attributable API usage by job.
+            Cluster heartbeats across Hub pods — pick a pod for heap, lanes, and executors — plus SCM
+            quotas and attributable API usage by job from the API you&apos;re connected to.
           </p>
         </div>
         <button
           type="button"
           onClick={onRefresh}
-          disabled={loading}
+          disabled={busy}
           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
         >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+          <RefreshCw className={`w-3.5 h-3.5 ${busy ? 'animate-spin' : ''}`} />
           Refresh
         </button>
       </div>
@@ -385,46 +547,103 @@ export const InternalsPage: React.FC = () => {
 
       <ClusterFleetStrip cluster={cluster} showInstallUsage />
 
-      {!metrics ? (
-        <p className="text-sm text-zinc-500">{loading ? 'Loading…' : 'No metrics yet.'}</p>
+      {!cluster ? (
+        <p className="text-sm text-zinc-500">{busy ? 'Loading…' : 'No cluster metrics yet.'}</p>
       ) : (
         <>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <div className="rounded-xl border border-zinc-200 bg-white p-4">
-              <p className="text-[11px] uppercase tracking-wide text-zinc-400 font-medium">Heap</p>
-              <p className="text-2xl font-semibold text-zinc-900 mt-1 tabular-nums">
-                {metrics.jvm.heapUsedPercent.toFixed(1)}%
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="rounded-xl border border-zinc-200 bg-white p-3">
+              <p className="text-[11px] uppercase tracking-wide text-zinc-400 font-medium">Pods</p>
+              <p className="text-xl font-semibold text-zinc-900 mt-1 tabular-nums">
+                {cluster.liveInstanceCount}/{cluster.instanceCount}
               </p>
-              <p className="text-xs text-zinc-500 mt-1">
-                {formatBytes(metrics.jvm.heapUsedBytes)} / {formatBytes(metrics.jvm.heapMaxBytes)}
+              <p className="text-xs text-zinc-500">live / known</p>
+            </div>
+            <div className="rounded-xl border border-zinc-200 bg-white p-3">
+              <p className="text-[11px] uppercase tracking-wide text-zinc-400 font-medium">Threads live</p>
+              <p className="text-xl font-semibold text-zinc-900 mt-1 tabular-nums">
+                {totals?.threadsLive ?? 0}
               </p>
             </div>
-            <div className={`rounded-xl border p-4 ${cbOpen ? 'border-red-300 bg-red-50' : 'border-zinc-200 bg-white'}`}>
-              <p className="text-[11px] uppercase tracking-wide text-zinc-400 font-medium">Circuit breaker</p>
-              <p className={`text-2xl font-semibold mt-1 ${cbOpen ? 'text-red-700' : 'text-zinc-900'}`}>
-                {metrics.circuitBreaker.state}
-              </p>
-              <p className="text-xs text-zinc-500 mt-1">
-                {metrics.circuitBreaker.consecutiveFailures} consecutive failure(s)
+            <div className="rounded-xl border border-zinc-200 bg-white p-3">
+              <p className="text-[11px] uppercase tracking-wide text-zinc-400 font-medium">Exec active</p>
+              <p className="text-xl font-semibold text-zinc-900 mt-1 tabular-nums">
+                {Math.round(totals?.executorActive ?? 0)}
               </p>
             </div>
-            <div className="rounded-xl border border-zinc-200 bg-white p-4">
-              <p className="text-[11px] uppercase tracking-wide text-zinc-400 font-medium">Consumers</p>
-              <p className="text-2xl font-semibold text-zinc-900 mt-1">
-                {metrics.consumerPaused ? 'Paused' : 'Running'}
-              </p>
-              <p className="text-xs text-zinc-500 mt-1">
-                Captured {new Date(metrics.capturedAt).toLocaleTimeString()}
+            <div className="rounded-xl border border-zinc-200 bg-white p-3">
+              <p className="text-[11px] uppercase tracking-wide text-zinc-400 font-medium">Exec queued</p>
+              <p className={`text-xl font-semibold mt-1 tabular-nums ${(totals?.executorQueued ?? 0) > 0 ? 'text-amber-700' : 'text-zinc-900'}`}>
+                {Math.round(totals?.executorQueued ?? 0)}
               </p>
             </div>
-            <div className="rounded-xl border border-zinc-200 bg-white p-4">
-              <p className="text-[11px] uppercase tracking-wide text-zinc-400 font-medium">Actions cancels</p>
-              <p className="text-2xl font-semibold text-zinc-900 mt-1 tabular-nums">
-                {Math.round(metrics.actionsCancelsTotal)}
+            <div className="rounded-xl border border-zinc-200 bg-white p-3">
+              <p className="text-[11px] uppercase tracking-wide text-zinc-400 font-medium">Lane unacked</p>
+              <p className="text-xl font-semibold text-zinc-900 mt-1 tabular-nums">
+                {totals?.laneUnacked ?? 0}
               </p>
-              <p className="text-xs text-zinc-500 mt-1">Mirror-triggered workflow runs cancelled</p>
+            </div>
+            <div className="rounded-xl border border-zinc-200 bg-white p-3">
+              <p className="text-[11px] uppercase tracking-wide text-zinc-400 font-medium">CB open</p>
+              <p className={`text-xl font-semibold mt-1 tabular-nums ${(totals?.openCircuitInstances ?? 0) > 0 ? 'text-red-700' : 'text-zinc-900'}`}>
+                {totals?.openCircuitInstances ?? 0}
+              </p>
             </div>
           </div>
+
+          <section className="rounded-xl border border-zinc-200 bg-white overflow-hidden">
+            <div className="px-4 py-3 border-b border-zinc-100 flex items-center gap-2">
+              <Layers className="w-4 h-4 text-zinc-500" />
+              <h2 className="text-sm font-semibold text-zinc-900">Hub instances</h2>
+            </div>
+            <div className="flex flex-wrap gap-2 p-3 border-b border-zinc-100">
+              {cluster.instances.length === 0 ? (
+                <p className="text-sm text-zinc-500 px-1">No heartbeats yet — wait a few seconds after startup.</p>
+              ) : (
+                cluster.instances.map((inst) => (
+                  <button
+                    key={inst.instanceId}
+                    type="button"
+                    onClick={() => setSelectedId(inst.instanceId)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                      selectedId === inst.instanceId
+                        ? 'bg-zinc-900 text-white border-zinc-900'
+                        : 'bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50'
+                    }`}
+                  >
+                    <span className="font-mono">{inst.instanceId}</span>
+                    {!inst.stale && inst.metrics?.threads != null && (
+                      <span className="ml-2 opacity-80">{inst.metrics.threads.live} thr</span>
+                    )}
+                    {inst.stale && <span className="ml-2 text-amber-600">stale</span>}
+                  </button>
+                ))
+              )}
+            </div>
+            <div className="p-4">
+              {!selected ? (
+                <p className="text-sm text-zinc-500">Select a pod to inspect.</p>
+              ) : selected.stale ? (
+                <div className="flex items-center gap-2 text-sm text-amber-800">
+                  <AlertTriangle className="w-4 h-4" />
+                  Heartbeat stale
+                  {selected.updatedAt ? ` (last ${new Date(selected.updatedAt).toLocaleTimeString()})` : ''}.
+                  Pod may be down or partitioned.
+                </div>
+              ) : selected.metrics ? (
+                <>
+                  <div className="flex items-center gap-2 mb-3 text-xs text-zinc-500">
+                    <Activity className="w-3.5 h-3.5" />
+                    <span className="font-mono text-zinc-700">{selected.instanceId}</span>
+                    <span>· captured {selected.updatedAt ? new Date(selected.updatedAt).toLocaleTimeString() : '—'}</span>
+                  </div>
+                  <InstanceDetail metrics={selected.metrics} />
+                </>
+              ) : (
+                <p className="text-sm text-zinc-500">No payload for this instance.</p>
+              )}
+            </div>
+          </section>
 
           <section className="space-y-3">
             <div className="flex flex-col gap-0.5 px-0.5">
@@ -433,9 +652,9 @@ export const InternalsPage: React.FC = () => {
                 <h2 className="text-sm font-semibold text-zinc-900">SCM quotas (App / token)</h2>
               </div>
               <p className="text-xs text-zinc-500 pl-6 max-w-2xl">
-                One card per installation. Remaining quota is shared across every job (and other clients)
-                using that token. Sparkline tracks REST remaining; expand for external-usage delta.
-                To see which job spent the budget, use Usage by job below.
+                One card per installation (from the API pod you&apos;re connected to). Remaining quota is shared
+                across every job using that token. Sparkline tracks REST remaining; expand for external-usage
+                delta. To see which job spent the budget, use Usage by job below.
               </p>
             </div>
             {!quotas || quotas.installations.length === 0 ? (
@@ -466,9 +685,8 @@ export const InternalsPage: React.FC = () => {
                 <h2 className="text-sm font-semibold text-zinc-900">Usage by job</h2>
               </div>
               <p className="text-xs text-zinc-500 pl-6 max-w-3xl">
-                Ranked by this process&apos;s attributable REST + GraphQL + LFS + Git calls in the last 6 hours
-                (plus in-progress jobs). When remaining quota drops or a 429 fires, this table is how you
-                tell which run burned the budget. Click a row for the job&apos;s own call-volume graph.
+                Ranked by this API process&apos;s attributable REST + GraphQL + LFS + Git calls in the last 6 hours
+                (plus in-progress jobs). Click a row for the job&apos;s own call-volume graph.
               </p>
             </div>
             <div className="overflow-x-auto">
@@ -551,7 +769,7 @@ export const InternalsPage: React.FC = () => {
                 <h2 className="text-sm font-semibold text-zinc-900">Hottest repos (Git / GraphQL)</h2>
               </div>
               <p className="text-xs text-zinc-500 pl-6">
-                Per-repo traffic under the installs above — Git smart-HTTP plus GraphQL fan-out for this process.
+                Per-repo traffic under the installs above — Git smart-HTTP plus GraphQL fan-out for this API process.
               </p>
             </div>
             <div className="overflow-x-auto">
@@ -599,158 +817,6 @@ export const InternalsPage: React.FC = () => {
               </table>
             </div>
           </section>
-
-          <section className="rounded-xl border border-zinc-200 bg-white overflow-hidden">
-            <div className="px-4 py-3 border-b border-zinc-100 flex flex-col gap-0.5">
-              <div className="flex items-center gap-2">
-                <Activity className="w-4 h-4 text-zinc-500" />
-                <h2 className="text-sm font-semibold text-zinc-900">Executor pools by action</h2>
-              </div>
-              <p className="text-xs text-zinc-500 pl-6">
-                Dedicated thread pools for LFS and PR fan-out. Git branch sync uses Rabbit lane consumers below,
-                not these pools.
-              </p>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-[11px] uppercase tracking-wide text-zinc-400 border-b border-zinc-100">
-                    <th className="px-4 py-2 font-medium">Action</th>
-                    <th className="px-4 py-2 font-medium">Active</th>
-                    <th className="px-4 py-2 font-medium">Queued</th>
-                    <th className="px-4 py-2 font-medium">Pool size</th>
-                    <th className="px-4 py-2 font-medium">Completed</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {metrics.executors.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="px-4 py-6 text-zinc-500 text-center">
-                        No executor meters yet — run a sync job that touches LFS or PRs to warm pools.
-                      </td>
-                    </tr>
-                  ) : (
-                    [...metrics.executors]
-                      .sort((a, b) => poolMeta(a.name).sort - poolMeta(b.name).sort)
-                      .map((ex) => (
-                        <tr key={ex.name} className="border-b border-zinc-50 last:border-0 align-top">
-                          <td className="px-4 py-2.5">
-                            <ActionCell meta={poolMeta(ex.name)} meterId={ex.name} />
-                          </td>
-                          <td className="px-4 py-2.5 tabular-nums text-zinc-700">{Math.round(ex.active)}</td>
-                          <td className={`px-4 py-2.5 tabular-nums ${ex.queued > 0 ? 'text-amber-700 font-medium' : 'text-zinc-700'}`}>
-                            {Math.round(ex.queued)}
-                          </td>
-                          <td className="px-4 py-2.5 tabular-nums text-zinc-700">
-                            {Math.round(ex.poolSize)}
-                            {ex.maxPoolSize != null ? ` / ${Math.round(ex.maxPoolSize)}` : ''}
-                          </td>
-                          <td className="px-4 py-2.5 tabular-nums text-zinc-700">{Math.round(ex.completed)}</td>
-                        </tr>
-                      ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          <section className="rounded-xl border border-zinc-200 bg-white overflow-hidden">
-            <div className="px-4 py-3 border-b border-zinc-100 flex flex-col gap-0.5">
-              <div className="flex items-center gap-2">
-                <Layers className="w-4 h-4 text-zinc-500" />
-                <h2 className="text-sm font-semibold text-zinc-900">Rabbit lanes by action</h2>
-              </div>
-              <p className="text-xs text-zinc-500 pl-6">
-                AMQP consumer threads that run Git sync jobs. Push fan-in is also capped by System Engine
-                max concurrent pushes.
-              </p>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-[11px] uppercase tracking-wide text-zinc-400 border-b border-zinc-100">
-                    <th className="px-4 py-2 font-medium">Action</th>
-                    <th className="px-4 py-2 font-medium">Unacked slots</th>
-                    <th className="px-4 py-2 font-medium">Consumers</th>
-                    <th className="px-4 py-2 font-medium">Listener</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {[...metrics.lanes]
-                    .sort((a, b) => laneMeta(a.lane).sort - laneMeta(b.lane).sort)
-                    .map((lane) => (
-                      <tr key={lane.lane} className="border-b border-zinc-50 last:border-0 align-top">
-                        <td className="px-4 py-2.5">
-                          <ActionCell meta={laneMeta(lane.lane)} meterId={lane.lane} />
-                        </td>
-                        <td className={`px-4 py-2.5 tabular-nums ${lane.unacked > 0 ? 'text-zinc-900 font-medium' : 'text-zinc-700'}`}>
-                          {lane.unacked}
-                        </td>
-                        <td className="px-4 py-2.5 tabular-nums text-zinc-700">
-                          {lane.activeConsumers} / {lane.configuredConsumers}
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <span className={`text-xs font-medium ${lane.running ? 'text-emerald-700' : 'text-amber-700'}`}>
-                            {lane.running ? 'Running' : 'Stopped'}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          <section className="rounded-xl border border-zinc-200 bg-white overflow-hidden">
-            <div className="px-4 py-3 border-b border-zinc-100">
-              <h2 className="text-sm font-semibold text-zinc-900">Job outcomes (process lifetime)</h2>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-[11px] uppercase tracking-wide text-zinc-400 border-b border-zinc-100">
-                    <th className="px-4 py-2 font-medium">Lane / action</th>
-                    <th className="px-4 py-2 font-medium">Status</th>
-                    <th className="px-4 py-2 font-medium">Count</th>
-                    <th className="px-4 py-2 font-medium">Mean duration</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {metrics.jobOutcomes.length === 0 ? (
-                    <tr>
-                      <td colSpan={4} className="px-4 py-6 text-zinc-500 text-center">
-                        No completed jobs recorded in this JVM yet.
-                      </td>
-                    </tr>
-                  ) : (
-                    metrics.jobOutcomes.map((row) => {
-                      const meta = laneMeta(row.lane);
-                      return (
-                        <tr key={`${row.lane}-${row.status}`} className="border-b border-zinc-50 last:border-0">
-                          <td className="px-4 py-2.5">
-                            <span className="font-medium text-zinc-800">{meta.action}</span>
-                            <span className="text-xs text-zinc-400 ml-2 font-mono">{row.lane}</span>
-                          </td>
-                          <td className="px-4 py-2.5 font-medium text-zinc-800">{row.status}</td>
-                          <td className="px-4 py-2.5 tabular-nums text-zinc-700">{Math.round(row.count)}</td>
-                          <td className="px-4 py-2.5 tabular-nums text-zinc-700">
-                            {row.meanDurationMs != null ? `${row.meanDurationMs.toFixed(0)} ms` : '—'}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          {metrics.circuitBreaker.lastProbeMessage && (
-            <p className="text-xs text-zinc-500">
-              Last CB probe: {metrics.circuitBreaker.lastProbeSuccess ? 'ok' : 'fail'} —{' '}
-              {metrics.circuitBreaker.lastProbeMessage}
-            </p>
-          )}
         </>
       )}
 

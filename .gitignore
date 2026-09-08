@@ -22,7 +22,9 @@ env
 env.pod-a
 env.pod-b
 env.pod-*
+env.pod.*
 !env.pod-*.example
+!env.pod.*.example
 additionalinstructions_gitignore
 .env
 .env.local
