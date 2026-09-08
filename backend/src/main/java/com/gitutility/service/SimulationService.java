@@ -1,5 +1,7 @@
 package com.gitutility.service;
 
+import com.gitutility.messaging.SyncEventBus;
+import com.gitutility.messaging.none.NoneSyncEventBus;
 import com.gitutility.model.dto.SimulationConfigRequest;
 import com.gitutility.model.dto.SyntheticWebhookRequest;
 import com.gitutility.model.entity.RepoMapping;
@@ -13,6 +15,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.core.MessageListenerContainer;
 import org.springframework.amqp.rabbit.listener.RabbitListenerEndpointRegistry;
 import org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
@@ -29,10 +32,11 @@ import java.util.concurrent.atomic.AtomicLong;
 @Slf4j
 public class SimulationService {
 
-    private final RabbitListenerEndpointRegistry listenerRegistry;
+    private final ObjectProvider<RabbitListenerEndpointRegistry> listenerRegistry;
     private final RepoMappingRepository mappingRepository;
     private final SyncJobRepository syncJobRepository;
     private final WebSocketNotificationService webSocketNotificationService;
+    private final SyncEventBus syncEventBus;
 
     @Lazy
     private final QueueProducerService queueProducerService;
@@ -68,6 +72,9 @@ public class SimulationService {
     }
 
     public boolean isListenerRunning() {
+        if (listenerRegistry.getIfAvailable() == null) {
+            return !consumerPaused.get();
+        }
         boolean found = false;
         for (String listenerId : SyncLaneRouter.EXECUTION_LISTENER_IDS) {
             MessageListenerContainer container = listenerContainer(listenerId);
@@ -83,15 +90,24 @@ public class SimulationService {
     }
 
     public boolean isFullListenerRunning() {
+        if (listenerRegistry.getIfAvailable() == null) {
+            return !consumerPaused.get();
+        }
         return isNamedListenerRunning(SyncLaneRouter.FULL_CONSUMER_ID)
                 || isNamedListenerRunning(SyncLaneRouter.LEGACY_CONSUMER_ID);
     }
 
     public boolean isIncrementalListenerRunning() {
+        if (listenerRegistry.getIfAvailable() == null) {
+            return !consumerPaused.get();
+        }
         return isNamedListenerRunning(SyncLaneRouter.INCREMENTAL_CONSUMER_ID);
     }
 
     public boolean isInboundListenerRunning() {
+        if (listenerRegistry.getIfAvailable() == null) {
+            return false;
+        }
         return isNamedListenerRunning(SyncLaneRouter.INBOUND_CONSUMER_ID);
     }
 
@@ -101,7 +117,16 @@ public class SimulationService {
             container = listenerContainer(SyncLaneRouter.LEGACY_CONSUMER_ID);
         }
         if (container == null) {
-            return new ListenerHealth(false, false, 0, defaultConcurrency, defaultMaxConcurrency);
+            boolean running = listenerRegistry.getIfAvailable() == null
+                    && !consumerPaused.get()
+                    && !SyncLaneRouter.INBOUND_CONSUMER_ID.equals(listenerId);
+            return new ListenerHealth(
+                    listenerRegistry.getIfAvailable() == null,
+                    running,
+                    running ? 1 : 0,
+                    defaultConcurrency,
+                    defaultMaxConcurrency
+            );
         }
         int active = container.isRunning() ? 1 : 0;
         if (container instanceof SimpleMessageListenerContainer simple) {
@@ -125,8 +150,12 @@ public class SimulationService {
     }
 
     private MessageListenerContainer listenerContainer(String listenerId) {
+        RabbitListenerEndpointRegistry registry = listenerRegistry.getIfAvailable();
+        if (registry == null) {
+            return null;
+        }
         try {
-            return listenerRegistry.getListenerContainer(listenerId);
+            return registry.getListenerContainer(listenerId);
         } catch (Exception e) {
             log.debug("Listener container '{}' state check: {}", listenerId, e.getMessage());
             return null;
@@ -134,15 +163,15 @@ public class SimulationService {
     }
 
     /**
-     * Pause the RabbitMQ queue consumer listener.
-     * New webhook messages will accumulate in the queue without being processed.
+     * Pause execution consumers. With Rabbit, stops AMQP listeners so messages buffer.
+     * With {@code none} messaging, new work is deferred in memory until resume.
      */
     public boolean pauseConsumer() {
         return pauseConsumerLocal();
     }
 
     /**
-     * Resume the RabbitMQ queue consumer listener to drain the queued message backlog.
+     * Resume execution consumers to drain the backlog (broker or in-memory).
      */
     public boolean resumeConsumer() {
         return resumeConsumerLocal();
@@ -156,7 +185,7 @@ public class SimulationService {
                 container.stop();
             }
         });
-        log.info("Paused Git Sync RabbitMQ execution listeners");
+        log.info("Paused Git Sync execution consumers");
         broadcastSimulationState();
         return true;
     }
@@ -170,12 +199,16 @@ public class SimulationService {
                 container.start();
             }
         });
-        log.info("Resumed Git Sync RabbitMQ execution listeners");
+        syncEventBus.onConsumersResumed();
+        log.info("Resumed Git Sync execution consumers");
         broadcastSimulationState();
         return true;
     }
 
     private void forEachExecutionListener(java.util.function.Consumer<MessageListenerContainer> action) {
+        if (listenerRegistry.getIfAvailable() == null) {
+            return;
+        }
         for (String listenerId : SyncLaneRouter.EXECUTION_LISTENER_IDS) {
             MessageListenerContainer container = listenerContainer(listenerId);
             if (container == null) {
@@ -235,6 +268,10 @@ public class SimulationService {
         state.put("simulateSourceDown", simulateSourceDown.get());
         state.put("simulateRateLimit", simulateRateLimit.get());
         state.put("artificialDelayMs", artificialDelayMs.get());
+        if (syncEventBus instanceof NoneSyncEventBus bus) {
+            state.put("nonePending", bus.pendingCount());
+            state.put("noneInFlight", bus.inFlightCount());
+        }
         return state;
     }
 

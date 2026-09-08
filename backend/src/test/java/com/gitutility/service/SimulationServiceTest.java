@@ -1,5 +1,6 @@
 package com.gitutility.service;
 
+import com.gitutility.messaging.SyncEventBus;
 import com.gitutility.model.dto.SimulationConfigRequest;
 import com.gitutility.model.dto.SyntheticWebhookRequest;
 import com.gitutility.model.entity.RepoMapping;
@@ -15,6 +16,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.amqp.core.MessageListenerContainer;
 import org.springframework.amqp.rabbit.listener.RabbitListenerEndpointRegistry;
+import org.springframework.beans.factory.ObjectProvider;
 
 import java.util.Optional;
 
@@ -26,6 +28,8 @@ import static org.mockito.Mockito.*;
 class SimulationServiceTest {
 
     @Mock
+    private ObjectProvider<RabbitListenerEndpointRegistry> listenerRegistryProvider;
+    @Mock
     private RabbitListenerEndpointRegistry listenerRegistry;
     @Mock
     private RepoMappingRepository mappingRepository;
@@ -34,17 +38,21 @@ class SimulationServiceTest {
     @Mock
     private WebSocketNotificationService webSocketNotificationService;
     @Mock
+    private SyncEventBus syncEventBus;
+    @Mock
     private QueueProducerService queueProducerService;
 
     private SimulationService simulationService;
 
     @BeforeEach
     void setUp() {
+        lenient().when(listenerRegistryProvider.getIfAvailable()).thenReturn(listenerRegistry);
         simulationService = new SimulationService(
-                listenerRegistry,
+                listenerRegistryProvider,
                 mappingRepository,
                 syncJobRepository,
                 webSocketNotificationService,
+                syncEventBus,
                 queueProducerService
         );
     }

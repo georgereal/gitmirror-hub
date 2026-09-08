@@ -1,6 +1,7 @@
 import React from 'react';
-import { NavLink, Link, useLocation } from 'react-router-dom';
+import { NavLink, Link, useLocation } from 'react-router';
 import { Settings, RefreshCw, Layers, PlayCircle, ShieldCheck, GitCompare, ListOrdered, Cpu } from 'lucide-react';
+import { useMessagingModule } from '../hooks/useMessagingModule';
 
 interface HeaderProps {
   onRefresh?: () => void;
@@ -9,6 +10,11 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({ onRefresh }) => {
   const location = useLocation();
   const isSettingsActive = location.pathname.startsWith('/settings');
+  const { messaging } = useMessagingModule();
+  const queuesLabel = messaging.supportsQueueManager ? 'Queues' : 'Execution';
+  const queuesTitle = messaging.supportsQueueManager
+    ? 'Durable queue manager (RabbitMQ)'
+    : 'In-process execution controls (no external broker)';
 
   return (
     <header className="border-b border-zinc-200/80 bg-white/80 backdrop-blur-md sticky top-0 z-30 px-6 sm:px-10 py-4">
@@ -103,6 +109,7 @@ export const Header: React.FC<HeaderProps> = ({ onRefresh }) => {
 
             <NavLink
               to="/queues"
+              title={queuesTitle}
               className={({ isActive }) =>
                 `flex items-center space-x-1 px-3 py-1 rounded-md text-xs font-medium transition-colors ${
                   isActive
@@ -112,7 +119,7 @@ export const Header: React.FC<HeaderProps> = ({ onRefresh }) => {
               }
             >
               <ListOrdered className="w-3 h-3" />
-              <span>Queues</span>
+              <span>{queuesLabel}</span>
             </NavLink>
 
             <NavLink

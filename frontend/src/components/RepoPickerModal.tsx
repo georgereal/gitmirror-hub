@@ -35,7 +35,7 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const debounceTimeout = useRef<NodeJS.Timeout | null>(null);
+  const debounceTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const needsCredential = provider === 'GITHUB' || provider === 'GHES';
 

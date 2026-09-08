@@ -169,11 +169,35 @@ To support **20,000+ repositories** without unbounded host disk consumption:
 * **Circuit Breaker Auto-Pause**: On sustained downstream outages (e.g. 5 consecutive errors), the AMQP consumer auto-pauses, preserving all unprocessed messages safely in RabbitMQ without dropping them.
 * **Operator queue control**: Each execution lane (`git.sync.queue` full mirrors, `git.sync.incremental.queue` webhook syncs) has concurrency 1. Different pairs can run a full clone and a webhook incremental sync at the same time; the same pair still serializes on a shared `repoLocks` entry **plus a DB `pair_leases` row** so multi-pod replicas cannot double-write the same mapping. Operators cancel queued jobs (skipped on pickup and ACK'd, never DLQ'd), abort an in-flight run via JGit `ProgressMonitor.isCancelled()` without interrupting the AMQP listener thread, or purge the waiting AMQP buffer from `/queues`.
 * **Ready vs Unacked**: RabbitMQ **Ready** is pending (not yet delivered). **Unacked** is the in-flight message a consumer thread holds (`prefetch: 1`). `sync_jobs` remains the history ledger. Do not move in-flight work to a second processing queue — that adds ACK hops without clearer counts. Observability shows per-lane Ready/Unacked, current job, and listener thread health (idle / unused / dead).
-* **Multi-pod cluster**: Multiple Hub replicas compete on the same Rabbit queues. Shared Postgres holds `pair_leases`, `cluster_runtime` (fleet pause / CB desired state), and `instance_heartbeats` (Micrometer snapshots including JVM threads and install-scoped REST usage for Observability / Internals). Prefer `NAS_MOUNT` for bare repos across nodes. Soft shard affinity remains future work ([`future-work/cache-resume-worker-affinity.md`](future-work/cache-resume-worker-affinity.md)). Throughput model: **§3.6.1**.
+* **Multi-pod cluster**: Three planes stay separate — **HTTP** (LB / multiple Hub listeners), **async jobs** (Rabbit competing consumers; Edge Worker → inbound unchanged), and **fleet state** (shared DB: `instance_heartbeats`, `pair_leases`, `cluster_runtime`, `sync_jobs`). Local smoke uses file H2 with `AUTO_SERVER=TRUE`; enterprise fleets should use PostgreSQL for those tables. Prefer `NAS_MOUNT` for bare repos across nodes. Soft shard affinity remains future work ([`future-work/cache-resume-worker-affinity.md`](future-work/cache-resume-worker-affinity.md)). Throughput model: **§3.6.1**. Rabbit does **not** manage pod lifecycle; it distributes durable work. `GIT_MESSAGING_PROVIDER=none` is single-node only (no shared job bus).
 
 #### 3.6.1 Enterprise throughput & scale model
 
 **Throughput is “many pairs × many pods,” not “one Sync Repo × many pods.”** The Hub is a mirror relay. Hard ceilings are SCM rate limits, pack transfer, and disk — not spreading one JGit job across the fleet.
+
+**Control planes (do not conflate)**
+
+| Plane | Mechanism | Role |
+| :--- | :--- | :--- |
+| **HTTP / API** | Load balancer or multiple Hub ports | UI, REST, optional direct webhooks |
+| **Async jobs** | RabbitMQ (`GIT_MESSAGING_PROVIDER=rabbitmq`); Edge Worker → inbound stays on Rabbit | Durable webhook buffer + competing consumers |
+| **Fleet + leases** | Shared DB (`instance_heartbeats`, `pair_leases`, `cluster_runtime`, `sync_jobs`) | Who is alive, fleet pause/CB, who may Git-write a pair, job ledger |
+
+```mermaid
+flowchart TB
+  clients[UI_and_API_clients] --> lb[Load_balancer_or_multi_port]
+  lb --> podA[Hub_pod_a]
+  lb --> podB[Hub_pod_b]
+  worker[Cloudflare_Worker] -->|unchanged| rabbitIn[Rabbit_inbound]
+  rabbitIn --> podA
+  rabbitIn --> podB
+  podA --> db[(Shared_H2_or_Postgres)]
+  podB --> db
+  db --> heartbeats[instance_heartbeats]
+  db --> leases[pair_leases]
+  db --> cluster[cluster_runtime]
+  db --> jobs[sync_jobs]
+```
 
 **Triggers vs execution**
 
@@ -211,7 +235,7 @@ flowchart TB
 | **One huge repo** | More **cores/pools on the owning pod** (`GIT_LFS_*`, `GIT_PR_CREATE_CONCURRENCY`, push batches, resume). In-job fan-out is same-JVM ([`future-work/fanout-concurrency.md`](future-work/fanout-concurrency.md)) | Thread one Sync Repo across pods | Cross-pod Git is a second distributed system (coordinator, split ledgers, dest 429s) |
 | **Ingest** | Edge Worker always up; inbound capacity ≫ execution | Hub on the webhook timeout path | SCM retries vs long `executeSync` |
 | **SCM shield** | Push token-bucket, metadata interval, CB, GraphQL, install-scoped quota on Internals | Blind fleet fan-out into one App install | GitHub/GHES caps before CPU |
-| **Data plane** | Postgres for cluster tables; durable workspace; HOT / LRU / NAS / ephemeral for 20k+ pairs | File H2 + unbounded local disk per node | Leases/heartbeats need a shared DB |
+| **Data plane** | Shared DB for cluster tables (H2 `AUTO_SERVER` for local multi-pod smoke; **PostgreSQL for enterprise**); durable workspace; HOT / LRU / NAS / ephemeral for 20k+ pairs | Per-pod private DB; unbounded local disk without NAS | Leases/heartbeats/job ledger must be visible to every replica |
 | **Ops** | Fleet pause via `cluster_runtime`; Ready/Unacked or lag; heartbeats; lease TTL recovery | Silent dual writers | Crash mid-job → resume on another pod **later**, never concurrently |
 
 **Capacity rule:** add **pods** for more mappings in flight; add **threads/pools on the owning pod** for one vscode-scale pair. Concurrent Git ≈ replicas × listeners, clipped by `GIT_THROTTLE_MAX_CONCURRENT_PUSHES` and App install quotas. Full vs incremental lanes keep a long Sync Repo from starving **other pairs’** webhooks (same pair still serializes on the lease).
@@ -318,7 +342,17 @@ To achieve **100% webhook ingestion uptime**, eliminate dropped GitHub events du
 
 ## 5. AMQP Message Queue & Dead Letter Queue (DLQ) Topology
 
-The ingestion and execution pipeline uses **Spring AMQP** over standard AMQP 0-9-1 protocols, compatible with free cloud brokers like **CloudAMQP ("Little Lemur" tier)** or on-premise RabbitMQ.
+Messaging is **pluggable** via `git-utility.messaging.provider` / `GIT_MESSAGING_PROVIDER`:
+
+| Provider | Behavior |
+| :--- | :--- |
+| **`rabbitmq`** (default) | Spring AMQP over AMQP 0-9-1 (CloudAMQP / RabbitMQ). Full Queue Manager UI, DLQ, purge, multi-pod. |
+| **`kafka`** | Reserved enum — adapter not shipped; selecting it fails fast at startup. See [`future-work/kafka-mirroring-partitions.md`](future-work/kafka-mirroring-partitions.md). |
+| **`none`** | In-process `SyncEventBus` — Hub boots **without** a broker. Sync jobs run on JVM worker threads; pause defers work in memory. Nav shows **Execution** instead of broker Queue Manager. Not for multi-pod webhook durability. |
+
+Domain code publishes through `SyncEventBus` (`QueueProducerService`); Rabbit listeners live under `messaging.rabbit` and load only when provider=`rabbitmq`. Future Kafka adapters plug in the same SPI.
+
+When provider=`rabbitmq`, the ingestion and execution pipeline uses **Spring AMQP** over standard AMQP 0-9-1 protocols, compatible with free cloud brokers like **CloudAMQP ("Little Lemur" tier)** or on-premise RabbitMQ.
 
 ```
 [Edge Inbound Webhook / Direct Webhook] 
@@ -453,7 +487,8 @@ The built-in Simulation Lab allows teams to test failure recovery without creati
 ## 10. Database Persistence & Non-Destructive Schema Evolution
 
 To ensure continuous operation without data loss across restarts and rolling upgrades:
-* **Persistent Storage**: Configured with file-based H2 storage (`jdbc:h2:file:./data/gitutility;DB_CLOSE_DELAY=-1;AUTO_SERVER=TRUE`).
+* **Persistent Storage (now)**: File-based H2 (`jdbc:h2:file:./data/gitutility;DB_CLOSE_DELAY=-1;AUTO_SERVER=TRUE`). `AUTO_SERVER=TRUE` lets multiple local Hub JVMs share one file for multi-pod smoke tests (fleet heartbeats, leases, job ledger).
+* **Storage roadmap**: H2 (dev / local multi-pod) → **PostgreSQL** (enterprise default for JPA cluster tables). A document store (e.g. MongoDB) is optional later for non-relational payloads only — not as the primary store for `pair_leases`, `instance_heartbeats`, `cluster_runtime`, or `sync_jobs`.
 * **Automated Non-Destructive Schema Migrations**: `DatabaseSchemaMigrator` runs `@PostConstruct` checks on startup, applying idempotent DDL statements (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`) for all new entity fields across `repo_mappings`, `scm_provider_configs`, and `system_engine_configs` without requiring manual database wipes or schema resets.
 
 ---

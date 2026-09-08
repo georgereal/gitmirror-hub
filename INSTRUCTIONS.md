@@ -27,6 +27,28 @@ Before running the application, ensure the following tools are installed:
 
 
 
+### Option C: No broker (`none` messaging)
+
+For first enterprise bring-up without sorting AMQP:
+
+```bash
+export GIT_MESSAGING_PROVIDER=none
+# Optional: keep default pause-on-startup off for none (already defaulted when provider=none)
+source env && mvn -f backend/pom.xml spring-boot:run
+```
+
+Sync Repo and HTTP webhooks still work (in-process). Edge Worker → inbound AMQP and multi-pod competing consumers require `rabbitmq` (default). The UI nav shows **Execution** instead of full broker Queue Manager.
+
+### Messaging provider enums (`GIT_MESSAGING_PROVIDER`)
+
+| Value | Status | Use when |
+| :--- | :--- | :--- |
+| **`rabbitmq`** | Implemented (default) | Durable AMQP / CloudAMQP / local RabbitMQ; multi-pod; DLQ |
+| **`kafka`** | Reserved | Not implemented yet — startup fails with a pointer to `future-work/kafka-mirroring-partitions.md` |
+| **`none`** | Implemented | Single-node / bring-up without a broker (in-process sync) |
+
+Aliases accepted for convenience: `rabbit`, `amqp` → `rabbitmq`; legacy `inline` / `local` → `none`.
+
 ### Option A: Free CloudAMQP Setup (Recommended for Testing & Cloud Deployments)
 
 CloudAMQP provides a 100% free forever tier ("Little Lemur") with 1M messages/month, 20 concurrent connections, and full RabbitMQ management capabilities.
@@ -212,15 +234,27 @@ When a sync appears stuck (job stays `IN_PROGRESS`, LFS/PR stage hangs, or queue
 
 **Scale model:** see [`ARCHITECTURE.md`](ARCHITECTURE.md) §3.6.1. Local two-instance runs test **fleet** parallelism (two jobs / two pairs), not splitting one Sync Repo across JVMs. Git for a job stays on one `workerInstanceId`.
 
-For `replicas > 1`, all Hub pods **complement each other** as competing Rabbit consumers.
+**Three planes:** HTTP (LB / ports) ≠ Rabbit (durable async jobs; Edge Worker → inbound unchanged) ≠ shared DB (pod tracking via `instance_heartbeats`, leases, `cluster_runtime`, job ledger). Rabbit does not manage pod lifecycle.
+
+For `replicas > 1`, all Hub pods **complement each other** as competing Rabbit consumers (`GIT_MESSAGING_PROVIDER=rabbitmq`). Do not use `none` for multi-pod.
 
 **Required shared dependencies**
 
 | Dependency | Why |
 | :--- | :--- |
-| PostgreSQL (not file H2) | Pair leases, heartbeats, cluster pause/CB, job control flags |
+| Shared DB (H2 `AUTO_SERVER` locally; **PostgreSQL** for real fleets) | Fleet heartbeats, pair leases, cluster pause/CB, job ledger |
 | Shared RabbitMQ / CloudAMQP | Competing consumers on full / incremental / inbound queues |
 | Shared bare-repo storage (`NAS_MOUNT`) or accept cold re-fetch | Local NVMe is not shared across pods |
+
+### Storage roadmap (cluster tables)
+
+| Stage | Store | Use |
+| :--- | :--- | :--- |
+| **Now** | File H2 + `AUTO_SERVER=TRUE` | Dev and local multi-pod smoke (same cwd / data dir) |
+| **Enterprise** | **PostgreSQL** | Production fleets — JPA entities: `sync_jobs`, `pair_leases`, `cluster_runtime`, `instance_heartbeats` |
+| **Optional later** | Document DB (e.g. MongoDB) | Non-relational payloads only if needed — **not** a replacement for the JPA cluster tables above |
+
+Migration to Postgres (datasource profile + Flyway/Liquibase) is planned when leaving H2 for real fleets; this runbook does not implement that switch yet.
 
 **Identity:** set `GIT_UTILITY_INSTANCE_ID` or rely on `HOSTNAME` / `POD_NAME`.
 

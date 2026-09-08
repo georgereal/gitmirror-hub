@@ -4,6 +4,7 @@ import {
   SyncJob,
   SyncAuditLog,
   QueueStatus,
+  MessagingModuleInfo,
   RuntimeMetrics,
   ClusterRuntimeMetrics,
   ScmQuotas,
@@ -151,6 +152,11 @@ export const cancelQueuedJobs = async (mappingId?: number): Promise<{ cancelledC
 
 export const getQueueStatus = async (): Promise<QueueStatus> => {
   const res = await api.get('/queue/status');
+  return res.data;
+};
+
+export const getMessagingModule = async (): Promise<MessagingModuleInfo> => {
+  const res = await api.get('/messaging');
   return res.data;
 };
 

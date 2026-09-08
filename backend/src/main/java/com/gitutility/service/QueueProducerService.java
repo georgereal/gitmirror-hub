@@ -1,5 +1,6 @@
 package com.gitutility.service;
 
+import com.gitutility.messaging.SyncEventBus;
 import com.gitutility.model.dto.SyncEventMessage;
 import com.gitutility.model.entity.RepoMapping;
 import com.gitutility.model.entity.SyncJob;
@@ -7,8 +8,6 @@ import com.gitutility.model.enums.TriggerType;
 import com.gitutility.repository.SyncJobRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -19,18 +18,9 @@ import java.util.UUID;
 @Slf4j
 public class QueueProducerService {
 
-    private final RabbitTemplate rabbitTemplate;
+    private final SyncEventBus syncEventBus;
     private final SyncJobRepository syncJobRepository;
     private final WebSocketNotificationService webSocketNotificationService;
-
-    @Value("${git-utility.queue.exchange:git.sync.exchange}")
-    private String exchangeName;
-
-    @Value("${git-utility.queue.routing-key:git.sync.key}")
-    private String fullRoutingKey;
-
-    @Value("${git-utility.queue.incremental-routing-key:git.sync.incremental.key}")
-    private String incrementalRoutingKey;
 
     public void enqueueSyncJob(RepoMapping mapping,
                                SyncJob job,
@@ -109,17 +99,7 @@ public class QueueProducerService {
                 .forceSourceFetch(forceSourceFetch)
                 .build();
 
-        String routingKey = SyncLaneRouter.routingKey(ref, branch, fullRoutingKey, incrementalRoutingKey);
-        log.info("Publishing sync event to exchange '{}' with routing key '{}' (lane {}) for Job #{} [{}]",
-                exchangeName, routingKey, SyncLaneRouter.lane(ref, branch), job.getId(), mapping.getName());
-
-        rabbitTemplate.convertAndSend(exchangeName, routingKey, message, m -> {
-            m.getMessageProperties().setMessageId(messageId);
-            m.getMessageProperties().setCorrelationId(job.getId().toString());
-            m.getMessageProperties().setTimestamp(java.util.Date.from(Instant.now()));
-            return m;
-        });
-
+        syncEventBus.publish(message);
         webSocketNotificationService.notifyJobUpdated(job);
     }
 
@@ -128,22 +108,7 @@ public class QueueProducerService {
      * Keeps the same job id so operators do not see a duplicate SyncJob row.
      */
     public void republishSyncEvent(SyncEventMessage message) {
-        if (message == null || message.getJobId() == null) {
-            return;
-        }
-        String routingKey = SyncLaneRouter.routingKey(
-                message.getRef(), message.getBranch(), fullRoutingKey, incrementalRoutingKey);
-        String messageId = message.getMessageId() != null ? message.getMessageId() : UUID.randomUUID().toString();
-        message.setMessageId(messageId);
-        message.setEnqueuedAt(Instant.now());
-        log.info("Re-publishing sync event for Job #{} onto lane {} (lease/contention defer)",
-                message.getJobId(), SyncLaneRouter.lane(message.getRef(), message.getBranch()));
-        rabbitTemplate.convertAndSend(exchangeName, routingKey, message, m -> {
-            m.getMessageProperties().setMessageId(messageId);
-            m.getMessageProperties().setCorrelationId(message.getJobId().toString());
-            m.getMessageProperties().setTimestamp(java.util.Date.from(Instant.now()));
-            return m;
-        });
+        syncEventBus.republish(message);
     }
 
     private static boolean sameRepo(String left, String right) {

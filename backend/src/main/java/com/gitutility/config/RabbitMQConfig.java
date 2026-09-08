@@ -1,5 +1,6 @@
 package com.gitutility.config;
 
+import com.gitutility.messaging.MessagingConditions;
 import org.springframework.amqp.core.*;
 import org.springframework.amqp.rabbit.config.RetryInterceptorBuilder;
 import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
@@ -17,6 +18,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 @Configuration
+@MessagingConditions.OnRabbitMq
 public class RabbitMQConfig {
 
     @Value("${git-utility.queue.exchange:git.sync.exchange}")

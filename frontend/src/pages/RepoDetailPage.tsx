@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router';
 import { RepoDetailView } from '../components/RepoDetailView';
 import { RepoMapping, SyncJob, JobProgress, DiffInspectionProgress } from '../types';
 import { getMappings, updateMapping, deleteMapping, triggerManualSync, getRecentJobs, getJobs } from '../services/api';

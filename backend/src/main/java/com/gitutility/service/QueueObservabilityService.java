@@ -1,7 +1,10 @@
 package com.gitutility.service;
 
+import com.gitutility.messaging.none.NoneSyncEventBus;
+import com.gitutility.messaging.SyncEventBus;
 import com.gitutility.model.dto.QueueStatusResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -14,7 +17,8 @@ public class QueueObservabilityService {
 
     private final ConsumerRuntimeRegistry consumerRuntimeRegistry;
     private final SimulationService simulationService;
-    private final DlqRedriveService dlqRedriveService;
+    private final ObjectProvider<DlqRedriveService> dlqRedriveService;
+    private final SyncEventBus syncEventBus;
 
     @Value("${git-utility.queue.main-queue:git.sync.queue}")
     private String mainQueueName;
@@ -59,7 +63,7 @@ public class QueueObservabilityService {
             String queueName,
             boolean paused
     ) {
-        DlqRedriveService.QueueDepth depth = dlqRedriveService.getQueueDepth(queueName);
+        DlqRedriveService.QueueDepth depth = depthFor(queueName, lane);
         SimulationService.ListenerHealth health = simulationService.getListenerHealth(listenerId);
         List<ConsumerRuntimeRegistry.Slot> slots = consumerRuntimeRegistry.slotsForLane(lane);
         int unacked = slots.size();
@@ -67,7 +71,7 @@ public class QueueObservabilityService {
         int configured = health.concurrentConsumers();
         int idle = Math.max(0, active - unacked);
         int unused = health.running() ? Math.max(0, configured - active) : 0;
-        boolean dead = !paused && !health.running();
+        boolean dead = !paused && health.present() && !health.running();
 
         List<QueueStatusResponse.CurrentWork> work = new ArrayList<>();
         for (ConsumerRuntimeRegistry.Slot slot : slots) {
@@ -100,5 +104,20 @@ public class QueueObservabilityService {
                 .unusedSlots(unused)
                 .currentWork(work)
                 .build();
+    }
+
+    private DlqRedriveService.QueueDepth depthFor(String queueName, String lane) {
+        DlqRedriveService dlq = dlqRedriveService.getIfAvailable();
+        if (dlq != null) {
+            return dlq.getQueueDepth(queueName);
+        }
+        if (syncEventBus instanceof NoneSyncEventBus bus
+                && (SyncLaneRouter.LANE_FULL.equals(lane) || SyncLaneRouter.LANE_INCREMENTAL.equals(lane))) {
+            // Pending deferred work is not lane-split; show it on the full lane only.
+            int pending = SyncLaneRouter.LANE_FULL.equals(lane) ? bus.pendingCount() : 0;
+            int consumers = simulationService.isConsumerPaused() ? 0 : 1;
+            return new DlqRedriveService.QueueDepth(pending, consumers);
+        }
+        return DlqRedriveService.QueueDepth.EMPTY;
     }
 }

@@ -82,6 +82,9 @@ git-utility:
     failure-threshold: ${GIT_CIRCUIT_BREAKER_THRESHOLD:5}
     reset-timeout-seconds: ${GIT_CIRCUIT_BREAKER_RESET_SEC:30}
     probe-delay-ms: ${GIT_CIRCUIT_BREAKER_PROBE_MS:30000}
+  messaging:
+    # Canonical: rabbitmq (default) | kafka (reserved) | none (in-process, no broker)
+    provider: ${GIT_MESSAGING_PROVIDER:rabbitmq}
   queue:
     pause-consumers-on-startup: ${GIT_QUEUE_PAUSE_ON_STARTUP:true}
     orphan-job-grace-seconds: ${GIT_QUEUE_ORPHAN_GRACE_SEC:120}

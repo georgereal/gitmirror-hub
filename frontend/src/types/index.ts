@@ -268,6 +268,13 @@ export interface ConsumerLaneStatus {
 }
 
 export interface QueueStatus {
+  messagingProvider?: string;
+  messagingDisplayName?: string;
+  messagingDescription?: string;
+  durableBroker?: boolean;
+  supportsQueueManager?: boolean;
+  supportsDlq?: boolean;
+  supportsPurge?: boolean;
   queueName: string;
   mainQueueMessageCount: number;
   mainQueueUnackedCount?: number;
@@ -299,6 +306,18 @@ export interface QueueStatus {
     artificialDelayMs: number;
   };
   timestamp: string;
+}
+
+export interface MessagingModuleInfo {
+  provider: string;
+  displayName: string;
+  description: string;
+  durableBroker: boolean;
+  supportsQueueManager: boolean;
+  supportsDlq: boolean;
+  supportsPurge: boolean;
+  supportsPauseConsumers: boolean;
+  supportsInboundBrokerQueue: boolean;
 }
 
 export interface InstallApiUsage {

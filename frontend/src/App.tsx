@@ -1,5 +1,5 @@
 import React from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router';
 import { Header } from './components/Header';
 import { RepositoriesPage } from './pages/RepositoriesPage';
 import { RepoDetailPage } from './pages/RepoDetailPage';

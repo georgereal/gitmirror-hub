@@ -54,9 +54,13 @@ gitUtility/
 │       │   │   │   ├── CorsConfig.java          # Localhost-only CORS for the operator UI (override via GIT_CORS_*)
 │       │   │   │   ├── DatabaseSchemaMigrator.java # Automatic schema evolution & missing column migration on startup
 │       │   │   │   ├── ScmRestTemplateFactory.java # Shared RestTemplate + ProviderRateMeter interceptor
-│       │   │   │   ├── RabbitMQConfig.java      # Exchanges, Queues, DLX, DLQ, and retry advice
+│       │   │   │   ├── RabbitMQConfig.java      # Exchanges, Queues, DLX, DLQ (conditional: messaging.provider=rabbitmq)
 │       │   │   │   └── WebSocketConfig.java     # STOMP over WebSocket broker configuration
-│       │   │   ├── controller/                  # REST Controllers & Webhook endpoints
+│       │   │   ├── messaging/                   # Pluggable SyncEventBus (rabbitmq | kafka | none)
+│       │   │   │   ├── MessagingModule.java     # Descriptor for UI /api/v1/messaging
+│       │   │   │   ├── SyncEventBus.java        # Publish/republish SPI
+│       │   │   │   ├── rabbit/                  # RabbitSyncEventBus + lane listeners
+│       │   │   │   └── none/                    # NoneSyncEventBus (no broker)
 │       │   │   │   ├── GlobalExceptionHandler.java # Central REST error mapping
 │       │   │   │   ├── RootApiController.java   # Root info endpoint (/ and /api/v1)
 │       │   │   │   ├── GitHubAppController.java # Legacy god-row GitLab/Bitbucket/Origin config + GitHub shim
@@ -295,9 +299,10 @@ gitUtility/
 | **Backend** | `SyncPipelineState` | Outer mirror stages persisted on `sync_jobs.pipeline_json` and live on `JOB_PROGRESS`. |
 | **Backend** | `PublicReadProbe` | Shared anonymous HTTPS / `git ls-remote` probe used by all SCM adapters so public read is the primary Check Access path. |
 | **Backend** | `DedupLedgerService` | In-memory deduplication ledger tracking recent commits pushed by this utility to eliminate bidirectional webhook ping-pong loops. |
-| **Backend** | `QueueProducerService` | Publishes `SyncEventMessage` to `git.sync.exchange`. Specific refs use `git.sync.incremental.key`; null/`*` refs use `git.sync.key`. |
+| **Backend** | `QueueProducerService` | Builds `SyncEventMessage` and publishes via pluggable `SyncEventBus` (Rabbit or inline). |
+| **Backend** | `MessagingModule` / `SyncEventBus` | `GIT_MESSAGING_PROVIDER=rabbitmq\|kafka\|none`; descriptor at `GET /api/v1/messaging`. |
 | **Backend** | `SyncLaneRouter` | Shared full vs incremental routing rule used by producer, engine, DLQ redrive, and consumers. |
-| **Backend** | `QueueConsumerService` | Two `@RabbitListener` workers (`gitSyncFullConsumer`, `gitSyncIncrementalConsumer`) sharing per-pair locks. Skip-ACK cancelled jobs without throwing. |
+| **Backend** | `QueueConsumerService` | Shared execution path; Rabbit lane listeners live in `messaging.rabbit.RabbitLaneConsumers` when provider=`rabbit`. |
 | **Backend** | `ConsumerRuntimeRegistry` | Tracks the AMQP thread currently holding an unacked message per lane (job, thread liveness, elapsed). |
 | **Backend** | `QueueObservabilityService` | Builds Ready vs Unacked plus idle/unused/dead listener thread stats for `/api/v1/queue/status`. |
 | **Backend** | `DlqRedriveService` | Inspects queue depths, replays `git.sync.dlq` onto the original execution lane by ref shape. |
@@ -325,7 +330,8 @@ gitUtility/
 * `/` or `/repos`: Active repository mirror pairs, creation modal, and instant synchronization.
 * `/repos/:id`: Deep-dive inspection matrix (`Branches & Commits`, `Pull Requests Mirror`, `Git Metadata, LFS & Releases`, `Storage & Settings`).
 * `/observability`: Live sync event stream, queue depth telemetries, and discarded/unmapped webhook inspector.
-* `/queues`: Queue manager — job history ledger, AMQP health (full + webhook lanes), cancel/purge, inbound buffer, and DLQ redrive.
+* `/queues`: Queue Manager (`rabbitmq`) or Execution (`none`) — job history, pause/resume, cancel; broker ops when `messaging.provider=rabbitmq`.
+* `GET /api/v1/messaging`: Active messaging module descriptor for the operator UI.
 * `/simulation`: Outage simulation sandbox, consumer pausing, and synthetic push generator.
 * `/settings/providers`: SCM Provider configurations (GitHub App, GitLab, Bitbucket, Origin, Azure DevOps).
 * `/settings/system-engine`: Self-healing circuit breaker, jittered retry strategy, and concurrency limits.

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import {
   AlertTriangle,
   Ban,
@@ -206,16 +206,21 @@ export const QueueManagerPage: React.FC = () => {
   const listenerRunning = queueStatus?.consumerRunning ?? true;
   const listenerStopped = !listenerRunning;
   const orphanAmqp = amqpWaiting > 0 && queuedTotal === 0;
+  const brokerBacked = queueStatus?.supportsQueueManager !== false && queueStatus?.durableBroker !== false;
+  const pageTitle = brokerBacked ? 'Queue Manager' : 'Execution';
+  const pageBlurb = brokerBacked
+    ? 'Job history is the source of truth. RabbitMQ depths are live broker health, not the job list. Webhook syncs and full mirrors run on separate consumers so one clone cannot block other pairs.'
+    : `${queueStatus?.messagingDisplayName ?? 'In-process execution'}: ${
+        queueStatus?.messagingDescription
+          ?? 'No external broker — sync jobs run on this JVM. Pause defers work in memory; not for multi-pod webhook durability.'
+      }`;
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
         <div>
-          <h2 className="text-base font-semibold text-zinc-900">Queue Manager</h2>
-          <p className="text-xs text-zinc-500 mt-0.5">
-            Job history is the source of truth. RabbitMQ depths are live broker health, not the job list.
-            Webhook syncs and full mirrors run on separate consumers so one clone cannot block other pairs.
-          </p>
+          <h2 className="text-base font-semibold text-zinc-900">{pageTitle}</h2>
+          <p className="text-xs text-zinc-500 mt-0.5">{pageBlurb}</p>
         </div>
         <Link
           to="/observability"

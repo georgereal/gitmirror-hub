@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { BannerHero } from '../components/BannerHero';
 import { RepoListView } from '../components/RepoListView';
 import { PairConfigModal } from '../components/PairConfigModal';

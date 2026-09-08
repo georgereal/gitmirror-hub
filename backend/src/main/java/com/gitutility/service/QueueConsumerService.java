@@ -9,7 +9,6 @@ import com.gitutility.repository.SyncJobRepository;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
@@ -79,27 +78,9 @@ public class QueueConsumerService {
                 this.maxConcurrentPushes, this.metadataSyncIntervalSeconds);
     }
 
-    @RabbitListener(
-            id = SyncLaneRouter.FULL_CONSUMER_ID,
-            queues = "${git-utility.queue.main-queue:git.sync.queue}",
-            containerFactory = "rabbitListenerContainerFactory"
-    )
-    public void consumeFullMirrorEvent(SyncEventMessage event) throws Exception {
-        consumeSyncEvent(event, SyncLaneRouter.LANE_FULL, SyncLaneRouter.FULL_CONSUMER_ID);
-    }
-
-    @RabbitListener(
-            id = SyncLaneRouter.INCREMENTAL_CONSUMER_ID,
-            queues = "${git-utility.queue.incremental-queue:git.sync.incremental.queue}",
-            containerFactory = "rabbitListenerContainerFactory"
-    )
-    public void consumeIncrementalEvent(SyncEventMessage event) throws Exception {
-        consumeSyncEvent(event, SyncLaneRouter.LANE_INCREMENTAL, SyncLaneRouter.INCREMENTAL_CONSUMER_ID);
-    }
-
     /**
-     * Shared execution path for both lanes. Returning without throw ACKs the AMQP message,
-     * including cancelled jobs skipped on pickup.
+     * Shared execution path for both lanes. AMQP listeners ACK when this returns without throw
+     * (including cancelled jobs skipped on pickup). Inline messaging calls the same method.
      */
     public void consumeSyncEvent(SyncEventMessage event) throws Exception {
         consumeSyncEvent(event, SyncLaneRouter.lane(event.getRef(), event.getBranch()),

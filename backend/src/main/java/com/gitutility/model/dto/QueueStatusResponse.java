@@ -14,6 +14,14 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 public class QueueStatusResponse {
+    /** Active messaging module wire id: rabbitmq | kafka | none. */
+    private String messagingProvider;
+    private String messagingDisplayName;
+    private String messagingDescription;
+    private boolean durableBroker;
+    private boolean supportsQueueManager;
+    private boolean supportsDlq;
+    private boolean supportsPurge;
     private String queueName;
     private int mainQueueMessageCount;
     private int mainQueueUnackedCount;

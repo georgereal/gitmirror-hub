@@ -11,6 +11,7 @@ import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.support.converter.MessageConverter;
+import com.gitutility.messaging.MessagingConditions;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -18,6 +19,7 @@ import java.time.Instant;
 import java.util.Properties;
 
 @Service
+@MessagingConditions.OnRabbitMq
 @RequiredArgsConstructor
 @Slf4j
 public class DlqRedriveService {

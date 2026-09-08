@@ -1,8 +1,22 @@
 # GitMirror Hub — Multi-Pod Local Runbook
 
-How to run **two (or more) backend Hub instances on one machine** to exercise competing Rabbit consumers, pair leases, cluster pause/CB, and Internals heartbeats.
+How to run **two (or more) backend Hub instances on one machine** to exercise competing Rabbit consumers, pair leases, cluster pause/CB, and Internals heartbeats (fleet membership).
 
 For single-instance setup, CloudAMQP, and day-to-day ops, see [`INSTRUCTIONS.md`](INSTRUCTIONS.md). Architecture and **enterprise throughput model**: [`ARCHITECTURE.md`](ARCHITECTURE.md) §3.6.1.
+
+---
+
+## Three planes (keep them straight)
+
+| Plane | What scales it | Shared env / store |
+| :--- | :--- | :--- |
+| **HTTP / API** | Extra Hub ports or a load balancer in front of replicas | Distinct `SERVER_PORT` / VIP |
+| **Async jobs** | Rabbit competing consumers; **Edge Worker → inbound unchanged** | Same `SPRING_RABBITMQ_ADDRESSES`, `GIT_MESSAGING_PROVIDER=rabbitmq` |
+| **Fleet tracking + leases** | Shared DB rows (`instance_heartbeats`, `pair_leases`, `cluster_runtime`, `sync_jobs`) | Same H2 file + `AUTO_SERVER` (local) or Postgres URL (enterprise) |
+
+Rabbit distributes durable work; it does **not** register or manage pods. Pod identity and liveness live in the DB (`GIT_UTILITY_INSTANCE_ID` → `instance_heartbeats`).
+
+`GIT_MESSAGING_PROVIDER=none` is for **single-node** bring-up only — do not use it for multi-pod.
 
 ---
 
@@ -22,8 +36,8 @@ This exercises **pair-level fleet scale** (two pods can run **different** mappin
 
 | Dependency | Local smoke test | Production / K8s |
 | :--- | :--- | :--- |
-| **Database** | Default H2 file DB with `AUTO_SERVER=TRUE` (both JVMs from the **same repo-root cwd**) | PostgreSQL (required for real multi-pod) |
-| **RabbitMQ / CloudAMQP** | Same broker URL on every instance | Same |
+| **Database** | Default H2 file DB with `AUTO_SERVER=TRUE` (both JVMs from the **same repo-root cwd**) — this is what **tracks pods** (heartbeats) and holds leases / job ledger | PostgreSQL (required for real multi-pod fleets) |
+| **RabbitMQ / CloudAMQP** | Same broker URL on every instance (`GIT_MESSAGING_PROVIDER=rabbitmq`) | Same — multi-pod requires a durable broker, not `none` |
 | **Bare-repo storage** | Same `GIT_WORKSPACE_DIR` / `GIT_STORAGE_*` in both env files | Shared `NAS_MOUNT` (or accept cold re-fetch) |
 
 ---
@@ -56,7 +70,7 @@ cp env.pod-a.example env.pod-a
 cp env.pod-b.example env.pod-b
 ```
 
-Edit both files so they share the **same** `SPRING_RABBITMQ_ADDRESSES`, `GIT_UTILITY_ENCRYPTION_KEY`, and workspace paths (copy from your root `env`). Keep only these different:
+Edit both files so they share the **same** `SPRING_RABBITMQ_ADDRESSES` (Worker/inbound + competing consumers), `GIT_UTILITY_ENCRYPTION_KEY`, and workspace paths (copy from your root `env`). Both pods must also share the **same H2 data directory** (default `./data` under the repo root when started from there) so fleet heartbeats and leases are visible to every JVM. Keep only these different:
 
 - `env.pod-a`: `GIT_UTILITY_INSTANCE_ID=pod-a`, `SERVER_PORT=8080`
 - `env.pod-b`: `GIT_UTILITY_INSTANCE_ID=pod-b`, `SERVER_PORT=8081`

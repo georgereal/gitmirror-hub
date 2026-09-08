@@ -1,11 +1,13 @@
 package com.gitutility.service;
 
+import com.gitutility.messaging.SyncEventBus;
 import com.gitutility.model.dto.QueueStatusResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
@@ -20,6 +22,10 @@ class QueueObservabilityServiceTest {
     private SimulationService simulationService;
     @Mock
     private DlqRedriveService dlqRedriveService;
+    @Mock
+    private ObjectProvider<DlqRedriveService> dlqRedriveServiceProvider;
+    @Mock
+    private SyncEventBus syncEventBus;
 
     private ConsumerRuntimeRegistry registry;
     private QueueObservabilityService service;
@@ -27,7 +33,8 @@ class QueueObservabilityServiceTest {
     @BeforeEach
     void setUp() {
         registry = new ConsumerRuntimeRegistry();
-        service = new QueueObservabilityService(registry, simulationService, dlqRedriveService);
+        when(dlqRedriveServiceProvider.getIfAvailable()).thenReturn(dlqRedriveService);
+        service = new QueueObservabilityService(registry, simulationService, dlqRedriveServiceProvider, syncEventBus);
         ReflectionTestUtils.setField(service, "mainQueueName", "git.sync.queue");
         ReflectionTestUtils.setField(service, "incrementalQueueName", "git.sync.incremental.queue");
         ReflectionTestUtils.setField(service, "inboundQueueName", "git.sync.inbound.queue");

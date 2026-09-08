@@ -33,7 +33,7 @@ dependencies {
     runtimeOnly("com.h2database:h2")
 
     implementation("org.eclipse.jgit:org.eclipse.jgit:$jgitVersion")
-    implementation("org.eclipse.jgit:org.eclipse.jgit.ssh.jsch:$jgitVersion")
+    implementation("org.eclipse.jgit:org.eclipse.jgit.ssh.apache:$jgitVersion")
 
     compileOnly("org.projectlombok:lombok")
     annotationProcessor("org.projectlombok:lombok")
