@@ -17,6 +17,7 @@
 4. **CI/CD Disaster Recovery Readiness**: In addition to Git commit trees and tags, the system mirrors PR refs (`refs/pull/*`), review decisions, and CI status checks so CI/CD pipelines can fail over without re-running long build matrices.
 5. **Agentic Churn Tolerance**: Short-lived agent/CI branches (`agents/…`, bots) must not exhaust the incremental webhook lane. Live auto-sync prioritizes durable refs (trunks, releases, pair `branchPattern`); Smart full sync tip-probes remaining churn for DR completeness. See §3.7.
 6. **Envelope Encryption & Secret Security**: Repository tokens and secrets are encrypted at rest using AES-256-GCM via `CryptoService` and JPA converter attributes.
+7. **Scale out by pairs, not by sharded Git jobs**: Fleet replicas run **many mappings in parallel**. A long **Sync Repo** / `GitSyncEngine.executeSync` stays on **one Hub pod** (in-JVM LFS/PR threads). See §3.6.1.
 
 ---
 
