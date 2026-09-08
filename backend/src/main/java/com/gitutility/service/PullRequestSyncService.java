@@ -1,6 +1,6 @@
 package com.gitutility.service;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import com.gitutility.model.dto.JobStageProgress;
 import com.gitutility.model.dto.PrListPage;
 import com.gitutility.model.dto.SyncDiffReport;

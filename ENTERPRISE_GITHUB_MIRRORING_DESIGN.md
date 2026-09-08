@@ -75,7 +75,7 @@ This document describes the **architecture and design of GitMirror Hub** for tha
 | Layer | Technology |
 | :--- | :--- |
 | **Language / runtime** | Java 21+ (verified on JDK 21/23) |
-| **Backend framework** | Spring Boot 3.3.3 — Web, JPA, Validation, WebSocket |
+| **Backend framework** | Spring Boot 4.1.1 — Web MVC, JPA, Validation, WebSocket |
 | **Git engine** | Eclipse JGit 6.9 (no host `git` CLI dependency) |
 | **Persistence** | H2 file-backed DB (dev/default); schema auto-evolution on startup; PostgreSQL-ready JPA model |
 | **Messaging (current)** | Durable message broker via Spring messaging (dev often uses RabbitMQ / CloudAMQP). **Enterprise may substitute an equivalent durable queue fabric** as long as §6 contracts are met. |
@@ -639,7 +639,7 @@ Use these conditions on a GitHub.com ↔ GHES (or Cloud ↔ Cloud) pair after a 
 | :--- | :--- |
 | Basis | GitMirror Hub as built (README + architecture + current codebase) |
 | Focus | GitHub.com ↔ GitHub Enterprise Server only |
-| Stack | Documented as built (Java 21 / Spring Boot 3.3 / JGit / React 18) |
+| Stack | Documented as built (Java 21 / Spring Boot 4.1 / JGit / React 18) |
 | Messaging | Logical lane requirements only — broker may change in enterprise |
 | Logging | Capability + pluggable sinks — SIEM product may change in enterprise |
 | Intent | External architecture & design doc for enterprise adoption / similar builds |

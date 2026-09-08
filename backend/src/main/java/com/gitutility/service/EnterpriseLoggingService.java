@@ -3,7 +3,8 @@ package com.gitutility.service;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.LoggerContext;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import com.gitutility.model.entity.SyncAuditLog;
 import com.gitutility.model.entity.SystemEngineConfig;
 import jakarta.annotation.PostConstruct;
@@ -34,7 +35,7 @@ import java.util.Map;
 @Slf4j
 public class EnterpriseLoggingService {
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonMapper.builder().build();
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5))
             .build();

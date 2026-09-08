@@ -1,7 +1,7 @@
 package com.gitutility.service;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import com.gitutility.model.dto.GitHubPushPayload;
 import com.gitutility.model.dto.InboundWebhookMessage;
 import com.gitutility.model.entity.RepoMapping;

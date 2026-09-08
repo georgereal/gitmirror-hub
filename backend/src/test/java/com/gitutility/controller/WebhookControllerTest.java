@@ -1,6 +1,7 @@
 package com.gitutility.controller;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import com.gitutility.model.entity.RepoMapping;
 import com.gitutility.model.entity.SyncJob;
 import com.gitutility.model.enums.SyncDirection;
@@ -51,7 +52,7 @@ class WebhookControllerTest {
 
     private WebhookController webhookController;
     private WebhookIngestionService webhookIngestionService;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonMapper.builder().build();
 
     @BeforeEach
     void setUp() {

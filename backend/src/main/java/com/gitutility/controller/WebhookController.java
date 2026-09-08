@@ -1,6 +1,6 @@
 package com.gitutility.controller;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.gitutility.model.dto.GitHubPushPayload;
 import com.gitutility.model.entity.RepoMapping;
 import com.gitutility.repository.RepoMappingRepository;

@@ -1,7 +1,8 @@
 package com.gitutility.service;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import com.gitutility.model.dto.*;
 import com.gitutility.model.entity.GitHubAppConfig;
 import com.gitutility.model.entity.RepoMapping;
@@ -47,7 +48,7 @@ public class ScmCredentialService {
     private final GitHubAppConfigRepository legacyConfigRepository;
     private final RepoMappingRepository mappingRepository;
     private final RestTemplate restTemplate;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonMapper.builder().build();
 
     private final ConcurrentHashMap<String, CachedToken> tokenCache = new ConcurrentHashMap<>();
 

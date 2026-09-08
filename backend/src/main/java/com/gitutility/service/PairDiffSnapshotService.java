@@ -1,8 +1,9 @@
 package com.gitutility.service;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.DeserializationFeature;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import com.gitutility.model.dto.PairDiffSnapshot;
 import com.gitutility.model.dto.SyncDiffReport;
 import com.gitutility.model.entity.PrMapping;
@@ -21,7 +22,10 @@ import java.util.List;
 @Slf4j
 public class PairDiffSnapshotService {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper().registerModule(new JavaTimeModule());
+    private static final ObjectMapper MAPPER = JsonMapper.builder()
+            .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+            .disable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
+            .build();
 
     private final RepoMappingRepository repoMappingRepository;
     private final PrMappingRepository prMappingRepository;
@@ -436,7 +440,7 @@ public class PairDiffSnapshotService {
             mapping.setDiffSnapshotAt(snapshot.getCapturedAt() != null ? snapshot.getCapturedAt() : Instant.now());
             repoMappingRepository.save(mapping);
             log.debug("Persisted diff snapshot for mapping #{} ({})", mapping.getId(), snapshot.getSource());
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             log.debug("Could not serialize diff snapshot for mapping #{}: {}", mapping.getId(), e.getMessage());
         }
     }

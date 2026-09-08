@@ -1,7 +1,8 @@
 package com.gitutility.service;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
 import com.gitutility.model.entity.PrMapping;
 import com.gitutility.model.entity.RepoMapping;
 import com.gitutility.provider.ScmProviderAdapter;
@@ -54,7 +55,7 @@ class PullRequestOriginationTest {
     private ScmProviderAdapter githubAdapter;
 
     private PullRequestSyncService service;
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper = JsonMapper.builder().build();
 
     @BeforeEach
     void setUp() {

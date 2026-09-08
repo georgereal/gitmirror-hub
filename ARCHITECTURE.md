@@ -269,7 +269,7 @@ To enable granular verification of synchronization accuracy beyond simple branch
 * **CI/CD Commit Status Checks**: Queries SCM check runs (`GET /repos/{owner}/{repo}/commits/{ref}/check-runs`) to capture test suite conclusions, app names, start/completion times, and run links for instant operational disaster recovery verification.
 
 ### 3.11 Live Progress, Dual-Write Audit & Resumable Bootstrap Push
-* **Audit dual-write**: `GitSyncEngine.logAudit` writes every phase line to SLF4J first (`[job-{id}] …` on stdout), then to `sync_audit_logs`, then to `EnterpriseLoggingService`. The default `CONSOLE` sink is therefore visible in `./gradlew bootRun` output, not only in the UI Logs drawer.
+* **Audit dual-write**: `GitSyncEngine.logAudit` writes every phase line to SLF4J first (`[job-{id}] …` on stdout), then to `sync_audit_logs`, then to `EnterpriseLoggingService`. The default `CONSOLE` sink is therefore visible in `mvn spring-boot:run` / `./gradlew bootRun` output, not only in the UI Logs drawer.
 * **Live JGit progress**: `LiveGitProgressMonitor` attaches to source fetch and target push. Phase changes (`beginTask`) are INFO audit rows. `update()` ticks are DEBUG-only and are **not** persisted. Throttled (~400ms) ticks broadcast `JOB_PROGRESS` on `/topic/sync-events` (`jobId`, `operation`, `phase`, `current`, `total`, `percent`, `message`, `etaMs`, `elapsedMs`, `remoteRole`, `remoteLabel`, `pipeline`, `providerTraffic`). Copy names the remote (`Source fetch · github.com/org/repo`) and always says **objects**, not files. The Logs console overlays the last 0% phase line from these ticks.
 * **Destination write preflight**: Before any source fetch (and on resume-push), `ScmProviderFacade.testConnection(..., requiredAccess=WRITE)` must report Contents write. Fail the job immediately if the dest token/App cannot push. REST “can write” does not detect every GitHub ruleset or missing **Workflows** permission; those still surface as `REJECTED_*`.
 * **Destination ref rejects**: `OK` / `UP_TO_DATE` are the only statuses persisted on `completed_push_refs`. `REJECTED_*` is an ERROR with the remote message. On a full-mirror, the **first** destination reject (or dest 401/403 after a remint) **aborts remaining batches** so a vscode-scale pack is not re-sent 600+ times. Resume skips a head only when the destination already has that SHA (a poisoned ledger cannot hide a failed `main`).
@@ -395,7 +395,7 @@ To fulfill SOC2, ISO 27001, and enterprise security telemetry compliance, GitMir
 ```
 
 ### Key Capabilities:
-- **CONSOLE (default)**: `GitSyncEngine.logAudit` already dual-writes to SLF4J stdout; the CONSOLE sink does not re-emit (avoids duplicate lines). Gradle / Docker logs show `[job-{id}]` phase messages at INFO.
+- **CONSOLE (default)**: `GitSyncEngine.logAudit` already dual-writes to SLF4J stdout; the CONSOLE sink does not re-emit (avoids duplicate lines). Maven / Gradle / Docker logs show `[job-{id}]` phase messages at INFO.
 - **Splunk HEC (HTTP Event Collector)**: Streams line-by-line structured JSON sync audits and error traces directly to Splunk indices with bearer token authentication.
 - **Logstash & Elasticsearch**: Streams audit records via HTTP JSON payloads for centralized kibana dashboarding.
 - **Syslog Forwarder**: Emits RFC 5424 formatted syslog packets via UDP socket connection.

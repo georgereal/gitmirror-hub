@@ -1,7 +1,8 @@
 package com.gitutility.provider.gitlab;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import com.gitutility.model.dto.*;
 import com.gitutility.model.entity.GitHubAppConfig;
 import com.gitutility.model.enums.ScmProviderType;
@@ -34,7 +35,7 @@ public class GitLabProviderService implements ScmProviderAdapter {
 
     private final GitHubAppConfigRepository configRepository;
     private final RestTemplate restTemplate;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonMapper.builder().build();
 
     private static final Pattern GITLAB_REPO_PATTERN =
             Pattern.compile("(?:https?://[^/]+/|git@[^:]+:)([^/]+)/([^/.]+)(?:\\.git)?/?");

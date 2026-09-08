@@ -1,6 +1,6 @@
 package com.gitutility.service;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.gitutility.model.dto.ClusterRuntimeMetricsResponse;
 import com.gitutility.model.dto.RuntimeMetricsResponse;
 import com.gitutility.model.entity.InstanceHeartbeat;

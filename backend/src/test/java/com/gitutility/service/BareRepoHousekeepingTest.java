@@ -134,7 +134,8 @@ class GitComparisonServiceBranchSelectTest {
         assertEquals(1, slice.rows().size());
         assertEquals("release-1", slice.rows().get(0).getBranchName());
         assertEquals(2, slice.filteredTotal());
-        assertTrue(slice.hasMore());
+        // offset=1, limit=1 on 2 filtered rows is the last page
+        assertFalse(slice.hasMore());
     }
 
     @Test
@@ -150,6 +151,8 @@ class GitComparisonServiceBranchSelectTest {
 
         assertEquals(5, selected.size());
         assertEquals("main", selected.get(0));
-        assertTrue(selected.contains("release/1.0"));
+        // After trunks, remaining names are filled alphabetically up to the cap
+        assertEquals(List.of("main", "feature-0", "feature-1", "feature-10", "feature-100"), selected);
+        assertFalse(selected.contains("release/1.0"));
     }
 }

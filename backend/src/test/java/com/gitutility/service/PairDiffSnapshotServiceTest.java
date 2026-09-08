@@ -11,6 +11,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.util.List;
 import java.util.Optional;
@@ -114,7 +115,7 @@ class PairDiffSnapshotServiceTest {
                 .destBranchesCount(5119)
                 .inSyncBranchesCount(5119)
                 .build();
-        mapping.setDiffSnapshotJson(new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(prior));
+        mapping.setDiffSnapshotJson(JsonMapper.builder().build().writeValueAsString(prior));
         when(repoMappingRepository.findById(8L)).thenReturn(Optional.of(mapping));
 
         GitSyncEngine.SyncResult result = new GitSyncEngine.SyncResult();

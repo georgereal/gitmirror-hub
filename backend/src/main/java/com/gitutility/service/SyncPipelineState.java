@@ -1,7 +1,8 @@
 package com.gitutility.service;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import com.gitutility.model.enums.SyncCheckpointStage;
 
 import java.util.ArrayList;
@@ -35,7 +36,7 @@ public class SyncPipelineState {
     public static final String SKIPPED = "skipped";
     public static final String FAILED = "failed";
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonMapper.builder().build();
 
     public static class Stage {
         public String id;

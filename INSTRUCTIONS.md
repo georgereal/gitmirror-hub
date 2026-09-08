@@ -11,9 +11,9 @@ Before running the application, ensure the following tools are installed:
 
 | Component        | Minimum Version | Verified Version                  | Notes                                 |
 | ---------------- | --------------- | --------------------------------- | ------------------------------------- |
-| **Java JDK**     | 21+             | JDK 23 (Oracle / OpenJDK)         | Required for Spring Boot 3 & JGit     |
-| **Gradle**       | 8.10+ (Wrapper) | Gradle 8.10.2                     | Default backend build via `backend/gradlew` (no global install needed) |
-| **Apache Maven** | 3.8+ (optional) | Maven 3.9.9                       | Fallback only if restoring `backend/pom.xml` and running with `mvn -f` |
+| **Java JDK**     | 21+             | JDK 23 (Oracle / OpenJDK)         | Required for Spring Boot 4 & JGit     |
+| **Apache Maven** | 3.8+            | Maven 3.9.9                       | Preferred for local `bootRun` / day-to-day iteration (`mvn -f backend/pom.xml`) |
+| **Gradle**       | 8.10+ (Wrapper) | Gradle 8.10.2                     | Optional alternate; useful for wrapper-based / pod-style runs (`backend/gradlew`) |
 | **Node.js**      | 18+             | Node.js v20.19.5                  | Frontend build & dev server           |
 | **npm**          | 9+              | npm 10.8.2                        | Frontend package management           |
 | **AMQP Broker**  | AMQP 0-9-1      | CloudAMQP (Free) / RabbitMQ 3.12+ | Message queue & DLQ orchestration     |
@@ -82,25 +82,22 @@ Open a terminal at the **repo root** (`gitUtility/`). The gitignored `env` file 
 # (Optional) Enable the H2 web console on /h2-console
 # export GIT_H2_CONSOLE_ENABLED=true
 
-# Prefer the local gitignored env file for day-to-day secrets, then run Gradle from root.
-# `-p backend` is the Gradle equivalent of Maven's `-f backend/pom.xml` (sets the project directory).
-source env && ./backend/gradlew -p backend bootRun
+# Prefer the local gitignored env file for day-to-day secrets, then run Maven from root
+# (usually faster local iteration). Keep `backend/pom.xml` and `backend/build.gradle.kts` in sync.
+source env && mvn -f backend/pom.xml spring-boot:run
 ```
 
 For **two backends on one machine**, see [`INSTRUCTIONS-MULTI-POD.md`](INSTRUCTIONS-MULTI-POD.md) (`source env.pod-a` / `env.pod-b`).
 
-**Gradle from `backend/`** (same result; use `../env` because `env` is at the repo root):
+**Gradle alternate** (wrapper; no global Gradle install — good for pod-style / reproducible runs):
 
 ```bash
+# From repo root:
+source env && ./backend/gradlew -p backend bootRun
+
+# Or from backend/:
 cd backend
 source ../env && ./gradlew bootRun
-```
-
-**Maven fallback** (only if you restore `backend/pom.xml` and want the previous workflow):
-
-```bash
-# From repo root — same pattern as before:
-source env && mvn -f backend/pom.xml spring-boot:run
 ```
 
 - **Backend REST API Root**: `http://localhost:8080/api/v1` (or `http://localhost:8080/`)

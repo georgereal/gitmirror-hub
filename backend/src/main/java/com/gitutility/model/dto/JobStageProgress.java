@@ -1,7 +1,8 @@
 package com.gitutility.model.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -23,7 +24,7 @@ import java.util.Set;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class JobStageProgress {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonMapper.builder().build();
 
     @Builder.Default
     private Map<String, String> completedPushRefs = new LinkedHashMap<>();

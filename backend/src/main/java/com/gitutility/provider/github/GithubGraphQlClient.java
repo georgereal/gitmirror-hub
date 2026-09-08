@@ -1,7 +1,8 @@
 package com.gitutility.provider.github;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import com.gitutility.model.dto.MirrorMetadataSnapshot;
 import com.gitutility.model.dto.PrListPage;
 import com.gitutility.model.dto.SyncDiffReport;
@@ -32,7 +33,7 @@ public class GithubGraphQlClient {
     private final ScmQuotaTracker scmQuotaTracker;
     private final ScmInstallationKeyResolver installationKeyResolver;
     private final ProviderRateMeter providerRateMeter;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonMapper.builder().build();
 
     public JsonNode execute(String graphqlUrl, String token, String query, Map<String, Object> variables) {
         return execute(graphqlUrl, token, query, variables, null);

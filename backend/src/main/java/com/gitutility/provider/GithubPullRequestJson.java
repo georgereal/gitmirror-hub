@@ -1,6 +1,6 @@
 package com.gitutility.provider;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import com.gitutility.model.dto.SyncDiffReport;
 
 import java.time.Instant;

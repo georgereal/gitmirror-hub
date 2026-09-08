@@ -1,6 +1,7 @@
 package com.gitutility.provider.github;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import com.gitutility.model.dto.MirrorMetadataSnapshot;
 import org.junit.jupiter.api.Test;
 
@@ -8,7 +9,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class GithubMirrorSnapshotGraphQlTest {
 
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper = JsonMapper.builder().build();
 
     @Test
     void parseMirrorSnapshotMapsPrTotalPreviewAndReleases() throws Exception {

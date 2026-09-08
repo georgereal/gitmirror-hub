@@ -21,7 +21,7 @@ public class WebSocketNotificationService {
             Map<String, Object> payload = new HashMap<>();
             payload.put("type", "JOB_UPDATE");
             payload.put("job", job);
-            messagingTemplate.convertAndSend("/topic/sync-events", payload);
+            messagingTemplate.convertAndSend("/topic/sync-events", (Object) payload);
         } catch (Exception e) {
             log.warn("Failed to broadcast job update over WebSocket: {}", e.getMessage());
         }
@@ -97,7 +97,7 @@ public class WebSocketNotificationService {
             if (providerTraffic != null) {
                 payload.put("providerTraffic", providerTraffic);
             }
-            messagingTemplate.convertAndSend("/topic/sync-events", payload);
+            messagingTemplate.convertAndSend("/topic/sync-events", (Object) payload);
         } catch (Exception e) {
             log.debug("Failed to broadcast job progress over WebSocket: {}", e.getMessage());
         }
@@ -108,7 +108,7 @@ public class WebSocketNotificationService {
             Map<String, Object> payload = new HashMap<>();
             payload.put("type", "QUEUE_UPDATE");
             payload.put("stats", queueStats);
-            messagingTemplate.convertAndSend("/topic/sync-events", payload);
+            messagingTemplate.convertAndSend("/topic/sync-events", (Object) payload);
         } catch (Exception e) {
             log.warn("Failed to broadcast queue update over WebSocket: {}", e.getMessage());
         }
@@ -119,7 +119,7 @@ public class WebSocketNotificationService {
             Map<String, Object> payload = new HashMap<>();
             payload.put("type", "SIMULATION_UPDATE");
             payload.put("simulation", simulationState);
-            messagingTemplate.convertAndSend("/topic/sync-events", payload);
+            messagingTemplate.convertAndSend("/topic/sync-events", (Object) payload);
         } catch (Exception e) {
             log.warn("Failed to broadcast simulation update over WebSocket: {}", e.getMessage());
         }
@@ -144,7 +144,7 @@ public class WebSocketNotificationService {
             if (counts != null) {
                 payload.put("counts", counts);
             }
-            messagingTemplate.convertAndSend("/topic/sync-events", payload);
+            messagingTemplate.convertAndSend("/topic/sync-events", (Object) payload);
         } catch (Exception e) {
             log.debug("Failed to broadcast diff progress over WebSocket: {}", e.getMessage());
         }
@@ -155,7 +155,7 @@ public class WebSocketNotificationService {
             Map<String, Object> payload = new HashMap<>();
             payload.put("type", "UNMAPPED_WEBHOOK_EVENT");
             payload.put("event", event);
-            messagingTemplate.convertAndSend("/topic/sync-events", payload);
+            messagingTemplate.convertAndSend("/topic/sync-events", (Object) payload);
         } catch (Exception e) {
             log.warn("Failed to broadcast unmapped webhook event over WebSocket: {}", e.getMessage());
         }

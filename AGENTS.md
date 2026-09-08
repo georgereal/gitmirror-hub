@@ -19,6 +19,6 @@ Only synchronize **[`REPO_MAP.md`](REPO_MAP.md)**, **[`ARCHITECTURE.md`](ARCHITE
 * **Major architectural changes** (adding a new service/worker module, changing queue bindings/exchanges, or adding SCM integrations).
 
 ### 3. Module Overview
-- `backend/`: Java 21/23 + Spring Boot 3.3.3 + JGit + Spring AMQP (RabbitMQ / CloudAMQP).
+- `backend/`: Java 21/23 + Spring Boot 4.1.1 + JGit + Spring AMQP (RabbitMQ / CloudAMQP). Build with **Maven** (`pom.xml`, preferred for local) or **Gradle Wrapper** (`build.gradle.kts`).
 - `frontend/`: React 18 + Vite + Tailwind CSS + SockJS / STOMP.
 - `webhook-worker/`: TypeScript Cloudflare Worker for edge webhook ingestion.

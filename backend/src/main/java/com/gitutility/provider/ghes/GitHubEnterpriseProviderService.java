@@ -1,7 +1,8 @@
 package com.gitutility.provider.ghes;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import com.gitutility.model.dto.*;
 import com.gitutility.model.entity.GitHubAppConfig;
 import com.gitutility.model.enums.ScmProviderType;
@@ -48,7 +49,7 @@ public class GitHubEnterpriseProviderService implements ScmProviderAdapter {
     private final RestTemplate restTemplate;
     private final GithubGraphQlClient graphQlClient;
     private final com.gitutility.service.ScmCredentialService scmCredentialService;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonMapper.builder().build();
 
     @Value("${git-utility.github.graphql-enabled:true}")
     private boolean graphqlEnabled;

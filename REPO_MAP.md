@@ -39,8 +39,9 @@ gitUtility/
 │   └── src/
 │       └── index.ts                    # Edge router: WebCrypto HMAC validation & RabbitMQ HTTP publish
 │
-├── backend/                            # Spring Boot 3.3.3 Backend Application (Java 21/23)
-│   ├── build.gradle.kts                # Gradle Kotlin DSL (Web, JPA, AMQP, JGit, H2)
+├── backend/                            # Spring Boot 4.1.1 Backend Application (Java 21/23)
+│   ├── pom.xml                         # Maven build (preferred for local bootRun)
+│   ├── build.gradle.kts                # Gradle Kotlin DSL (alternate / wrapper / pod-style runs)
 │   ├── settings.gradle.kts             # Gradle root project name
 │   ├── gradlew / gradlew.bat           # Gradle Wrapper scripts
 │   ├── gradle/wrapper/                 # Wrapper JAR + properties (Gradle 8.10.2)

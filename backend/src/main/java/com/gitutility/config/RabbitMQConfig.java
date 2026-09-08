@@ -6,10 +6,10 @@ import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFacto
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.rabbit.retry.RejectAndDontRequeueRecoverer;
-import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
+import org.springframework.amqp.support.converter.JacksonJsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.amqp.SimpleRabbitListenerContainerFactoryConfigurer;
+import org.springframework.boot.amqp.autoconfigure.SimpleRabbitListenerContainerFactoryConfigurer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -115,7 +115,7 @@ public class RabbitMQConfig {
 
     @Bean
     public MessageConverter jsonMessageConverter() {
-        return new Jackson2JsonMessageConverter();
+        return new JacksonJsonMessageConverter();
     }
 
     @Bean
@@ -149,7 +149,7 @@ public class RabbitMQConfig {
         // Employs exponential backoff: 3s -> 6s -> 12s (capped at 30s)
         factory.setAdviceChain(
             RetryInterceptorBuilder.stateless()
-                .maxAttempts(maxRetryAttempts)
+                .maxRetries(maxRetryAttempts)
                 .backOffOptions(retryInitialIntervalMs, retryMultiplier, retryMaxIntervalMs)
                 .recoverer(new RejectAndDontRequeueRecoverer())
                 .build()

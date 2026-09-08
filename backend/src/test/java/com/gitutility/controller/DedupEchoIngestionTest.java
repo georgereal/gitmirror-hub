@@ -1,6 +1,7 @@
 package com.gitutility.controller;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import com.gitutility.model.entity.RepoMapping;
 import com.gitutility.model.entity.SyncJob;
 import com.gitutility.model.enums.SyncDirection;
@@ -72,14 +73,14 @@ class DedupEchoIngestionTest {
                 queueProducerService,
                 dedupLedgerService,
                 webSocketNotificationService,
-                new ObjectMapper(),
+                JsonMapper.builder().build(),
                 pullRequestSyncService,
                 releaseAndStatusSyncService,
                 unmappedWebhookEventRepository,
                 refOriginService,
                 new RefInterestPolicy("agents/,dependabot/", 45_000L, true)
         );
-        webhookController = new WebhookController(mappingRepository, ingestion, new ObjectMapper(), null);
+        webhookController = new WebhookController(mappingRepository, ingestion, JsonMapper.builder().build(), null);
     }
 
     @Test
@@ -291,14 +292,14 @@ class DedupEchoIngestionTest {
                 queueProducerService,
                 dedupLedgerService,
                 webSocketNotificationService,
-                new ObjectMapper(),
+                JsonMapper.builder().build(),
                 pullRequestSyncService,
                 releaseAndStatusSyncService,
                 unmappedWebhookEventRepository,
                 refOriginService,
                 new RefInterestPolicy("agents/", 45_000L, true)
         );
-        webhookController = new WebhookController(mappingRepository, ingestion, new ObjectMapper(), null);
+        webhookController = new WebhookController(mappingRepository, ingestion, JsonMapper.builder().build(), null);
 
         RepoMapping mapping = backupVscodePair();
         when(mappingRepository.findById(1L)).thenReturn(Optional.of(mapping));

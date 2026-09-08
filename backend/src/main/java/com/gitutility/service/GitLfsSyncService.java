@@ -1,7 +1,8 @@
 package com.gitutility.service;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import com.gitutility.model.entity.RepoMapping;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.lib.Constants;
@@ -39,7 +40,7 @@ import java.util.regex.Pattern;
 public class GitLfsSyncService {
 
     private final RestTemplate restTemplate;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonMapper.builder().build();
     private final GitHubAuthService gitHubAuthService;
     private final SyncCheckpointService syncCheckpointService;
     private final ProviderRateMeter providerRateMeter;
@@ -780,9 +781,9 @@ public class GitLfsSyncService {
         if (!headerNode.isObject()) {
             return;
         }
-        headerNode.fields().forEachRemaining(entry -> {
-            if (entry.getValue() != null && !entry.getValue().isNull()) {
-                target.set(entry.getKey(), entry.getValue().asText());
+        headerNode.forEachEntry((key, value) -> {
+            if (value != null && !value.isNull()) {
+                target.set(key, value.asString());
             }
         });
     }
@@ -796,7 +797,7 @@ public class GitLfsSyncService {
                 try (InputStream in = response.getBody()) {
                     restTemplate.execute(URI.create(uploadUrl), HttpMethod.PUT, putRequest -> {
                         applyActionHeaders(putRequest.getHeaders(), uploadAction);
-                        if (!putRequest.getHeaders().containsKey(HttpHeaders.CONTENT_TYPE)) {
+                        if (!putRequest.getHeaders().containsHeader(HttpHeaders.CONTENT_TYPE)) {
                             putRequest.getHeaders().setContentType(MediaType.APPLICATION_OCTET_STREAM);
                         }
                         if (in != null) {

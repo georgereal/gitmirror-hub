@@ -1,6 +1,6 @@
 package com.gitutility.service;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 
 /**
  * Builds mirrored pull-request bodies with source attribution and parses author metadata from webhooks.

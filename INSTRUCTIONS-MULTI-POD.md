@@ -33,6 +33,10 @@ This exercises **pair-level fleet scale** (two pods can run **different** mappin
 Single-instance uses a gitignored root `env` file:
 
 ```bash
+# Local / day-to-day (Maven)
+source env && mvn -f backend/pom.xml spring-boot:run
+
+# Alternate (Gradle wrapper)
 source env && ./backend/gradlew -p backend bootRun
 ```
 
@@ -61,7 +65,7 @@ Edit both files so they share the **same** `SPRING_RABBITMQ_ADDRESSES`, `GIT_UTI
 
 ## Prerequisites
 
-Same as the main runbook: JDK 21+, Gradle Wrapper (no global Gradle install), and a running AMQP broker (local RabbitMQ or CloudAMQP).
+Same as the main runbook: JDK 21+, Maven 3.8+ (or Gradle Wrapper), and a running AMQP broker (local RabbitMQ or CloudAMQP).
 
 Optional JDK export (if not already on `PATH`):
 
@@ -74,13 +78,16 @@ export PATH=$JAVA_HOME/bin:$PATH
 
 ## Run two backends on this machine
 
-Always start from the **repo root** so both processes share the same H2 file (`./data/gitutility`) and the `./backend/gradlew -p backend` layout matches single-instance.
+Always start from the **repo root** so both processes share the same H2 file (`./data/gitutility`) and the same project layout as single-instance.
 
 ### Terminal 1 — pod-a (port 8080)
 
 ```bash
-# From the repository root
-source env.pod-a && ./backend/gradlew -p backend bootRun
+# From the repository root (Maven — preferred for local)
+source env.pod-a && mvn -f backend/pom.xml spring-boot:run
+
+# Or Gradle wrapper:
+# source env.pod-a && ./backend/gradlew -p backend bootRun
 ```
 
 - API: `http://localhost:8080/api/v1`
@@ -90,8 +97,11 @@ source env.pod-a && ./backend/gradlew -p backend bootRun
 ### Terminal 2 — pod-b (port 8081)
 
 ```bash
-# From the repository root
-source env.pod-b && ./backend/gradlew -p backend bootRun
+# From the repository root (Maven — preferred for local)
+source env.pod-b && mvn -f backend/pom.xml spring-boot:run
+
+# Or Gradle wrapper:
+# source env.pod-b && ./backend/gradlew -p backend bootRun
 ```
 
 - API: `http://localhost:8081/api/v1`

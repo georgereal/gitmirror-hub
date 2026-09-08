@@ -1,6 +1,7 @@
 package com.gitutility.service;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import org.eclipse.jgit.internal.storage.file.FileRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -24,7 +25,7 @@ import static org.mockito.Mockito.mock;
 
 class GitLfsSyncServiceTest {
 
-  private final ObjectMapper objectMapper = new ObjectMapper();
+  private final ObjectMapper objectMapper = JsonMapper.builder().build();
 
   @Test
   void extractOidsPresentOnTarget_countsObjectsWithoutUploadAction() throws Exception {

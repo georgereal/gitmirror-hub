@@ -1,6 +1,6 @@
 # GitMirror Hub - Bidirectional Git Mirroring Utility
 
-A Spring Boot 3 & React-based bidirectional GitHub repository mirroring utility with queue-backed event ingestion, loop/echo prevention, Dead Letter Queue (DLQ) redrive capabilities, and a Chaos & Simulation Lab.
+A Spring Boot 4 & React-based bidirectional GitHub repository mirroring utility with queue-backed event ingestion, loop/echo prevention, Dead Letter Queue (DLQ) redrive capabilities, and a Chaos & Simulation Lab.
 
 ---
 
@@ -37,7 +37,7 @@ A Spring Boot 3 & React-based bidirectional GitHub repository mirroring utility 
 
 ### Prerequisites
 * **Java 21+** (JDK 21 or JDK 23)
-* **Gradle Wrapper** (no global Gradle install required; use `./gradlew` in `backend/`)
+* **Apache Maven 3.8+** (preferred for local `bootRun`) **or** the **Gradle Wrapper** in `backend/` (no global Gradle install)
 * **Node.js 18+** & **npm**
 * **AMQP Broker**: Any free cloud broker like [CloudAMQP](https://www.cloudamqp.com/) (Free "Little Lemur" plan) or a local RabbitMQ instance (`brew install rabbitmq` or `docker run -d -p 5672:5672 -p 15672:15672 rabbitmq:3-management`).
 
@@ -55,14 +55,24 @@ export SPRING_RABBITMQ_ADDRESSES="amqps://<user>:<password>@<host>/<vhost>"
 
 ### Step 2: Start the Backend (Spring Boot)
 
+**Maven (local / day-to-day):**
+
 ```bash
-cd backend
+# From repo root (or cd backend && mvn spring-boot:run)
 # Optional: point JAVA_HOME at JDK 21+ if it is not already on your PATH
 # export JAVA_HOME="$(/usr/libexec/java_home -v 21)"   # macOS example
 # Required: unique key used to encrypt PATs and App private keys at rest
 export GIT_UTILITY_ENCRYPTION_KEY="$(openssl rand -hex 32)"
 # Optional for large public mirrors (avoid /tmp; raise Git HTTP timeout)
 # export GIT_WORKSPACE_DIR="$HOME/git-utility-mirrors"
+mvn -f backend/pom.xml spring-boot:run
+```
+
+**Gradle alternate (wrapper / pod-style):**
+
+```bash
+cd backend
+export GIT_UTILITY_ENCRYPTION_KEY="$(openssl rand -hex 32)"
 ./gradlew bootRun
 ```
 * **REST API**: `http://localhost:8080/api/v1`

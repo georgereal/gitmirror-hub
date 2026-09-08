@@ -1,6 +1,7 @@
 package com.gitutility.service;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import com.gitutility.model.entity.GitHubAppConfig;
 import com.gitutility.model.entity.SyncAuditLog;
 import com.gitutility.model.entity.SyncJob;
@@ -55,7 +56,7 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
     private static final long ROLLING_WINDOW_MS = 60_000L;
     private static final long SAMPLE_INTERVAL_MS = 2_000L;
     private static final int MAX_SAMPLES = 180;
-    private static final ObjectMapper SERIES_MAPPER = new ObjectMapper();
+    private static final ObjectMapper SERIES_MAPPER = JsonMapper.builder().build();
 
     public ProviderRateMeter(SyncAuditLogRepository auditLogRepository,
                              @Lazy EnterpriseLoggingService enterpriseLoggingService,
@@ -522,7 +523,7 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
         }
         String needle = "ratelimit-" + field.toLowerCase();
         String alt = "rate-limit-" + field.toLowerCase();
-        for (String name : headers.keySet()) {
+        for (String name : headers.headerNames()) {
             if (name == null) {
                 continue;
             }
