@@ -6,9 +6,24 @@ import {
 import { RepoMapping, SyncDirection, StorageTier, PermissionCheckReport, GitHubRepoOption, TrunkConflictPolicy } from '../types';
 import { testRepoConnection, createRemoteRepository } from '../services/api';
 import { RepoPickerModal } from './RepoPickerModal';
+import { CredentialPickModal } from './CredentialPickModal';
 import { InfoTooltip } from './InfoTooltip';
 import { findRepoCollision } from '../utils/repoUrl';
 import { shouldWarnBidirectionalBackup } from '../utils/mirrorTopology';
+
+const isGithubCloudUrl = (url: string) => (url || '').toLowerCase().includes('github.com');
+
+const reportNeedsGithubAuth = (res: PermissionCheckReport) => {
+  if (res.valid) return false;
+  if (res.httpStatusCode === 401 || res.httpStatusCode === 403) return true;
+  const blob = `${res.message || ''} ${(res.errors || []).join(' ')}`.toLowerCase();
+  return (
+    blob.includes('credential')
+    || blob.includes('authentication')
+    || blob.includes('unbound')
+    || blob.includes('token')
+  );
+};
 
 interface PairConfigModalProps {
   mapping: RepoMapping | null;
@@ -48,6 +63,7 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
   const [pickerTarget, setPickerTarget] = useState<'A' | 'B' | null>(null);
   const [sourceCredentialId, setSourceCredentialId] = useState<number | undefined>(undefined);
   const [targetCredentialId, setTargetCredentialId] = useState<number | undefined>(undefined);
+  const [credPickTarget, setCredPickTarget] = useState<'A' | 'B' | null>(null);
 
   useEffect(() => {
     if (mapping) {
@@ -76,6 +92,7 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
     setReportA(null);
     setReportB(null);
     setSaveError(null);
+    setCredPickTarget(null);
   }, [mapping, isOpen]);
 
   const collisionA = useMemo(() => findRepoCollision(repoAUrl, existingMappings, mapping?.id), [repoAUrl, existingMappings, mapping?.id]);
@@ -174,21 +191,35 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
     return suggestions;
   };
 
-  const handleTestConnectionA = async () => {
-    if (!repoAUrl) return;
+  const applySourceReport = (res: PermissionCheckReport) => {
+    setReportA(res);
+    if (res.accessMode === 'PUBLIC') setVisibilityA('PUBLIC');
+    else if (res.isPrivate) setVisibilityA('PRIVATE');
+  };
+
+  const applyDestReport = (res: PermissionCheckReport) => {
+    setReportB(res);
+    if (res.accessMode === 'PUBLIC' && syncDirection === 'UNIDIRECTIONAL_B_TO_A') setVisibilityB('PUBLIC');
+    else if (res.isPrivate) setVisibilityB('PRIVATE');
+  };
+
+  const runSourceCheck = async (
+    credentialId?: number,
+    knownPrivate?: boolean,
+    publishReport = true
+  ) => {
     setTestingA(true);
     try {
       const res = await testRepoConnection({
         repoUrl: repoAUrl,
         requiredAccess: 'READ',
-        knownPrivate: visibilityA === 'PRIVATE',
-        credentialId: sourceCredentialId,
+        knownPrivate: knownPrivate ?? visibilityA === 'PRIVATE',
+        credentialId,
       });
-      setReportA(res);
-      if (res.accessMode === 'PUBLIC') setVisibilityA('PUBLIC');
-      else if (res.isPrivate) setVisibilityA('PRIVATE');
+      if (publishReport) applySourceReport(res);
+      return res;
     } catch (e: any) {
-      setReportA({
+      const fail: PermissionCheckReport = {
         valid: false,
         repoFullName: repoAUrl,
         isPrivate: false,
@@ -197,27 +228,32 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
         passedChecks: [],
         warnings: [],
         errors: [e.message || 'Connection error'],
-      });
+      };
+      if (publishReport) setReportA(fail);
+      return fail;
     } finally {
       setTestingA(false);
     }
   };
 
-  const handleTestConnectionB = async () => {
-    if (!repoBUrl) return;
+  const runDestCheck = async (
+    credentialId?: number,
+    knownPrivate?: boolean,
+    publishReport = true
+  ) => {
+    const writeRequired = syncDirection !== 'UNIDIRECTIONAL_B_TO_A';
     setTestingB(true);
     try {
       const res = await testRepoConnection({
         repoUrl: repoBUrl,
-        requiredAccess: syncDirection === 'UNIDIRECTIONAL_B_TO_A' ? 'READ' : 'WRITE',
-        knownPrivate: visibilityB === 'PRIVATE' || syncDirection !== 'UNIDIRECTIONAL_B_TO_A',
-        credentialId: targetCredentialId,
+        requiredAccess: writeRequired ? 'WRITE' : 'READ',
+        knownPrivate: knownPrivate ?? (visibilityB === 'PRIVATE' || writeRequired),
+        credentialId,
       });
-      setReportB(res);
-      if (res.accessMode === 'PUBLIC' && syncDirection === 'UNIDIRECTIONAL_B_TO_A') setVisibilityB('PUBLIC');
-      else if (res.isPrivate) setVisibilityB('PRIVATE');
+      if (publishReport) applyDestReport(res);
+      return res;
     } catch (e: any) {
-      setReportB({
+      const fail: PermissionCheckReport = {
         valid: false,
         repoFullName: repoBUrl,
         isPrivate: false,
@@ -226,9 +262,93 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
         passedChecks: [],
         warnings: [],
         errors: [e.message || 'Connection error'],
-      });
+      };
+      if (publishReport) setReportB(fail);
+      return fail;
     } finally {
       setTestingB(false);
+    }
+  };
+
+  /**
+   * Check Access flow for source:
+   * - Public visibility → public probe only (no App modal)
+   * - Private visibility → App modal if unbound, then authenticated check
+   * - Auto → public probe first; on auth failure → App modal → retry
+   * Intermediate auth failures are not painted; only the final result is.
+   */
+  const handleTestConnectionA = async () => {
+    if (!repoAUrl) return;
+    setReportA(null);
+
+    if (visibilityA === 'PUBLIC') {
+      await runSourceCheck(undefined, false);
+      return;
+    }
+
+    if (visibilityA === 'PRIVATE') {
+      if (isGithubCloudUrl(repoAUrl) && sourceCredentialId == null) {
+        setCredPickTarget('A');
+        return;
+      }
+      await runSourceCheck(sourceCredentialId, true);
+      return;
+    }
+
+    // Auto: probe without painting if we may continue into the credential modal
+    const mayPromptCred = isGithubCloudUrl(repoAUrl) && sourceCredentialId == null;
+    const res = await runSourceCheck(sourceCredentialId, false, !mayPromptCred);
+    if (mayPromptCred && !res.valid && reportNeedsGithubAuth(res)) {
+      setCredPickTarget('A');
+      return;
+    }
+    if (mayPromptCred) applySourceReport(res);
+  };
+
+  /**
+   * Destination:
+   * - Public + B→A read → public probe only
+   * - Private or write → App modal if unbound, then authenticated check
+   * - Auto + read-only B→A → public first, then modal on auth failure
+   */
+  const handleTestConnectionB = async () => {
+    if (!repoBUrl) return;
+    setReportB(null);
+    const writeRequired = syncDirection !== 'UNIDIRECTIONAL_B_TO_A';
+
+    if (visibilityB === 'PUBLIC' && !writeRequired) {
+      await runDestCheck(undefined, false);
+      return;
+    }
+
+    if (visibilityB === 'PRIVATE' || writeRequired) {
+      if (isGithubCloudUrl(repoBUrl) && targetCredentialId == null) {
+        setCredPickTarget('B');
+        return;
+      }
+      await runDestCheck(targetCredentialId, visibilityB === 'PRIVATE' || writeRequired);
+      return;
+    }
+
+    const mayPromptCred = isGithubCloudUrl(repoBUrl) && targetCredentialId == null;
+    const res = await runDestCheck(targetCredentialId, false, !mayPromptCred);
+    if (mayPromptCred && !res.valid && reportNeedsGithubAuth(res)) {
+      setCredPickTarget('B');
+      return;
+    }
+    if (mayPromptCred) applyDestReport(res);
+  };
+
+  const handleCredentialPicked = async (credentialId: number) => {
+    const target = credPickTarget;
+    setCredPickTarget(null);
+    if (target === 'A') {
+      setSourceCredentialId(credentialId);
+      await runSourceCheck(credentialId, true);
+    } else if (target === 'B') {
+      setTargetCredentialId(credentialId);
+      const writeRequired = syncDirection !== 'UNIDIRECTIONAL_B_TO_A';
+      await runDestCheck(credentialId, visibilityB === 'PRIVATE' || writeRequired);
     }
   };
 
@@ -236,7 +356,8 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
     if (!repoBUrl) return;
     const destNeedsCredential = /github/i.test(repoBUrl) && !/gitlab|bitbucket|origin\.cursor/i.test(repoBUrl);
     if (destNeedsCredential && !targetCredentialId) {
-      setCreateFeedback('Pick the destination from Browse Repos so this pair knows which GitHub/GHES credential should create it.');
+      setCredPickTarget('B');
+      setCreateFeedback('Select a GitHub credential, then try Create on GitHub again.');
       return;
     }
     setCreatingRepoB(true);
@@ -359,9 +480,9 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                   <span>{testingA ? 'Checking...' : 'Check Access'}</span>
                 </button>
               </div>
-              {sourceCredentialId != null && (
+              {sourceCredentialId != null && isGithubCloudUrl(repoAUrl) && (
                 <p className="text-[10px] text-zinc-500">
-                  Bound to GitHub/GHES credential #{sourceCredentialId}. Browse again to rebind after a transfer or org change.
+                  Bound to GitHub credential #{sourceCredentialId}. Clear by changing visibility to Public, or rebind via Browse Repos / Check Access.
                 </p>
               )}
               <div className="flex items-center space-x-1.5 text-[10px]">
@@ -370,7 +491,10 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                   <button
                     key={v}
                     type="button"
-                    onClick={() => setVisibilityA(v)}
+                    onClick={() => {
+                      setVisibilityA(v);
+                      if (v === 'PUBLIC') setSourceCredentialId(undefined);
+                    }}
                     className={`px-2 py-0.5 rounded-md border ${
                       visibilityA === v ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-600 border-zinc-200'
                     }`}
@@ -378,7 +502,7 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                     {v === 'UNKNOWN' ? 'Auto' : v === 'PUBLIC' ? 'Public' : 'Private'}
                   </button>
                 ))}
-                <span className="text-zinc-400">Auto = probe public HTTPS first. Private = App/token only.</span>
+                <span className="text-zinc-400">Auto = public first, then App if needed. Private = App only. Public = anonymous.</span>
               </div>
 
               {reportA && (
@@ -492,9 +616,9 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                   <span>{testingB ? 'Checking...' : 'Check Access'}</span>
                 </button>
               </div>
-              {targetCredentialId != null && (
+              {targetCredentialId != null && isGithubCloudUrl(repoBUrl) && (
                 <p className="text-[10px] text-zinc-500">
-                  Bound to GitHub/GHES credential #{targetCredentialId}. Browse again to rebind after a transfer or org change.
+                  Bound to GitHub credential #{targetCredentialId}. Rebind via Browse Repos or Check Access when prompted.
                 </p>
               )}
               <div className="flex items-center space-x-1.5 text-[10px]">
@@ -503,7 +627,12 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                   <button
                     key={v}
                     type="button"
-                    onClick={() => setVisibilityB(v)}
+                    onClick={() => {
+                      setVisibilityB(v);
+                      if (v === 'PUBLIC' && syncDirection === 'UNIDIRECTIONAL_B_TO_A') {
+                        setTargetCredentialId(undefined);
+                      }
+                    }}
                     className={`px-2 py-0.5 rounded-md border ${
                       visibilityB === v ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-600 border-zinc-200'
                     }`}
@@ -511,7 +640,7 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                     {v === 'UNKNOWN' ? 'Auto' : v === 'PUBLIC' ? 'Public' : 'Private'}
                   </button>
                 ))}
-                <span className="text-zinc-400">Dest write always uses App/token. Mark Private if this mirror is not public.</span>
+                <span className="text-zinc-400">Dest write prompts for App/token. Public read-only (B→A) stays anonymous.</span>
               </div>
 
               {reportB && (
@@ -733,6 +862,21 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
           access={pickerTarget === 'B' ? 'PUSH' : 'PULL'}
         />
       )}
+
+      <CredentialPickModal
+        isOpen={credPickTarget != null}
+        title={credPickTarget === 'B' ? 'Destination GitHub credential' : 'Source GitHub credential'}
+        reason={
+          credPickTarget === 'B'
+            ? 'Write or private destination access needs a GitHub App or PAT.'
+            : visibilityA === 'PRIVATE'
+              ? 'Private source selected — choose a GitHub App or PAT to verify access.'
+              : 'Public access failed. Choose a GitHub App or PAT to continue Check Access.'
+        }
+        initialCredentialId={credPickTarget === 'B' ? targetCredentialId : sourceCredentialId}
+        onCancel={() => setCredPickTarget(null)}
+        onConfirm={handleCredentialPicked}
+      />
     </>
   );
 };

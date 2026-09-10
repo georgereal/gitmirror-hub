@@ -11,6 +11,8 @@ import com.gitutility.provider.GithubRestPagination;
 import com.gitutility.provider.PublicReadProbe;
 import com.gitutility.provider.ScmProviderAdapter;
 import com.gitutility.repository.GitHubAppConfigRepository;
+import com.gitutility.service.ScmCredentialContext;
+import com.gitutility.service.ScmCredentialService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
@@ -48,7 +50,7 @@ public class GitHubProviderService implements ScmProviderAdapter {
     private final GitHubAppConfigRepository configRepository;
     private final RestTemplate restTemplate;
     private final GithubGraphQlClient graphQlClient;
-    private final com.gitutility.service.ScmCredentialService scmCredentialService;
+    private final ScmCredentialService scmCredentialService;
     private final ObjectMapper objectMapper = JsonMapper.builder().build();
 
     @Value("${git-utility.github.graphql-enabled:true}")
@@ -112,6 +114,51 @@ public class GitHubProviderService implements ScmProviderAdapter {
             return scmCredentialService.resolveCurrentOrNull();
         }
         return null;
+    }
+
+    /**
+     * Distinguishes unbound Check Access (Providers configured but no pair credentialId)
+     * from truly empty Provider Settings.
+     */
+    private PermissionCheckReport missingCredentialsReport(String repoFullName) {
+        Long boundId = ScmCredentialContext.currentId();
+        boolean providersConfigured = scmCredentialService != null
+                && scmCredentialService.hasEnabled(ScmCredentialService.PROVIDER_GITHUB);
+
+        if (boundId == null) {
+            if (providersConfigured) {
+                return PermissionCheckReport.builder()
+                        .valid(false)
+                        .httpStatusCode(401)
+                        .repoFullName(repoFullName)
+                        .message("No GitHub credential bound for this check.")
+                        .errors(List.of(
+                                "Provider Settings already has GitHub App/PAT credentials, but this pair side is unbound. "
+                                        + "Select a GitHub App or PAT in the pair form (above Check Access), or use Browse Repos to pick a repository from a credential card."
+                        ))
+                        .build();
+            }
+            return PermissionCheckReport.builder()
+                    .valid(false)
+                    .httpStatusCode(401)
+                    .repoFullName(repoFullName)
+                    .message("GitHub token or App authentication is required.")
+                    .errors(List.of(
+                            "Missing GitHub credentials. Configure a GitHub App or Personal Access Token in Provider Settings."
+                    ))
+                    .build();
+        }
+
+        return PermissionCheckReport.builder()
+                .valid(false)
+                .httpStatusCode(401)
+                .repoFullName(repoFullName)
+                .message("GitHub credential could not mint an access token.")
+                .errors(List.of(
+                        "Credential #" + boundId
+                                + " is bound but returned no token. Check App ID, private key, installation, or PAT in Provider Settings."
+                ))
+                .build();
     }
 
     public synchronized String getInstallationAccessToken() {
@@ -250,13 +297,7 @@ public class GitHubProviderService implements ScmProviderAdapter {
             if (publicRead && writeRequired) {
                 return PublicReadProbe.publicReadButWriteNeedsCredentials(repoFullName, publicDefaultBranch);
             }
-            return PermissionCheckReport.builder()
-                    .valid(false)
-                    .httpStatusCode(401)
-                    .repoFullName(repoFullName)
-                    .message("GitHub token or App authentication is required.")
-                    .errors(List.of("Missing GitHub credentials. Configure a GitHub App or Personal Access Token in Provider Settings."))
-                    .build();
+            return missingCredentialsReport(repoFullName);
         }
 
         List<String> passed = new ArrayList<>();

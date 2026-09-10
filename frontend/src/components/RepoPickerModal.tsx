@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  Search, X, Globe, GitFork, Layers, Lock, Check,
-  Loader2, ArrowRight, RefreshCw, Filter, Server
+  Search, X, Globe, GitFork, Layers, Lock,
+  Loader2, ArrowRight, Filter, Server
 } from 'lucide-react';
 import { GitHubRepoOption, RepoSearchResult, ScmCredential } from '../types';
 import { searchRemoteRepositories, listScmCredentials, searchCredentialRepositories } from '../services/api';
@@ -16,6 +16,7 @@ interface RepoPickerModalProps {
 }
 
 const PROVIDERS = ['GITHUB', 'GHES', 'GITLAB', 'BITBUCKET', 'ORIGIN'] as const;
+const PAGE_SIZE_OPTIONS = [15, 30, 50] as const;
 
 export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
   isOpen,
@@ -29,12 +30,15 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
   const [provider, setProvider] = useState<string>(defaultProvider === 'ALL' ? 'GITHUB' : defaultProvider);
   const [credentials, setCredentials] = useState<ScmCredential[]>([]);
   const [credentialId, setCredentialId] = useState<number | ''>('');
+  const [pageSize, setPageSize] = useState<number>(15);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [repos, setRepos] = useState<GitHubRepoOption[]>([]);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** False until user searches or clicks List accessible — avoids loading all repos on open. */
+  const [hasLoaded, setHasLoaded] = useState(false);
   const debounceTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const needsCredential = provider === 'GITHUB' || provider === 'GHES';
@@ -44,41 +48,53 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
     setQuery('');
     setPage(1);
     setRepos([]);
+    setHasMore(false);
+    setError(null);
+    setHasLoaded(false);
+    if (debounceTimeout.current) clearTimeout(debounceTimeout.current);
     if (needsCredential) {
       const p = provider === 'GHES' ? 'GITHUB_ENTERPRISE' : 'GITHUB';
-      listScmCredentials(p).then((rows) => {
-        setCredentials(rows.filter((r) => r.enabled));
-        setCredentialId(rows.find((r) => r.enabled)?.id ?? '');
-      }).catch(() => setCredentials([]));
+      listScmCredentials(p)
+        .then((rows) => {
+          const enabled = rows.filter((r) => r.enabled);
+          setCredentials(enabled);
+          setCredentialId(enabled[0]?.id ?? '');
+        })
+        .catch(() => {
+          setCredentials([]);
+          setCredentialId('');
+        });
     } else {
       setCredentials([]);
       setCredentialId('');
-      fetchRepos('', provider, 1, false, undefined);
     }
   }, [isOpen, provider]);
 
   useEffect(() => {
-    if (!isOpen || !needsCredential || credentialId === '') return;
-    fetchRepos(query, provider, 1, false, Number(credentialId));
-  }, [credentialId, isOpen]);
+    return () => {
+      if (debounceTimeout.current) clearTimeout(debounceTimeout.current);
+    };
+  }, []);
 
   const fetchRepos = async (
     searchQuery: string,
     activeProvider: string,
     pageNum: number,
     append = false,
-    cred?: number
+    cred?: number,
+    limit = pageSize
   ) => {
     if (pageNum === 1) setLoading(true);
     else setLoadingMore(true);
     setError(null);
+    setHasLoaded(true);
     try {
       let res: RepoSearchResult;
       if (cred) {
         res = await searchCredentialRepositories(cred, {
           query: searchQuery,
           page: pageNum,
-          limit: 15,
+          limit,
           access,
         });
       } else {
@@ -86,7 +102,7 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
           query: searchQuery,
           provider: activeProvider,
           page: pageNum,
-          limit: 15,
+          limit,
         });
       }
       setRepos((prev) => (append ? [...prev, ...(res.items || [])] : res.items || []));
@@ -102,13 +118,52 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
     }
   };
 
+  const canFetch = !needsCredential || credentialId !== '';
+
+  const runSearch = (searchQuery: string) => {
+    if (!canFetch) return;
+    setPage(1);
+    fetchRepos(
+      searchQuery,
+      provider,
+      1,
+      false,
+      credentialId === '' ? undefined : Number(credentialId),
+      pageSize
+    );
+  };
+
   const handleQueryChange = (val: string) => {
     setQuery(val);
     if (debounceTimeout.current) clearTimeout(debounceTimeout.current);
+    const trimmed = val.trim();
+    if (!trimmed) {
+      // Clearing search returns to idle — do not auto-list everything.
+      setRepos([]);
+      setHasMore(false);
+      setHasLoaded(false);
+      setError(null);
+      return;
+    }
     debounceTimeout.current = setTimeout(() => {
-      setPage(1);
-      fetchRepos(val, provider, 1, false, credentialId === '' ? undefined : Number(credentialId));
+      runSearch(trimmed);
     }, 300);
+  };
+
+  const handleListAccessible = () => {
+    if (!canFetch) return;
+    setQuery('');
+    runSearch('');
+  };
+
+  const handleCredentialChange = (next: number | '') => {
+    setCredentialId(next);
+    setRepos([]);
+    setHasMore(false);
+    setHasLoaded(false);
+    setError(null);
+    setQuery('');
+    if (debounceTimeout.current) clearTimeout(debounceTimeout.current);
   };
 
   const renderProviderIcon = (p?: string) => {
@@ -136,7 +191,7 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
           <div>
             <h3 className="text-sm font-semibold text-zinc-900">{title}</h3>
             <p className="text-xs text-zinc-500 mt-0.5">
-              Scoped by provider{needsCredential ? ' and credential' : ''}. {access === 'PUSH' ? 'Write access required.' : 'Read access required.'}
+              Search by name, or list a page of accessible repos. {access === 'PUSH' ? 'Write access required.' : 'Read access required.'}
             </p>
           </div>
           <button onClick={onClose} className="p-1.5 text-zinc-400 hover:text-zinc-700 rounded-lg hover:bg-zinc-100">
@@ -152,6 +207,7 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
             {PROVIDERS.map((p) => (
               <button
                 key={p}
+                type="button"
                 onClick={() => setProvider(p)}
                 className={`px-3 py-1 rounded-full font-medium ${
                   provider === p ? 'bg-zinc-900 text-white' : 'bg-white text-zinc-600 border border-zinc-200'
@@ -164,7 +220,7 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
           {needsCredential && (
             <select
               value={credentialId}
-              onChange={(e) => setCredentialId(e.target.value ? Number(e.target.value) : '')}
+              onChange={(e) => handleCredentialChange(e.target.value ? Number(e.target.value) : '')}
               className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs"
             >
               <option value="">{credentials.length ? 'Select a credential' : 'No GitHub/GHES credentials — add one in Settings'}</option>
@@ -175,16 +231,39 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
               ))}
             </select>
           )}
-          <div className="relative">
-            <Search className="w-4 h-4 text-zinc-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={query}
-              onChange={(e) => handleQueryChange(e.target.value)}
-              placeholder="Search by repo name or org..."
-              className="w-full bg-white border border-zinc-200 rounded-xl pl-9 pr-4 py-2 text-xs"
-              autoFocus
-            />
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 text-zinc-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={query}
+                onChange={(e) => handleQueryChange(e.target.value)}
+                placeholder="Search by repo name or org…"
+                className="w-full bg-white border border-zinc-200 rounded-xl pl-9 pr-4 py-2 text-xs"
+                autoFocus
+                disabled={needsCredential && credentialId === ''}
+              />
+            </div>
+            <select
+              value={pageSize}
+              onChange={(e) => setPageSize(Number(e.target.value))}
+              className="bg-white border border-zinc-200 rounded-xl px-2 py-2 text-xs text-zinc-700 shrink-0"
+              title="Results per page"
+            >
+              {PAGE_SIZE_OPTIONS.map((n) => (
+                <option key={n} value={n}>
+                  {n} / page
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={handleListAccessible}
+              disabled={!canFetch || loading}
+              className="shrink-0 px-3 py-2 rounded-xl bg-zinc-900 text-white text-xs font-medium disabled:opacity-40 hover:bg-zinc-800"
+            >
+              List accessible
+            </button>
           </div>
         </div>
 
@@ -192,16 +271,21 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
           {loading ? (
             <div className="py-12 flex flex-col items-center space-y-2 text-zinc-400 text-xs">
               <Loader2 className="w-6 h-6 animate-spin" />
-              <span>Loading repositories…</span>
+              <span>{query.trim() ? 'Searching…' : 'Loading repositories…'}</span>
             </div>
           ) : error ? (
             <p className="py-12 text-center text-rose-600 text-xs px-6">{error}</p>
           ) : needsCredential && credentialId === '' ? (
-            <p className="py-12 text-center text-zinc-500 text-xs">Select a credential to list repositories it can access.</p>
+            <p className="py-12 text-center text-zinc-500 text-xs">Select a credential, then search or list accessible repos.</p>
+          ) : !hasLoaded ? (
+            <div className="py-12 text-center text-zinc-500 text-xs px-6 space-y-2">
+              <p>Repos are not loaded until you search or click <span className="font-medium text-zinc-700">List accessible</span>.</p>
+              <p className="text-zinc-400">Use search for large installations; list loads one page ({pageSize} repos) at a time.</p>
+            </div>
           ) : repos.length === 0 ? (
             <p className="py-12 text-center text-zinc-500 text-xs px-6">
               {query.trim()
-                ? `No repositories matching “${query.trim()}” for this credential. Clear the search to list all repos the App can access.`
+                ? `No repositories matching “${query.trim()}” for this credential.`
                 : 'No repositories for this credential. On GitHub, open the App installation and grant it the repositories you want to mirror.'}
             </p>
           ) : (
@@ -231,11 +315,20 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
               {hasMore && (
                 <button
                   type="button"
-                  onClick={() => fetchRepos(query, provider, page + 1, true, credentialId === '' ? undefined : Number(credentialId))}
+                  onClick={() =>
+                    fetchRepos(
+                      query.trim(),
+                      provider,
+                      page + 1,
+                      true,
+                      credentialId === '' ? undefined : Number(credentialId),
+                      pageSize
+                    )
+                  }
                   disabled={loadingMore}
                   className="px-4 py-2 bg-zinc-100 rounded-xl text-xs mx-auto block"
                 >
-                  {loadingMore ? 'Loading…' : 'Load more'}
+                  {loadingMore ? 'Loading…' : `Load more (${pageSize})`}
                 </button>
               )}
             </>

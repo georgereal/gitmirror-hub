@@ -62,6 +62,12 @@ public class ScmCredentialService {
         return credentialRepository.findByProviderOrderByIdAsc(norm);
     }
 
+    /** Whether any enabled credential exists for the provider (e.g. {@link #PROVIDER_GITHUB}). */
+    public boolean hasEnabled(String provider) {
+        String norm = normalizeProvider(provider);
+        return !credentialRepository.findByProviderAndEnabledTrueOrderByIdAsc(norm).isEmpty();
+    }
+
     public ScmCredential require(Long id) {
         if (id == null) {
             throw new IllegalArgumentException("credentialId is required");

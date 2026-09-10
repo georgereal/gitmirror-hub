@@ -332,7 +332,8 @@ To mirror real GitHub repositories:
 3. Click **Save Mirror Pair**.
 
 For **third-party public sources** (e.g. `https://github.com/microsoft/vscode`):
-- **Check Access** on the source uses anonymous HTTPS first unless the pair marks that side **Private**. Destination Check Access is always authenticated write (Contents Read & write). A public source succeeds without installing your GitHub App on that repository.
+- **Check Access** on the source: **Public** = anonymous HTTPS only; **Auto** = public probe first, then a credential modal if auth is required; **Private** = credential modal (GitHub App/PAT) then authenticated check. Intermediate Auto probe failures are not shown until the final result. Destination Check Access prompts for a credential when write/private access is needed. A public source succeeds without installing your GitHub App on that repository.
+- Bind the chosen App/PAT to the pair via that modal (or **Browse Repos**). Provider Settings alone does not select which credential a pair uses.
 - GitHub App **Subscribe to events → Push** is webhook delivery only. Git clone/push requires **Repository permissions → Contents: Read and write** (scroll above the event list), plus **Actions: Read and write** (cancel mirror-triggered workflow runs) and **Workflows: Read and write** if the source has `.github/workflows`. After changing permissions, GitHub asks you to review the installation on the destination repository.
 - The destination still needs write credentials (GitHub App or PAT with Contents: Write).
 - You cannot attach a webhook to a repo you do not administer. Use **Sync Now**, initial bootstrap, or a synthetic event to run the first mirror.
