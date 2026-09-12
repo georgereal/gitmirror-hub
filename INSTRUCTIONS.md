@@ -307,6 +307,8 @@ Migration to Postgres (datasource profile + Flyway/Liquibase) is planned when le
 
 To mirror real GitHub repositories:
 
+> **GitHub App creation (recommended):** step-by-step App registration, permissions, install ID, and Hub credential mapping — see [`SCM_PROVIDER_SETUP.md`](SCM_PROVIDER_SETUP.md). That guide will expand for GitLab, Bitbucket, and other providers.
+
 ### Step 1: Create GitHub Fine-Grained Personal Access Tokens (PAT)
 
 1. On GitHub, go to **Settings > Developer settings > Personal access tokens > Fine-grained tokens**.
@@ -342,7 +344,7 @@ For **third-party public sources** (e.g. `https://github.com/microsoft/vscode`):
 
 ### Step 3: Configure Webhook in GitHub App or Repository
 
-
+Full App setup (create → permissions → install → Hub card): [`SCM_PROVIDER_SETUP.md`](SCM_PROVIDER_SETUP.md) §1.
 
 #### Option A: In your GitHub App (*Developer settings > GitHub Apps > [Your App]*):
 

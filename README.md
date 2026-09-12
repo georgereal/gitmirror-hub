@@ -135,6 +135,8 @@ See [`webhook-worker/README.md`](webhook-worker/README.md) for detailed configur
 
 ## 📡 Webhook Integration Across Providers
 
+Creating a **GitHub App** (permissions, PEM, installation ID, Hub credential fields): see [`SCM_PROVIDER_SETUP.md`](SCM_PROVIDER_SETUP.md). Ops runbook: [`INSTRUCTIONS.md`](INSTRUCTIONS.md).
+
 ### 1. GitHub Cloud / GitHub Enterprise Server
 In your GitHub App or Repository settings (*Settings > Webhooks > Add webhook*):
 * **Payload URL**: `https://gitmirror-webhook-worker.<your-username>.workers.dev/webhook/github` (or `/webhook/ghes`)

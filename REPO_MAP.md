@@ -12,6 +12,7 @@ gitUtility/
 ├── REPO_MAP.md                         # Codebase map and component index (this file)
 ├── INSTRUCTIONS.md                     # Operational guide, runbook, and failover instructions
 ├── INSTRUCTIONS-MULTI-POD.md           # Local multi-pod (2+ backend JVMs) runbook
+├── SCM_PROVIDER_SETUP.md               # Create/configure SCM identities (GitHub App first; more providers later)
 ├── README.md                           # Quickstart summary
 ├── SECURITY.md                         # Localhost-only threat model & secret handling
 ├── LICENSE                             # MIT
