@@ -272,8 +272,9 @@ gitUtility/
             ├── QueueControlPanel.tsx           # Consumer pause/resume & 1-click DLQ Redrive panel
             ├── SimulationLab.tsx               # Chaos sandbox: outage toggles & synthetic webhook form
             ├── JobLogModal.tsx                 # Audit log drawer; live overlay, pipeline, provider API, rejected refs
-            ├── PairConfigModal.tsx             # Add/Edit mirror pair configuration modal with smart URL detection
-            ├── RepoPickerModal.tsx             # Lazy-loading multi-provider repository explorer with server-side search
+            ├── PairConfigModal.tsx             # Add/Edit mirror pair; Check Access with Auto/Public/Private and deferred credential prompt
+            ├── CredentialPickModal.tsx         # Quick GitHub App/PAT picker opened when Check Access needs authentication
+            ├── RepoPickerModal.tsx             # Search-first multi-provider repo explorer (list accessible / page size; no full load on open)
             ├── InfoTooltip.tsx                 # Contextual parameter explanation tooltip component
             └── UnmappedWebhooksView.tsx        # Discarded & unmapped webhooks stream with 1-click configure action
 ```
