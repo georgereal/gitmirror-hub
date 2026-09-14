@@ -1,5 +1,6 @@
 package com.gitutility.model.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -16,11 +17,16 @@ public class PermissionCheckReport {
     private boolean valid;
     private String repoFullName;
     private String defaultBranch;
+    /**
+     * Repo visibility from the SCM. Explicit JSON name required: Lombok's {@code isPrivate()}
+     * getter otherwise serializes as {@code "private"}, which the UI never reads.
+     */
+    @JsonProperty("isPrivate")
     private boolean isPrivate;
     private int httpStatusCode;
     private String message;
 
-    /** PUBLIC = anonymous HTTPS read succeeded; AUTHENTICATED = credentials were required. */
+    /** PUBLIC = anonymous Access check succeeded; AUTHENTICATED = App/PAT Access check succeeded. */
     private String accessMode;
 
     private PermissionsDetail permissions;

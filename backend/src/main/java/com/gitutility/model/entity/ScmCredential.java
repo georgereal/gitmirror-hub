@@ -51,10 +51,20 @@ public class ScmCredential {
     @Column(length = 10000)
     private String privateKeyPem;
 
-    /** Required when {@code authMode=GITHUB_APP}. Never auto-filled from installations[0]. */
+    /**
+     * Primary / display installation id (first of the selected list).
+     * Never auto-filled from installations[0] — operator must select.
+     */
     private String installationId;
 
-    /** Org or user login the installation is on (cached from GitHub). */
+    /**
+     * JSON array of selected installation ids for this App card, e.g. {@code ["123","456"]}.
+     * New installs are not auto-included until the operator lists and selects them.
+     */
+    @Column(columnDefinition = "CLOB")
+    private String installationIdsJson;
+
+    /** Org or user login for the primary installation (cached from GitHub). */
     private String accountLogin;
 
     /** {@code Organization} or {@code User}. */

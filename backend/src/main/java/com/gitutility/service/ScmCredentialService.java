@@ -7,6 +7,8 @@ import com.gitutility.model.dto.*;
 import com.gitutility.model.entity.GitHubAppConfig;
 import com.gitutility.model.entity.RepoMapping;
 import com.gitutility.model.entity.ScmCredential;
+import com.gitutility.model.enums.RepoVisibility;
+import com.gitutility.model.enums.SyncDirection;
 import com.gitutility.repository.GitHubAppConfigRepository;
 import com.gitutility.repository.RepoMappingRepository;
 import com.gitutility.repository.ScmCredentialRepository;
@@ -24,12 +26,15 @@ import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import com.gitutility.model.InstallationIds;
 
 @Service
 @RequiredArgsConstructor
@@ -41,6 +46,14 @@ public class ScmCredentialService {
     public static final String MODE_APP = "GITHUB_APP";
     public static final String MODE_PAT = "PERSONAL_ACCESS_TOKEN";
 
+    /** Actionable fix-up text shared by the create-repo preflight and the provider 403 handlers. */
+    public static final String MISSING_REPO_CREATE_PERMISSION_HINT =
+            "The credential lacks the Administration (write) repository permission required to create repositories. "
+                    + "For a GitHub App: Settings → Developer settings → GitHub Apps → <App> → Permissions → "
+                    + "Repository permissions → set Administration: Read and write, then accept the pending "
+                    + "permission change on the installation. For a fine-grained PAT: regenerate it with "
+                    + "Administration: Read and write.";
+
     private static final Pattern OWNER_REPO = Pattern.compile(
             "(?:https?://[^/]+/|git@[^:]+:)([^/]+)/([^/.]+)(?:\\.git)?/?");
 
@@ -48,6 +61,7 @@ public class ScmCredentialService {
     private final GitHubAppConfigRepository legacyConfigRepository;
     private final RepoMappingRepository mappingRepository;
     private final RestTemplate restTemplate;
+    private final FeatureFlagsService featureFlagsService;
     private final ObjectMapper objectMapper = JsonMapper.builder().build();
 
     private final ConcurrentHashMap<String, CachedToken> tokenCache = new ConcurrentHashMap<>();
@@ -110,8 +124,24 @@ public class ScmCredentialService {
 
     /**
      * Strict token for this credential only. App never reads PAT; PAT never mints an install token.
+     * Apps without a repo context use the primary (first selected) installation.
      */
     public String resolveAccessToken(ScmCredential cred) {
+        return resolveAccessToken(cred, null, null);
+    }
+
+    public String resolveAccessToken(Long credentialId) {
+        return resolveAccessToken(requireEnabled(credentialId), null, null);
+    }
+
+    /**
+     * Mint a token for a specific install and/or repo. Never picks an arbitrary install for a concrete repo URL.
+     */
+    public String resolveAccessToken(Long credentialId, String preferredInstallationId, String repoUrl) {
+        return resolveAccessToken(requireEnabled(credentialId), preferredInstallationId, repoUrl);
+    }
+
+    public String resolveAccessToken(ScmCredential cred, String preferredInstallationId, String repoUrl) {
         if (cred == null) {
             return null;
         }
@@ -125,13 +155,10 @@ public class ScmCredentialService {
             return cred.getPatToken().trim();
         }
         if (cred.isGitHubApp()) {
-            return mintInstallationToken(cred);
+            String installId = resolveInstallationIdForRepo(cred, repoUrl, preferredInstallationId);
+            return mintInstallationToken(cred, installId);
         }
         throw new IllegalStateException("Unknown authMode on credential '" + cred.getLabel() + "': " + cred.getAuthMode());
-    }
-
-    public String resolveAccessToken(Long credentialId) {
-        return resolveAccessToken(requireEnabled(credentialId));
     }
 
     public String resolveCurrentOrNull() {
@@ -139,7 +166,73 @@ public class ScmCredentialService {
         if (id == null) {
             return null;
         }
-        return resolveAccessToken(requireEnabled(id));
+        return resolveAccessToken(requireEnabled(id), null, null);
+    }
+
+    public List<String> resolvedInstallationIds(ScmCredential cred) {
+        if (cred == null) {
+            return List.of();
+        }
+        return InstallationIds.decode(cred.getInstallationIdsJson(), cred.getInstallationId());
+    }
+
+    /**
+     * Pick the installation that owns {@code repoUrl}. Prefer an explicit pair-side id when it is
+     * in the credential's selected list. Never fall back to "first of many" for a concrete repo.
+     */
+    public String resolveInstallationIdForRepo(ScmCredential cred, String repoUrl, String preferredInstallationId) {
+        List<String> allowed = resolvedInstallationIds(cred);
+        if (allowed.isEmpty()) {
+            throw new IllegalStateException(
+                    "GitHub App credential '" + cred.getLabel() + "' has no installation selected. Pick org(s) in Settings.");
+        }
+        if (notBlank(preferredInstallationId)) {
+            String pref = preferredInstallationId.trim();
+            if (!InstallationIds.contains(allowed, pref)) {
+                throw new IllegalArgumentException(
+                        "Installation " + pref + " is not selected on credential '" + cred.getLabel() + "'.");
+            }
+            return pref;
+        }
+        if (isBlank(repoUrl)) {
+            return allowed.get(0);
+        }
+        if (allowed.size() == 1) {
+            return allowed.get(0);
+        }
+        String fullName = parseOwnerRepo(repoUrl);
+        if (fullName == null) {
+            throw new IllegalStateException(
+                    "Cannot resolve App installation for '" + cred.getLabel()
+                            + "' — multiple installs selected and repo URL is not parseable.");
+        }
+        try {
+            String jwt = GitHubAppJwt.generate(cred.getAppId(), cred.getPrivateKeyPem());
+            HttpHeaders headers = appJwtHeaders(jwt);
+            String url = apiRoot(cred) + "/repos/" + fullName + "/installation";
+            ResponseEntity<String> resp = restTemplate.exchange(URI.create(url), HttpMethod.GET, new HttpEntity<>(headers), String.class);
+            JsonNode root = objectMapper.readTree(resp.getBody());
+            String found = root.path("id").asText(null);
+            if (isBlank(found)) {
+                throw new AuthInstallationMismatchException(
+                        "GitHub did not return an installation for " + fullName + " under App " + cred.getAppId() + ".");
+            }
+            if (!InstallationIds.contains(allowed, found)) {
+                throw new AuthInstallationMismatchException(
+                        "Repository " + fullName + " is on installation " + found
+                                + ", which is not selected on credential '" + cred.getLabel()
+                                + "'. Add that install in Settings or rebind the pair.");
+            }
+            return found.trim();
+        } catch (AuthInstallationMismatchException e) {
+            throw e;
+        } catch (HttpClientErrorException e) {
+            throw new AuthInstallationMismatchException(
+                    "Could not resolve installation for " + fullName + " (" + e.getStatusCode()
+                            + "). Rebind the pair or select the owning install on the App card.");
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to resolve installation for " + fullName + ": " + e.getMessage(), e);
+        }
     }
 
     public List<ScmInstallationOption> listInstallations(Long credentialId) {
@@ -147,22 +240,57 @@ public class ScmCredentialService {
         if (!cred.isGitHubApp() || isBlank(cred.getAppId()) || isBlank(cred.getPrivateKeyPem())) {
             throw new IllegalStateException("Installations can only be listed for a GitHub App with App ID + private key.");
         }
+        return fetchInstallations(cred.getProvider(), cred.getHostUrl(), cred.getAppId(), cred.getPrivateKeyPem());
+    }
+
+    /**
+     * List installations from unsaved / edited form values (App ID + PEM), optionally reusing a stored PEM.
+     */
+    public List<ScmInstallationOption> previewInstallations(ScmInstallationsPreviewRequest req) {
+        if (req == null) {
+            throw new IllegalArgumentException("preview body is required");
+        }
+        String provider = normalizeProvider(req.getProvider());
+        String hostUrl = PROVIDER_GITHUB.equals(provider)
+                ? "https://github.com"
+                : trimHost(req.getHostUrl());
+        String appId = req.getAppId() != null ? req.getAppId().trim() : null;
+        String pem = notBlank(req.getPrivateKeyPem()) ? req.getPrivateKeyPem() : null;
+        if ((isBlank(pem) || isBlank(appId)) && req.getCredentialId() != null) {
+            ScmCredential existing = require(req.getCredentialId());
+            if (isBlank(pem)) {
+                pem = existing.getPrivateKeyPem();
+            }
+            if (isBlank(appId)) {
+                appId = existing.getAppId();
+            }
+            if (isBlank(hostUrl) && existing.getHostUrl() != null) {
+                hostUrl = existing.getHostUrl();
+            }
+            if (req.getProvider() == null || req.getProvider().isBlank()) {
+                provider = existing.getProvider();
+            }
+        }
+        if (isBlank(appId) || isBlank(pem)) {
+            throw new IllegalArgumentException("App ID and private key are required to list installations.");
+        }
+        if (PROVIDER_GHES.equals(provider) && isBlank(hostUrl)) {
+            throw new IllegalArgumentException("GHES hostUrl is required to list installations.");
+        }
+        return fetchInstallations(provider, hostUrl, appId, pem);
+    }
+
+    private List<ScmInstallationOption> fetchInstallations(String provider, String hostUrl, String appId, String privateKeyPem) {
         try {
-            String jwt = GitHubAppJwt.generate(cred.getAppId(), cred.getPrivateKeyPem());
+            String jwt = GitHubAppJwt.generate(appId, privateKeyPem);
             HttpHeaders headers = appJwtHeaders(jwt);
-            String url = apiRoot(cred) + "/app/installations?per_page=100";
+            String url = apiRoot(provider, hostUrl) + "/app/installations?per_page=100";
             ResponseEntity<String> resp = restTemplate.exchange(URI.create(url), HttpMethod.GET, new HttpEntity<>(headers), String.class);
             JsonNode root = objectMapper.readTree(resp.getBody());
             List<ScmInstallationOption> out = new ArrayList<>();
             if (root.isArray()) {
                 for (JsonNode n : root) {
-                    out.add(ScmInstallationOption.builder()
-                            .installationId(n.path("id").asText())
-                            .accountLogin(n.path("account").path("login").asText(null))
-                            .accountType(n.path("account").path("type").asText(null))
-                            .repositorySelection(n.path("repository_selection").asText(null))
-                            .htmlUrl(n.path("html_url").asText(null))
-                            .build());
+                    out.add(ScmInstallationOption.fromInstallation(n));
                 }
             }
             return out;
@@ -173,16 +301,35 @@ public class ScmCredentialService {
 
     public RepoSearchResult searchRepositories(Long credentialId, String query, int page, int perPage, String access) {
         ScmCredential cred = requireEnabled(credentialId);
-        String token = resolveAccessToken(cred);
         int safePage = Math.max(1, page);
         int safeLimit = Math.min(50, Math.max(5, perPage));
 
-        List<GitHubRepoOption> items = listReposWithToken(cred, token);
+        List<GitHubRepoOption> items;
+        if (cred.isGitHubApp()) {
+            LinkedHashMap<String, GitHubRepoOption> byFullName = new LinkedHashMap<>();
+            for (String installId : resolvedInstallationIds(cred)) {
+                String token = mintInstallationToken(cred, installId);
+                for (GitHubRepoOption item : listReposWithToken(cred, token, installId)) {
+                    item.setCredentialId(cred.getId());
+                    item.setProvider(cred.isEnterprise() ? "GHES" : "GITHUB");
+                    item.setInstallationId(installId);
+                    String key = item.getFullName() != null ? item.getFullName().toLowerCase(Locale.ROOT) : item.getId();
+                    byFullName.putIfAbsent(key, item);
+                }
+            }
+            items = new ArrayList<>(byFullName.values());
+        } else {
+            String token = resolveAccessToken(cred);
+            items = listReposWithToken(cred, token, null);
+            for (GitHubRepoOption item : items) {
+                item.setCredentialId(cred.getId());
+                item.setProvider(cred.isEnterprise() ? "GHES" : "GITHUB");
+            }
+        }
+
         String q = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
         List<GitHubRepoOption> filtered = new ArrayList<>();
         for (GitHubRepoOption item : items) {
-            item.setCredentialId(cred.getId());
-            item.setProvider(cred.isEnterprise() ? "GHES" : "GITHUB");
             // Installation / user lists are already access-scoped. Do not hide repos because
             // GitHub App tokens often report permissions.pull/push as false on this endpoint.
             if (!q.isBlank()) {
@@ -273,6 +420,8 @@ public class ScmCredentialService {
         if (req.getName() == null || req.getName().isBlank()) {
             throw new IllegalArgumentException("repository name is required to create a remote");
         }
+        assertCanCreateRepository(credentialId,
+                req.getOrg() != null && !req.getOrg().isBlank() ? req.getOrg().trim() : cred.getAccountLogin());
         String token = resolveAccessToken(cred);
         try {
             HttpHeaders headers = bearerHeaders(token);
@@ -295,7 +444,54 @@ public class ScmCredentialService {
         }
     }
 
+    /**
+     * Create-repo permission preflight for GitHub App credentials.
+     * Blocks with {@link IllegalArgumentException} only when GitHub positively reports that the
+     * installation matching {@code ownerLogin} lacks {@code administration: write}. Unknown
+     * information (no matching installation, host without a permissions node, PAT credentials,
+     * preflight lookup failures) never blocks — GitHub remains the final arbiter.
+     */
+    public void assertCanCreateRepository(Long credentialId, String ownerLogin) {
+        if (credentialId == null) {
+            return;
+        }
+        ScmCredential cred;
+        try {
+            cred = requireEnabled(credentialId);
+        } catch (Exception e) {
+            return; // credential problems surface from the create flow itself
+        }
+        if (!cred.isGitHubApp()) {
+            return; // GitHub provides no permission introspection for PATs
+        }
+        try {
+            List<ScmInstallationOption> installs = fetchInstallations(
+                    cred.getProvider(), cred.getHostUrl(), cred.getAppId(), cred.getPrivateKeyPem());
+            String owner = ownerLogin == null ? null : ownerLogin.trim();
+            if (owner == null || owner.isEmpty()) {
+                return;
+            }
+            ScmInstallationOption match = installs.stream()
+                    .filter(i -> owner.equalsIgnoreCase(i.getAccountLogin()))
+                    .findFirst()
+                    .orElse(null);
+            if (match != null && Boolean.FALSE.equals(match.getCanCreateRepo())) {
+                throw new IllegalArgumentException(
+                        "GitHub App installation '@" + match.getAccountLogin()
+                                + "' cannot create repositories: " + MISSING_REPO_CREATE_PERMISSION_HINT);
+            }
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            log.debug("Create-repo permission preflight skipped for credential {}: {}", credentialId, e.getMessage());
+        }
+    }
+
     public void assertRepoAccessible(ScmCredential cred, String repoUrl) {
+        assertRepoAccessible(cred, repoUrl, null);
+    }
+
+    public void assertRepoAccessible(ScmCredential cred, String repoUrl, String preferredInstallationId) {
         if (cred == null || repoUrl == null) {
             return;
         }
@@ -303,19 +499,13 @@ public class ScmCredentialService {
         if (fullName == null) {
             return;
         }
-        if (cred.getAccountLogin() != null && !cred.getAccountLogin().isBlank()) {
-            String owner = fullName.split("/")[0];
-            if (!owner.equalsIgnoreCase(cred.getAccountLogin())) {
-                throw new AuthInstallationMismatchException(
-                        "Repository owner '" + owner + "' does not match credential '" + cred.getLabel()
-                                + "' (bound to " + cred.getAccountLogin() + "). Rebind this pair side — do not auto-switch.");
-            }
-        }
         try {
-            String token = resolveAccessToken(cred);
+            String token = resolveAccessToken(cred, preferredInstallationId, repoUrl);
             HttpHeaders headers = bearerHeaders(token);
             String url = apiRoot(cred) + "/repos/" + fullName;
             restTemplate.exchange(URI.create(url), HttpMethod.GET, new HttpEntity<>(headers), String.class);
+        } catch (AuthInstallationMismatchException e) {
+            throw e;
         } catch (HttpClientErrorException e) {
             if (e.getStatusCode() == HttpStatus.NOT_FOUND || e.getStatusCode() == HttpStatus.FORBIDDEN) {
                 throw new AuthInstallationMismatchException(
@@ -360,8 +550,17 @@ public class ScmCredentialService {
         if (isBlank(installationId)) {
             return null;
         }
-        return credentialRepository.findByInstallationIdAndProvider(installationId.trim(), normalizeProvider(provider))
-                .orElse(null);
+        String needle = installationId.trim();
+        String normalized = normalizeProvider(provider);
+        return credentialRepository.findByInstallationIdAndProvider(needle, normalized)
+                .orElseGet(() -> {
+                    for (ScmCredential cred : list(normalized)) {
+                        if (cred.isGitHubApp() && InstallationIds.contains(resolvedInstallationIds(cred), needle)) {
+                            return cred;
+                        }
+                    }
+                    return null;
+                });
     }
 
     public List<ScmCredential> suggestForRepoUrl(String repoUrl) {
@@ -615,13 +814,40 @@ public class ScmCredentialService {
         if (mapping == null) {
             return;
         }
+        // Public GitHub sources may be unbound (anonymous HTTPS) only when the feature is enabled.
         if (isGithubOrGhesUrl(mapping.getRepoAUrl()) && mapping.getSourceCredentialId() == null) {
-            throw new IllegalArgumentException(
-                    "Source is GitHub/GHES — pick a repository from a credential in the picker so the pair stores sourceCredentialId.");
+            if (mapping.getSourceVisibility() != RepoVisibility.PUBLIC) {
+                throw new IllegalArgumentException(
+                        "Source is GitHub/GHES — Add the repo (Browse or paste URL) so the pair stores access state. "
+                                + "Public sources can be added anonymously; private sources need a credential.");
+            }
+            featureFlagsService.requirePublicReposAllowed();
         }
         if (isGithubOrGhesUrl(mapping.getRepoBUrl()) && mapping.getTargetCredentialId() == null) {
+            // Destination write needs a credential except read-only public dest on B→A.
+            boolean readOnlyPublicDest = mapping.getSyncDirection() == SyncDirection.UNIDIRECTIONAL_B_TO_A
+                    && mapping.getTargetVisibility() == RepoVisibility.PUBLIC;
+            if (!readOnlyPublicDest) {
+                throw new IllegalArgumentException(
+                        "Destination is GitHub/GHES — Add the repo with a credential that can write (or public read-only for B→A).");
+            }
+        }
+        validateInstallationBinding(mapping.getSourceCredentialId(), mapping.getSourceInstallationId(), "Source");
+        validateInstallationBinding(mapping.getTargetCredentialId(), mapping.getTargetInstallationId(), "Destination");
+    }
+
+    private void validateInstallationBinding(Long credentialId, String installationId, String side) {
+        if (credentialId == null || isBlank(installationId)) {
+            return;
+        }
+        ScmCredential cred = require(credentialId);
+        if (!cred.isGitHubApp()) {
+            return;
+        }
+        if (!InstallationIds.contains(resolvedInstallationIds(cred), installationId)) {
             throw new IllegalArgumentException(
-                    "Destination is GitHub/GHES — pick a repository from a credential in the picker so the pair stores targetCredentialId.");
+                    side + " installation " + installationId.trim()
+                            + " is not selected on credential '" + cred.getLabel() + "'.");
         }
     }
 
@@ -676,9 +902,7 @@ public class ScmCredentialService {
         if (notBlank(req.getPrivateKeyPem())) {
             cred.setPrivateKeyPem(req.getPrivateKeyPem());
         }
-        if (req.getInstallationId() != null) {
-            cred.setInstallationId(req.getInstallationId().trim());
-        }
+        applyInstallationIds(cred, req);
         if (req.getWebhookSecret() != null) {
             cred.setWebhookSecret(req.getWebhookSecret());
         }
@@ -693,16 +917,40 @@ public class ScmCredentialService {
             if (isBlank(cred.getAppId()) || isBlank(cred.getPrivateKeyPem())) {
                 throw new IllegalArgumentException("GitHub App credentials require App ID and private key.");
             }
-            if (isBlank(cred.getInstallationId())) {
+            List<String> ids = resolvedInstallationIds(cred);
+            if (ids.isEmpty()) {
                 throw new IllegalArgumentException(
-                        "Pick an installation (org) for this GitHub App. The Hub will not use installations[0].");
+                        "Select at least one installation (org) for this GitHub App. The Hub will not use installations[0].");
             }
+            cred.setInstallationIdsJson(InstallationIds.encode(ids));
+            cred.setInstallationId(InstallationIds.primary(ids));
         } else if (cred.isPat()) {
             cred.setAppId(null);
             cred.setPrivateKeyPem(null);
             cred.setInstallationId(null);
+            cred.setInstallationIdsJson(null);
             if (creating && isBlank(cred.getPatToken())) {
                 throw new IllegalArgumentException("PAT credentials require a token.");
+            }
+        }
+    }
+
+    private void applyInstallationIds(ScmCredential cred, ScmCredentialRequest req) {
+        if (req.getInstallationIds() != null) {
+            List<String> ids = InstallationIds.normalize(req.getInstallationIds());
+            cred.setInstallationIdsJson(InstallationIds.encode(ids));
+            cred.setInstallationId(InstallationIds.primary(ids));
+            return;
+        }
+        if (req.getInstallationId() != null) {
+            String singular = req.getInstallationId().trim();
+            if (singular.isEmpty()) {
+                cred.setInstallationId(null);
+                cred.setInstallationIdsJson("[]");
+            } else {
+                List<String> ids = List.of(singular);
+                cred.setInstallationId(singular);
+                cred.setInstallationIdsJson(InstallationIds.encode(ids));
             }
         }
     }
@@ -737,14 +985,24 @@ public class ScmCredentialService {
     }
 
     private String mintInstallationToken(ScmCredential cred) {
+        return mintInstallationToken(cred, InstallationIds.primary(resolvedInstallationIds(cred)));
+    }
+
+    private String mintInstallationToken(ScmCredential cred, String installationId) {
         if (isBlank(cred.getAppId()) || isBlank(cred.getPrivateKeyPem())) {
             throw new IllegalStateException("GitHub App credential '" + cred.getLabel() + "' is missing App ID or private key.");
         }
-        if (isBlank(cred.getInstallationId())) {
+        if (isBlank(installationId)) {
             throw new IllegalStateException(
-                    "GitHub App credential '" + cred.getLabel() + "' has no installation selected. Pick the org in Settings.");
+                    "GitHub App credential '" + cred.getLabel() + "' has no installation selected. Pick org(s) in Settings.");
         }
-        String cacheKey = cred.getProvider() + "|" + cred.getHostUrl() + "|" + cred.getInstallationId();
+        String install = installationId.trim();
+        List<String> allowed = resolvedInstallationIds(cred);
+        if (!allowed.isEmpty() && !InstallationIds.contains(allowed, install)) {
+            throw new IllegalArgumentException(
+                    "Installation " + install + " is not selected on credential '" + cred.getLabel() + "'.");
+        }
+        String cacheKey = cred.getProvider() + "|" + cred.getHostUrl() + "|" + install;
         CachedToken cached = tokenCache.get(cacheKey);
         if (cached != null && Instant.now().isBefore(cached.expiresAt().minusSeconds(120))) {
             return cached.token();
@@ -752,7 +1010,7 @@ public class ScmCredentialService {
         try {
             String jwt = GitHubAppJwt.generate(cred.getAppId(), cred.getPrivateKeyPem());
             HttpHeaders headers = appJwtHeaders(jwt);
-            String url = apiRoot(cred) + "/app/installations/" + cred.getInstallationId().trim() + "/access_tokens";
+            String url = apiRoot(cred) + "/app/installations/" + install + "/access_tokens";
             ResponseEntity<String> resp = restTemplate.exchange(URI.create(url), HttpMethod.POST, new HttpEntity<>(headers), String.class);
             JsonNode root = objectMapper.readTree(resp.getBody());
             String token = root.path("token").asText(null);
@@ -763,14 +1021,14 @@ public class ScmCredentialService {
             Instant exp = notBlank(expiresAt) ? Instant.parse(expiresAt) : Instant.now().plusSeconds(3500);
             tokenCache.put(cacheKey, new CachedToken(token, exp));
             log.info("Acquired installation token for credential '{}' install {} (expires {})",
-                    cred.getLabel(), cred.getInstallationId(), exp);
+                    cred.getLabel(), install, exp);
             return token;
         } catch (AuthInstallationMismatchException e) {
             throw e;
         } catch (HttpClientErrorException e) {
             if (e.getStatusCode() == HttpStatus.NOT_FOUND) {
                 throw new AuthInstallationMismatchException(
-                        "Installation " + cred.getInstallationId() + " was not found for App " + cred.getAppId()
+                        "Installation " + install + " was not found for App " + cred.getAppId()
                                 + ". Rebind this credential.");
             }
             throw new IllegalStateException("Failed to mint installation token: " + e.getMessage(), e);
@@ -779,7 +1037,7 @@ public class ScmCredentialService {
         }
     }
 
-    private List<GitHubRepoOption> listReposWithToken(ScmCredential cred, String token) {
+    private List<GitHubRepoOption> listReposWithToken(ScmCredential cred, String token, String installationId) {
         List<GitHubRepoOption> items = new ArrayList<>();
         HttpHeaders headers = bearerHeaders(token);
         try {
@@ -795,7 +1053,7 @@ public class ScmCredentialService {
                     JsonNode repos = root.path("repositories");
                     if (repos.isArray()) {
                         for (JsonNode repo : repos) {
-                            items.add(toOption(repo, cred));
+                            items.add(toOption(repo, cred, installationId));
                         }
                     } else if (root.has("message")) {
                         throw new IllegalStateException("GitHub repo list failed: " + root.path("message").asText());
@@ -804,7 +1062,7 @@ public class ScmCredentialService {
                 }
                 if (items.isEmpty()) {
                     log.warn("GitHub App credential '{}' (install {}) returned 0 repositories (total_count={}). Grant repos to this App installation on GitHub.",
-                            cred.getLabel(), cred.getInstallationId(), githubTotal);
+                            cred.getLabel(), installationId != null ? installationId : cred.getInstallationId(), githubTotal);
                 }
             } else {
                 String url = apiRoot(cred) + "/user/repos?per_page=100&affiliation=owner,collaborator,organization_member";
@@ -813,7 +1071,7 @@ public class ScmCredentialService {
                     JsonNode repos = objectMapper.readTree(resp.getBody());
                     if (repos.isArray()) {
                         for (JsonNode repo : repos) {
-                            items.add(toOption(repo, cred));
+                            items.add(toOption(repo, cred, null));
                         }
                     }
                     url = nextLink(resp.getHeaders().getFirst("Link"));
@@ -826,7 +1084,7 @@ public class ScmCredentialService {
         return items;
     }
 
-    private GitHubRepoOption toOption(JsonNode repo, ScmCredential cred) {
+    private GitHubRepoOption toOption(JsonNode repo, ScmCredential cred, String installationId) {
         JsonNode perms = repo.path("permissions");
         boolean app = cred.isGitHubApp();
         // App installation tokens often report pull/push as false even for granted repos.
@@ -849,6 +1107,7 @@ public class ScmCredentialService {
                 .owner(repo.path("owner").path("login").asText())
                 .provider(cred.isEnterprise() ? "GHES" : "GITHUB")
                 .credentialId(cred.getId())
+                .installationId(installationId)
                 .description(repo.path("description").asText(null))
                 .build();
     }
@@ -896,10 +1155,17 @@ public class ScmCredentialService {
     }
 
     public static String apiRoot(ScmCredential cred) {
-        if (cred == null || !cred.isEnterprise()) {
+        if (cred == null) {
             return "https://api.github.com";
         }
-        return trimHost(cred.getHostUrl()) + "/api/v3";
+        return apiRoot(cred.getProvider(), cred.getHostUrl());
+    }
+
+    public static String apiRoot(String provider, String hostUrl) {
+        if (!PROVIDER_GHES.equals(normalizeProvider(provider))) {
+            return "https://api.github.com";
+        }
+        return trimHost(hostUrl) + "/api/v3";
     }
 
     public static String parseOwnerRepo(String repoUrl) {

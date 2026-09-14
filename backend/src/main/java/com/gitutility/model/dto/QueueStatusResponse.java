@@ -22,6 +22,9 @@ public class QueueStatusResponse {
     private boolean supportsQueueManager;
     private boolean supportsDlq;
     private boolean supportsPurge;
+    private boolean supportsInboundBrokerQueue;
+    /** Configured none-mode worker threads; null when using a durable broker. */
+    private Integer workerThreads;
     private String queueName;
     private int mainQueueMessageCount;
     private int mainQueueUnackedCount;

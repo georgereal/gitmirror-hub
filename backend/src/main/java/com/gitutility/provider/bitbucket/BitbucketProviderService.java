@@ -287,7 +287,7 @@ public class BitbucketProviderService implements ScmProviderAdapter {
                     .repoFullName(repoFullName)
                     .defaultBranch(defaultBranch)
                     .isPrivate(isPrivate)
-                    .accessMode(publicRead || !isPrivate ? "PUBLIC" : "AUTHENTICATED")
+                    .accessMode("AUTHENTICATED")
                     .message("Bitbucket credentials validated successfully.")
                     .permissions(PermissionCheckReport.PermissionsDetail.builder()
                             .contentsRead(true)

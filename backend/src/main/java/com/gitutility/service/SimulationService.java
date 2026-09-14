@@ -72,7 +72,8 @@ public class SimulationService {
     }
 
     public boolean isListenerRunning() {
-        if (listenerRegistry.getIfAvailable() == null) {
+        if (isNoneMessaging() || listenerRegistry.getIfAvailable() == null) {
+            // None messaging registers no AMQP listener containers; the pause flag is the only gate.
             return !consumerPaused.get();
         }
         boolean found = false;
@@ -90,7 +91,7 @@ public class SimulationService {
     }
 
     public boolean isFullListenerRunning() {
-        if (listenerRegistry.getIfAvailable() == null) {
+        if (isNoneMessaging() || listenerRegistry.getIfAvailable() == null) {
             return !consumerPaused.get();
         }
         return isNamedListenerRunning(SyncLaneRouter.FULL_CONSUMER_ID)
@@ -98,7 +99,7 @@ public class SimulationService {
     }
 
     public boolean isIncrementalListenerRunning() {
-        if (listenerRegistry.getIfAvailable() == null) {
+        if (isNoneMessaging() || listenerRegistry.getIfAvailable() == null) {
             return !consumerPaused.get();
         }
         return isNamedListenerRunning(SyncLaneRouter.INCREMENTAL_CONSUMER_ID);
@@ -109,6 +110,11 @@ public class SimulationService {
             return false;
         }
         return isNamedListenerRunning(SyncLaneRouter.INBOUND_CONSUMER_ID);
+    }
+
+    /** With {@code none} messaging there are no AMQP listener containers; the pause flag is the only worker gate. */
+    private boolean isNoneMessaging() {
+        return syncEventBus instanceof NoneSyncEventBus;
     }
 
     public ListenerHealth getListenerHealth(String listenerId) {

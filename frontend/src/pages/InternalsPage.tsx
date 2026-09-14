@@ -47,6 +47,12 @@ const POOL_ACTIONS: Record<string, ActionMeta> = {
     config: 'GIT_PR_CREATE_CONCURRENCY',
     sort: 30,
   },
+  'gitmirror.messaging.none': {
+    action: 'In-process sync workers',
+    detail: 'Full + incremental sync jobs when GIT_MESSAGING_PROVIDER=none (shared thread pool)',
+    config: 'GIT_MESSAGING_NONE_WORKER_THREADS',
+    sort: 5,
+  },
   'gitmirror.sync': {
     action: 'Async helpers',
     detail: 'Spring @Async work (e.g. enterprise log sinks) — not Git branch sync',
@@ -55,17 +61,17 @@ const POOL_ACTIONS: Record<string, ActionMeta> = {
   },
 };
 
-const LANE_ACTIONS: Record<string, ActionMeta> = {
+const RABBIT_LANE_ACTIONS: Record<string, ActionMeta> = {
   FULL: {
     action: 'Full mirror / Git sync',
     detail: 'Bare fetch + push for full-clone jobs (*); may run PR/LFS/releases stages',
-    config: 'git.sync.queue · concurrency 1',
+    config: 'git.sync.queue',
     sort: 10,
   },
   INCREMENTAL: {
     action: 'Branch sync',
     detail: 'Webhook / Sync main / overwrite — Git (+ LFS) on a specific ref',
-    config: 'git.sync.incremental.queue · concurrency 1',
+    config: 'git.sync.incremental.queue',
     sort: 20,
   },
   INBOUND: {
@@ -76,6 +82,21 @@ const LANE_ACTIONS: Record<string, ActionMeta> = {
   },
 };
 
+const NONE_LANE_ACTIONS: Record<string, ActionMeta> = {
+  FULL: {
+    action: 'Full mirror / Git sync',
+    detail: 'In-process full-clone jobs on none-messaging workers',
+    config: 'GIT_MESSAGING_NONE_WORKER_THREADS',
+    sort: 10,
+  },
+  INCREMENTAL: {
+    action: 'Branch sync',
+    detail: 'In-process webhook / Sync main jobs sharing the same worker pool',
+    config: 'GIT_MESSAGING_NONE_WORKER_THREADS',
+    sort: 20,
+  },
+};
+
 const poolMeta = (name: string): ActionMeta =>
   POOL_ACTIONS[name] ?? {
     action: name.replace(/^gitmirror\./, ''),
@@ -83,12 +104,16 @@ const poolMeta = (name: string): ActionMeta =>
     sort: 100,
   };
 
-const laneMeta = (lane: string): ActionMeta =>
-  LANE_ACTIONS[lane] ?? {
-    action: lane,
-    detail: 'Rabbit consumer lane',
-    sort: 100,
-  };
+const laneMeta = (lane: string, noneMode: boolean): ActionMeta => {
+  const table = noneMode ? NONE_LANE_ACTIONS : RABBIT_LANE_ACTIONS;
+  return (
+    table[lane] ?? {
+      action: lane,
+      detail: noneMode ? 'In-process sync lane' : 'Rabbit consumer lane',
+      sort: 100,
+    }
+  );
+};
 
 const ActionCell: React.FC<{ meta: ActionMeta; meterId?: string }> = ({ meta, meterId }) => (
   <div className="min-w-[14rem]">
@@ -103,6 +128,7 @@ const ActionCell: React.FC<{ meta: ActionMeta; meterId?: string }> = ({ meta, me
 
 const InstanceDetail: React.FC<{ metrics: RuntimeMetrics }> = ({ metrics }) => {
   const cbOpen = metrics.circuitBreaker?.state === 'OPEN';
+  const noneMode = metrics.messagingProvider === 'none';
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
@@ -188,18 +214,18 @@ const InstanceDetail: React.FC<{ metrics: RuntimeMetrics }> = ({ metrics }) => {
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-[11px] uppercase tracking-wide text-zinc-400 border-b border-zinc-100 bg-zinc-50/80">
-              <th className="px-3 py-2 font-medium">Lane action</th>
-              <th className="px-3 py-2 font-medium">Unacked</th>
-              <th className="px-3 py-2 font-medium">Consumers</th>
-              <th className="px-3 py-2 font-medium">Listener</th>
+              <th className="px-3 py-2 font-medium">{noneMode ? 'Sync lane' : 'Lane action'}</th>
+              <th className="px-3 py-2 font-medium">{noneMode ? 'In-flight' : 'Unacked'}</th>
+              <th className="px-3 py-2 font-medium">{noneMode ? 'Workers' : 'Consumers'}</th>
+              <th className="px-3 py-2 font-medium">{noneMode ? 'Pool' : 'Listener'}</th>
             </tr>
           </thead>
           <tbody>
             {[...(metrics.lanes ?? [])]
-              .sort((a, b) => laneMeta(a.lane).sort - laneMeta(b.lane).sort)
+              .sort((a, b) => laneMeta(a.lane, noneMode).sort - laneMeta(b.lane, noneMode).sort)
               .map((lane) => (
                 <tr key={lane.lane} className="border-b border-zinc-50 last:border-0 align-top">
-                  <td className="px-3 py-2"><ActionCell meta={laneMeta(lane.lane)} meterId={lane.lane} /></td>
+                  <td className="px-3 py-2"><ActionCell meta={laneMeta(lane.lane, noneMode)} meterId={lane.lane} /></td>
                   <td className="px-3 py-2 tabular-nums">{lane.unacked}</td>
                   <td className="px-3 py-2 tabular-nums">
                     {lane.activeConsumers} / {lane.configuredConsumers}

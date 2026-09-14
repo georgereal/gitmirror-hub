@@ -14,8 +14,9 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * On boot: pause sync consumers (no automatic backlog drain) and mark orphan IN_PROGRESS jobs
- * as INTERRUPTED. Operators dispatch selected jobs manually from Queue Manager.
+ * On boot: optionally pause sync consumers (no automatic backlog drain) and mark orphan
+ * IN_PROGRESS jobs as INTERRUPTED. For {@code GIT_MESSAGING_PROVIDER=none}, consumers stay
+ * active by default so in-process full syncs run without a Queue Manager resume.
  */
 @Service
 @RequiredArgsConstructor
@@ -30,6 +31,9 @@ public class StartupJobRecoveryService {
     @Value("${git-utility.queue.pause-consumers-on-startup:true}")
     private boolean pauseConsumersOnStartup;
 
+    @Value("${git-utility.messaging.provider:rabbitmq}")
+    private String messagingProvider;
+
     @Value("${git-utility.queue.orphan-job-grace-seconds:120}")
     private int orphanJobGraceSeconds;
 
@@ -39,10 +43,15 @@ public class StartupJobRecoveryService {
         if (interrupted > 0) {
             log.warn("Marked {} orphan IN_PROGRESS job(s) as INTERRUPTED after server restart", interrupted);
         }
-        if (pauseConsumersOnStartup) {
+        boolean noneMode = "none".equalsIgnoreCase(messagingProvider);
+        // Defense in depth: never pause on none even if the boolean flag were still true.
+        if (pauseConsumersOnStartup && !noneMode) {
             simulationService.markStartupHold();
             simulationService.pauseConsumer();
             log.info("Sync consumers paused on startup — dispatch selected jobs and resume consumers from Queue Manager");
+        } else {
+            log.info("Sync consumers active on startup (messaging.provider={}, pauseOnStartup={})",
+                    messagingProvider, pauseConsumersOnStartup);
         }
     }
 

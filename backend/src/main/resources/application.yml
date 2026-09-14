@@ -49,6 +49,12 @@ git-utility:
   workspace-dir: ${GIT_WORKSPACE_DIR:/tmp/git-utility-mirrors}
   github:
     graphql-enabled: ${GITHUB_GRAPHQL_ENABLED:true}
+  features:
+    public-repos-enabled: ${FEATURE_PUBLIC_REPOS:true}
+    provider-gitlab-enabled: ${FEATURE_PROVIDER_GITLAB:false}
+    provider-bitbucket-enabled: ${FEATURE_PROVIDER_BITBUCKET:false}
+    provider-origin-enabled: ${FEATURE_PROVIDER_ORIGIN:false}
+    provider-generic-enabled: ${FEATURE_PROVIDER_GENERIC:false}
   git:
     http-timeout-seconds: ${GIT_HTTP_TIMEOUT_SECONDS:600}
     push-batch-size: ${GIT_PUSH_BATCH_SIZE:8}
@@ -85,6 +91,9 @@ git-utility:
   messaging:
     # Canonical: rabbitmq (default) | kafka (reserved) | none (in-process, no broker)
     provider: ${GIT_MESSAGING_PROVIDER:rabbitmq}
+    none:
+      # In-process full+incremental sync worker threads (GIT_MESSAGING_PROVIDER=none only)
+      worker-threads: ${GIT_MESSAGING_NONE_WORKER_THREADS:8}
   queue:
     pause-consumers-on-startup: ${GIT_QUEUE_PAUSE_ON_STARTUP:true}
     orphan-job-grace-seconds: ${GIT_QUEUE_ORPHAN_GRACE_SEC:120}

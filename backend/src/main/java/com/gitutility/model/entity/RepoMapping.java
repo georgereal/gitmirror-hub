@@ -98,6 +98,14 @@ public class RepoMapping {
     /** GitHub/GHES credential used when repo B was picked. */
     private Long targetCredentialId;
 
+    /** App installation that owns repo A (when source credential is a multi-install App). */
+    @Column(length = 64)
+    private String sourceInstallationId;
+
+    /** App installation that owns repo B. */
+    @Column(length = 64)
+    private String targetInstallationId;
+
     @Enumerated(EnumType.STRING)
     @Column(length = 20)
     @Builder.Default

@@ -48,6 +48,7 @@ public class GitHubAuthService {
     private final GitHubAppConfigRepository gitHubAppConfigRepository;
     @Lazy
     private final ScmProviderFacade scmProviderFacade;
+    private final FeatureFlagsService featureFlagsService;
     private final ObjectMapper objectMapper = JsonMapper.builder().build();
     private final RestTemplate restTemplate;
 
@@ -93,6 +94,23 @@ public class GitHubAuthService {
 
         // Invalidate cached token when config changes
         invalidateCachedToken();
+
+        // Block writes to disabled provider fields.
+        if (req != null) {
+            if (hasAny(req.getGitlabHostUrl(), req.getGitlabAccessToken(), req.getGitlabWebhookSecret())) {
+                featureFlagsService.requireProviderEnabled("GITLAB");
+            }
+            if (hasAny(req.getBitbucketWorkspace(), req.getBitbucketAccessToken(), req.getBitbucketWebhookSecret(),
+                    req.getBitbucketUsername(), req.getBitbucketAuthType())) {
+                featureFlagsService.requireProviderEnabled("BITBUCKET");
+            }
+            if (hasAny(req.getOriginHostUrl(), req.getOriginAccessToken(), req.getOriginWebhookSecret())) {
+                featureFlagsService.requireProviderEnabled("ORIGIN");
+            }
+            if (hasAny(req.getGenericUsername(), req.getGenericAccessToken())) {
+                featureFlagsService.requireProviderEnabled("GENERIC");
+            }
+        }
 
         // GitHub
         if (req.getAuthType() != null) config.setAuthType(req.getAuthType());
@@ -1101,5 +1119,17 @@ public class GitHubAuthService {
                 .warnings(List.of())
                 .errors(List.of())
                 .build();
+    }
+
+    private static boolean hasAny(String... values) {
+        if (values == null) {
+            return false;
+        }
+        for (String v : values) {
+            if (v != null && !v.isBlank()) {
+                return true;
+            }
+        }
+        return false;
     }
 }

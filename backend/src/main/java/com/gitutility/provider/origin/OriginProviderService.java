@@ -110,7 +110,7 @@ public class OriginProviderService implements ScmProviderAdapter {
                     .repoFullName(repoFullName)
                     .defaultBranch("main")
                     .isPrivate(!publicRead)
-                    .accessMode(publicRead ? "PUBLIC" : "AUTHENTICATED")
+                    .accessMode("AUTHENTICATED")
                     .message("Cursor Origin connection successful.")
                     .permissions(PermissionCheckReport.PermissionsDetail.builder()
                             .contentsRead(true)

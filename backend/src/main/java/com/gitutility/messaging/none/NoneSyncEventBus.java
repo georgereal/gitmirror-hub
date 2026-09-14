@@ -6,8 +6,12 @@ import com.gitutility.model.dto.SyncEventMessage;
 import com.gitutility.service.QueueConsumerService;
 import com.gitutility.service.SimulationService;
 import com.gitutility.service.SyncLaneRouter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.binder.jvm.ExecutorServiceMetrics;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
@@ -26,20 +30,39 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Slf4j
 public class NoneSyncEventBus implements SyncEventBus {
 
+    public static final String METRIC_NAME = "gitmirror.messaging.none";
+
     private final QueueConsumerService queueConsumerService;
     private final SimulationService simulationService;
     private final LinkedBlockingQueue<SyncEventMessage> deferred = new LinkedBlockingQueue<>();
     private final AtomicInteger inFlight = new AtomicInteger();
-    private final ExecutorService executor = Executors.newFixedThreadPool(2, r -> {
-        Thread t = new Thread(r, "none-messaging-worker");
-        t.setDaemon(true);
-        return t;
-    });
+    private final int workerThreads;
+    private final ExecutorService executor;
 
     public NoneSyncEventBus(@Lazy QueueConsumerService queueConsumerService,
-                            @Lazy SimulationService simulationService) {
+                            @Lazy SimulationService simulationService,
+                            MeterRegistry meterRegistry,
+                            @Value("${git-utility.messaging.none.worker-threads:8}") int workerThreads) {
         this.queueConsumerService = queueConsumerService;
         this.simulationService = simulationService;
+        this.workerThreads = Math.max(1, workerThreads);
+        ExecutorService raw = Executors.newFixedThreadPool(this.workerThreads, r -> {
+            Thread t = new Thread(r, "none-messaging-worker");
+            t.setDaemon(true);
+            return t;
+        });
+        this.executor = ExecutorServiceMetrics.monitor(meterRegistry, raw, METRIC_NAME);
+        Gauge.builder("gitmirror.messaging.none.pending", deferred, LinkedBlockingQueue::size)
+                .description("Deferred sync jobs while consumers are paused (none messaging)")
+                .register(meterRegistry);
+        Gauge.builder("gitmirror.messaging.none.inflight", inFlight, AtomicInteger::get)
+                .description("In-flight sync jobs on none-messaging workers")
+                .register(meterRegistry);
+        log.info("Messaging none: {} in-process worker thread(s)", this.workerThreads);
+    }
+
+    public int workerThreads() {
+        return workerThreads;
     }
 
     @Override

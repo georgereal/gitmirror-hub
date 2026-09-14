@@ -11,8 +11,9 @@ import java.util.Collection;
 import java.util.List;
 
 /**
- * Shared helpers for public-first repository access: anonymous read is the primary path,
- * credentials are used only when public read fails or write access is required.
+ * Shared helpers for anonymous public-read probes.
+ * Anonymous-first applies only when Access is anonymous (no credentialId/token).
+ * An explicit Access credential always wins and skips the anonymous short-circuit.
  */
 public final class PublicReadProbe {
 
@@ -26,12 +27,22 @@ public final class PublicReadProbe {
         return "WRITE".equalsIgnoreCase(access) || "BOTH".equalsIgnoreCase(access);
     }
 
-    /** Skip anonymous probes for known-private remotes, or whenever write is required. */
+    /**
+     * Skip anonymous probes when the remote is known-private, write is required,
+     * or the operator chose Access via an explicit credential/token.
+     */
     public static boolean skipAnonymousProbe(TestConnectionRequest req) {
         if (req == null) {
             return false;
         }
-        return Boolean.TRUE.equals(req.getKnownPrivate()) || writeRequired(req);
+        if (Boolean.TRUE.equals(req.getKnownPrivate()) || writeRequired(req)) {
+            return true;
+        }
+        if (req.getCredentialId() != null) {
+            return true;
+        }
+        String token = req.getToken();
+        return token != null && !token.isBlank();
     }
 
     /**

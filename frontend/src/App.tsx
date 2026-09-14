@@ -9,47 +9,46 @@ import { QueueManagerPage } from './pages/QueueManagerPage';
 import { SimulationPage } from './pages/SimulationPage';
 import { SettingsLayout } from './pages/settings/SettingsLayout';
 import { ProvidersAuthPage } from './pages/settings/ProvidersAuthPage';
+import { FeatureTogglesPage } from './pages/settings/FeatureTogglesPage';
 import { SystemEnginePage } from './pages/settings/SystemEnginePage';
 import { StorageSettingsPage } from './pages/settings/StorageSettingsPage';
 import { EnterpriseLoggingPage } from './pages/settings/EnterpriseLoggingPage';
+import { FeatureFlagsProvider } from './hooks/useFeatureFlags';
 
 export const App: React.FC = () => {
   return (
     <BrowserRouter>
-      <div className="min-h-screen bg-[#fafafa] flex flex-col selection:bg-zinc-900 selection:text-white">
-        <Header />
+      <FeatureFlagsProvider>
+        <div className="min-h-screen bg-[#fafafa] flex flex-col selection:bg-zinc-900 selection:text-white">
+          <Header />
 
-        <main className="flex-1 max-w-6xl w-full mx-auto px-6 sm:px-10 py-8 space-y-8">
-          <Routes>
-            {/* Root redirect to Repositories */}
-            <Route path="/" element={<Navigate to="/repos" replace />} />
+          <main className="flex-1 max-w-6xl w-full mx-auto px-6 sm:px-10 py-8 space-y-8">
+            <Routes>
+              <Route path="/" element={<Navigate to="/repos" replace />} />
 
-            {/* Repositories domain */}
-            <Route path="/repos" element={<RepositoriesPage />} />
-            <Route path="/repos/:id" element={<RepoDetailPage />} />
+              <Route path="/repos" element={<RepositoriesPage />} />
+              <Route path="/repos/:id" element={<RepoDetailPage />} />
 
-            {/* Observability & Queue Control */}
-            <Route path="/observability" element={<ObservabilityPage />} />
-            <Route path="/observability/internals" element={<InternalsPage />} />
-            <Route path="/queues" element={<QueueManagerPage />} />
+              <Route path="/observability" element={<ObservabilityPage />} />
+              <Route path="/observability/internals" element={<InternalsPage />} />
+              <Route path="/queues" element={<QueueManagerPage />} />
 
-            {/* Simulation Lab */}
-            <Route path="/simulation" element={<SimulationPage />} />
+              <Route path="/simulation" element={<SimulationPage />} />
 
-            {/* Dedicated Settings Layout & Pages */}
-            <Route path="/settings" element={<SettingsLayout />}>
-              <Route index element={<Navigate to="/settings/providers" replace />} />
-              <Route path="providers" element={<ProvidersAuthPage />} />
-              <Route path="system-engine" element={<SystemEnginePage />} />
-              <Route path="storage" element={<StorageSettingsPage />} />
-              <Route path="logging" element={<EnterpriseLoggingPage />} />
-            </Route>
+              <Route path="/settings" element={<SettingsLayout />}>
+                <Route index element={<Navigate to="/settings/providers" replace />} />
+                <Route path="providers" element={<ProvidersAuthPage />} />
+                <Route path="feature-toggles" element={<FeatureTogglesPage />} />
+                <Route path="system-engine" element={<SystemEnginePage />} />
+                <Route path="storage" element={<StorageSettingsPage />} />
+                <Route path="logging" element={<EnterpriseLoggingPage />} />
+              </Route>
 
-            {/* Catch-all fallback */}
-            <Route path="*" element={<Navigate to="/repos" replace />} />
-          </Routes>
-        </main>
-      </div>
+              <Route path="*" element={<Navigate to="/repos" replace />} />
+            </Routes>
+          </main>
+        </div>
+      </FeatureFlagsProvider>
     </BrowserRouter>
   );
 };

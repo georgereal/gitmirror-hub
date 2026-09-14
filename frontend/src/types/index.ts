@@ -28,10 +28,14 @@ export interface RepoMapping {
   lastSyncStatus?: SyncStatus;
   sourceProvider?: string;
   targetProvider?: string;
-  sourceCredentialId?: number;
-  targetCredentialId?: number;
+  sourceCredentialId?: number | null;
+  targetCredentialId?: number | null;
+  sourceInstallationId?: string | null;
+  targetInstallationId?: string | null;
   sourceVisibility?: 'UNKNOWN' | 'PUBLIC' | 'PRIVATE';
   targetVisibility?: 'UNKNOWN' | 'PUBLIC' | 'PRIVATE';
+  /** Cached anonymous read for source; true = public HTTPS worked. */
+  sourcePublicRead?: boolean | null;
   hasCheckpoint?: boolean;
   syncCheckpointStage?: string;
   lastMirrorJobId?: number;
@@ -275,6 +279,8 @@ export interface QueueStatus {
   supportsQueueManager?: boolean;
   supportsDlq?: boolean;
   supportsPurge?: boolean;
+  supportsInboundBrokerQueue?: boolean;
+  workerThreads?: number | null;
   queueName: string;
   mainQueueMessageCount: number;
   mainQueueUnackedCount?: number;
@@ -318,6 +324,7 @@ export interface MessagingModuleInfo {
   supportsPurge: boolean;
   supportsPauseConsumers: boolean;
   supportsInboundBrokerQueue: boolean;
+  workerThreads?: number | null;
 }
 
 export interface InstallApiUsage {
@@ -355,6 +362,8 @@ export interface RuntimeMetrics {
     lastProbeSuccess: boolean;
   };
   consumerPaused: boolean;
+  messagingProvider?: string;
+  messagingDisplayName?: string;
   executors: {
     name: string;
     active: number;
@@ -586,6 +595,8 @@ export interface ScmCredential {
   appId?: string;
   clientId?: string;
   installationId?: string;
+  /** Selected App installation ids (multi-select). */
+  installationIds?: string[];
   accountLogin?: string;
   accountType?: string;
   repositorySelection?: string;
@@ -608,6 +619,10 @@ export interface ScmInstallationOption {
   accountType?: string;
   repositorySelection?: string;
   htmlUrl?: string;
+  /** Raw permission scopes from GET /app/installations (e.g. { administration: 'write' }). */
+  permissions?: Record<string, string>;
+  /** Server-derived from permissions.administration; null/undefined when GitHub didn't report permissions — never block on unknown. */
+  canCreateRepo?: boolean | null;
 }
 
 export interface PermissionCheckReport {
@@ -645,6 +660,8 @@ export interface GitHubRepoOption {
   namespace?: string;
   description?: string;
   credentialId?: number;
+  /** App installation that owns this repo (multi-install cards). */
+  installationId?: string;
   hasWriteAccess?: boolean;
 }
 
@@ -846,6 +863,15 @@ export interface StorageStatusResponse {
   maxDiskQuotaBytes: number;
   maxDiskQuotaFormatted: string;
   quotaUsedPercent: number;
+}
+
+export interface FeatureFlags {
+  publicReposEnabled: boolean;
+  providerGitlabEnabled: boolean;
+  providerBitbucketEnabled: boolean;
+  providerOriginEnabled: boolean;
+  providerGenericEnabled: boolean;
+  updatedAt?: string;
 }
 
 export interface SystemEngineConfig {

@@ -156,7 +156,9 @@ Also note from the App page (Hub fields):
    `https://github.com/settings/installations/<INSTALLATION_ID>`  
    or  
    `https://github.com/organizations/<ORG>/settings/installations/<INSTALLATION_ID>`  
-   → Hub field `installationId`.
+   → Hub field(s) `installationIds` (multi-select on the App credential card). Prefer **List installs** in Settings (works from unsaved App ID + PEM) and **Select all listed** as a snapshot — new orgs are not auto-included later.
+
+On each mirror pair, Browse Repos stamps `sourceInstallationId` / `targetInstallationId` for the install that owns that repo so sync mints the correct token when one App covers multiple orgs.
 
 Public third-party sources often need **no** App install on the source (anonymous HTTPS). Destinations that receive pushes **do** need the App installed with Contents write.
 
@@ -164,7 +166,7 @@ Public third-party sources often need **no** App install on the source (anonymou
 
 1. Open Hub UI → **Settings → Providers** (credentials / GitHub card).
 2. Auth mode: **GitHub App**.
-3. Paste **App ID**, **Installation ID**, **private key PEM**, **webhook secret** (and Client ID if prompted).
+3. Paste **App ID**, **private key PEM**, **webhook secret** (and Client ID if prompted). Use **List installs** → multi-select (or Select all listed) so the card stores `installationIds`.
 4. Save. Copy the **per-credential webhook URL** back into the GitHub App webhook settings if you deferred that step.
 5. Use **Check Access** on a pair that binds this credential before relying on Sync / webhooks.
 

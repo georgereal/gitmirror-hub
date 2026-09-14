@@ -1,6 +1,7 @@
 package com.gitutility.service;
 
 import com.gitutility.messaging.SyncEventBus;
+import com.gitutility.messaging.none.NoneSyncEventBus;
 import com.gitutility.model.dto.SimulationConfigRequest;
 import com.gitutility.model.dto.SyntheticWebhookRequest;
 import com.gitutility.model.entity.RepoMapping;
@@ -87,6 +88,42 @@ class SimulationServiceTest {
         verify(full).start();
         verify(incremental).start();
         assertFalse(simulationService.isConsumerPaused());
+    }
+
+    @Test
+    void noneMessagingReportsRunningFromPauseFlag() {
+        // None mode: registry bean exists via spring-boot-starter-amqp auto-config, but zero
+        // listener containers are registered. Worker health must track the pause flag, not containers.
+        SimulationService noneSim = new SimulationService(
+                listenerRegistryProvider,
+                mappingRepository,
+                syncJobRepository,
+                webSocketNotificationService,
+                mock(NoneSyncEventBus.class),
+                queueProducerService
+        );
+
+        assertTrue(noneSim.isListenerRunning());
+        assertTrue(noneSim.isFullListenerRunning());
+        assertTrue(noneSim.isIncrementalListenerRunning());
+
+        noneSim.pauseConsumer();
+        assertFalse(noneSim.isListenerRunning());
+        assertFalse(noneSim.isFullListenerRunning());
+        assertFalse(noneSim.isIncrementalListenerRunning());
+
+        noneSim.resumeConsumer();
+        assertTrue(noneSim.isListenerRunning());
+        assertTrue(noneSim.isFullListenerRunning());
+        assertTrue(noneSim.isIncrementalListenerRunning());
+    }
+
+    @Test
+    void rabbitMessagingWithoutContainersIsStopped() {
+        // Rabbit mode contract: registry present but no containers registered → stopped.
+        assertFalse(simulationService.isListenerRunning());
+        assertFalse(simulationService.isFullListenerRunning());
+        assertFalse(simulationService.isIncrementalListenerRunning());
     }
 
     @Test

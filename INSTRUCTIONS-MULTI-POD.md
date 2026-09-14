@@ -87,7 +87,12 @@ Optional JDK export (if not already on `PATH`):
 export JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk-23.jdk/Contents/Home
 export PATH=$JAVA_HOME/bin:$PATH
 ```
-
+or 
+export JAVA_HOME=$(/usr/libexec/java_home -v 23)
+# or explicitly:
+# export JAVA_HOME="/Library/Java/JavaVirtualMachines/jdk-23.jdk/Contents/Home"
+export PATH="$JAVA_HOME/bin:$PATH"
+java -version
 ---
 
 ## Run two backends on this machine

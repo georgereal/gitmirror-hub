@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { GitHubRepoOption, RepoSearchResult, ScmCredential } from '../types';
 import { searchRemoteRepositories, listScmCredentials, searchCredentialRepositories } from '../services/api';
+import { isProviderUiEnabled, useFeatureFlags } from '../hooks/useFeatureFlags';
 
 interface RepoPickerModalProps {
   isOpen: boolean;
@@ -15,7 +16,7 @@ interface RepoPickerModalProps {
   access?: 'PULL' | 'PUSH';
 }
 
-const PROVIDERS = ['GITHUB', 'GHES', 'GITLAB', 'BITBUCKET', 'ORIGIN'] as const;
+const ALL_PROVIDERS = ['GITHUB', 'GHES', 'GITLAB', 'BITBUCKET', 'ORIGIN'] as const;
 const PAGE_SIZE_OPTIONS = [15, 30, 50] as const;
 
 export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
@@ -26,6 +27,8 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
   defaultProvider = 'GITHUB',
   access = 'PULL',
 }) => {
+  const { flags } = useFeatureFlags();
+  const PROVIDERS = ALL_PROVIDERS.filter((p) => isProviderUiEnabled(flags, p));
   const [query, setQuery] = useState('');
   const [provider, setProvider] = useState<string>(defaultProvider === 'ALL' ? 'GITHUB' : defaultProvider);
   const [credentials, setCredentials] = useState<ScmCredential[]>([]);
@@ -40,6 +43,12 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
   /** False until user searches or clicks List accessible — avoids loading all repos on open. */
   const [hasLoaded, setHasLoaded] = useState(false);
   const debounceTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!PROVIDERS.includes(provider as typeof ALL_PROVIDERS[number])) {
+      setProvider(PROVIDERS[0] || 'GITHUB');
+    }
+  }, [flags.providerGitlabEnabled, flags.providerBitbucketEnabled, flags.providerOriginEnabled, provider]);
 
   const needsCredential = provider === 'GITHUB' || provider === 'GHES';
 

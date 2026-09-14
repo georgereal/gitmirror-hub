@@ -54,6 +54,12 @@ public class ScmCredentialController {
         return ResponseEntity.ok(credentialService.listInstallations(id));
     }
 
+    @PostMapping("/installations/preview")
+    public ResponseEntity<List<ScmInstallationOption>> previewInstallations(
+            @RequestBody ScmInstallationsPreviewRequest request) {
+        return ResponseEntity.ok(credentialService.previewInstallations(request));
+    }
+
     @GetMapping("/{id}/repositories")
     public ResponseEntity<RepoSearchResult> repositories(
             @PathVariable Long id,

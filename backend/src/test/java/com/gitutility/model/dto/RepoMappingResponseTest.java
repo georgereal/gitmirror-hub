@@ -36,6 +36,26 @@ class RepoMappingResponseTest {
     }
 
     @Test
+    void fromEntityWithNullLastMirrorCountsDoesNotNpe() {
+        RepoMapping mapping = RepoMapping.builder()
+                .id(2L)
+                .name("freshPair")
+                .repoAUrl("https://github.com/acme/src")
+                .repoBUrl("https://github.com/acme/dest")
+                .branchPattern("*")
+                .syncDirection(SyncDirection.BIDIRECTIONAL)
+                .active(true)
+                .build();
+
+        RepoMappingResponse response = assertDoesNotThrow(() -> RepoMappingResponse.fromEntity(mapping));
+
+        assertNull(response.getSourceBranchesCount());
+        assertNull(response.getTagsSourceCount());
+        assertNull(response.getLfsTotal());
+        assertNull(response.getPrsTotal());
+    }
+
+    @Test
     void fromEntityAppliesLastMirrorLfsFloorOverPartialSnapshot() {
         RepoMapping mapping = RepoMapping.builder()
                 .id(5L)

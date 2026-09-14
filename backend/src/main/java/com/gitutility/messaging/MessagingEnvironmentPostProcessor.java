@@ -42,8 +42,11 @@ public class MessagingEnvironmentPostProcessor implements EnvironmentPostProcess
 
         if (provider == MessagingProvider.NONE) {
             appendExclude(environment, overrides, RABBIT_AUTO_CONFIGURATION);
-            if (!environment.containsProperty("git-utility.queue.pause-consumers-on-startup")
-                    && System.getenv("GIT_QUEUE_PAUSE_ON_STARTUP") == null) {
+            // Only honor an explicit operator override. application.yml always defines
+            // git-utility.queue.pause-consumers-on-startup, so containsProperty() would
+            // incorrectly skip this auto-default for none mode.
+            if (System.getenv("GIT_QUEUE_PAUSE_ON_STARTUP") == null
+                    && environment.getProperty("GIT_QUEUE_PAUSE_ON_STARTUP") == null) {
                 overrides.put("git-utility.queue.pause-consumers-on-startup", "false");
             }
         }

@@ -11,6 +11,9 @@ public class MessagingModule {
     @Value("${git-utility.messaging.provider:rabbitmq}")
     private String providerProperty;
 
+    @Value("${git-utility.messaging.none.worker-threads:8}")
+    private int noneWorkerThreads;
+
     public MessagingProvider provider() {
         return MessagingProvider.from(providerProperty);
     }
@@ -27,6 +30,7 @@ public class MessagingModule {
                     .supportsPurge(true)
                     .supportsPauseConsumers(true)
                     .supportsInboundBrokerQueue(true)
+                    .workerThreads(null)
                     .build();
             case KAFKA -> MessagingDescriptor.builder()
                     .provider(MessagingProvider.KAFKA)
@@ -38,6 +42,7 @@ public class MessagingModule {
                     .supportsPurge(true)
                     .supportsPauseConsumers(true)
                     .supportsInboundBrokerQueue(true)
+                    .workerThreads(null)
                     .build();
             case NONE -> MessagingDescriptor.builder()
                     .provider(MessagingProvider.NONE)
@@ -49,6 +54,7 @@ public class MessagingModule {
                     .supportsPurge(false)
                     .supportsPauseConsumers(true)
                     .supportsInboundBrokerQueue(false)
+                    .workerThreads(Math.max(1, noneWorkerThreads))
                     .build();
         };
     }

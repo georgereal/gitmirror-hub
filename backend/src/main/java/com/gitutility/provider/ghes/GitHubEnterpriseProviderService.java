@@ -230,22 +230,16 @@ public class GitHubEnterpriseProviderService implements ScmProviderAdapter {
 
         try {
             HttpHeaders headers = createHeaders(token);
-            String login = "GHES User";
+            // Confirm the token is usable without installation-wide vanity checks in the report.
             try {
                 String userUrl = host + "/api/v3/user";
-                ResponseEntity<String> userResp = restTemplate.exchange(URI.create(userUrl), HttpMethod.GET, new HttpEntity<>(headers), String.class);
-                JsonNode userNode = objectMapper.readTree(userResp.getBody());
-                login = userNode.path("login").asText("Authenticated User");
-                passed.add("GHES Authentication Verified: Connected to " + host + " as @" + login);
+                restTemplate.exchange(URI.create(userUrl), HttpMethod.GET, new HttpEntity<>(headers), String.class);
             } catch (Exception userEx) {
                 try {
                     String instUrl = host + "/api/v3/installation/repositories?per_page=1";
-                    ResponseEntity<String> instResp = restTemplate.exchange(URI.create(instUrl), HttpMethod.GET, new HttpEntity<>(headers), String.class);
-                    JsonNode instNode = objectMapper.readTree(instResp.getBody());
-                    int totalCount = instNode.path("total_count").asInt(0);
-                    passed.add("GHES App Installation Verified: Connected to " + host + " with access to " + totalCount + " repositories");
+                    restTemplate.exchange(URI.create(instUrl), HttpMethod.GET, new HttpEntity<>(headers), String.class);
                 } catch (Exception instEx) {
-                    passed.add("GHES Authentication Active: Connected to " + host);
+                    // Fall through — repo GET below will fail clearly if the token is unusable.
                 }
             }
 
@@ -266,7 +260,7 @@ public class GitHubEnterpriseProviderService implements ScmProviderAdapter {
                     .repoFullName(repoFullName)
                     .defaultBranch(defaultBranch)
                     .isPrivate(isPrivate)
-                    .accessMode(publicRead || !isPrivate ? "PUBLIC" : "AUTHENTICATED")
+                    .accessMode("AUTHENTICATED")
                     .message("GHES credentials validated successfully.")
                     .permissions(PermissionCheckReport.PermissionsDetail.builder()
                             .contentsRead(true)
@@ -372,6 +366,13 @@ public class GitHubEnterpriseProviderService implements ScmProviderAdapter {
         String token = getEffectiveGhesToken(null);
         if (host == null || token == null) return false;
 
+        String owner = req.getOrg() != null ? req.getOrg().trim() : null;
+        // Preflight: fail fast with actionable guidance when the App installation lacks Administration (write).
+        Long preflightCredId = com.gitutility.service.ScmCredentialContext.currentId();
+        if (preflightCredId != null) {
+            scmCredentialService.assertCanCreateRepository(preflightCredId, owner);
+        }
+
         try {
             HttpHeaders headers = createHeaders(token);
             headers.setContentType(MediaType.APPLICATION_JSON);
@@ -382,16 +383,48 @@ public class GitHubEnterpriseProviderService implements ScmProviderAdapter {
             body.put("private", req.isPrivateRepo());
             body.put("auto_init", false);
 
-            String url = (req.getOrg() != null && !req.getOrg().isBlank())
-                    ? host + "/api/v3/orgs/" + req.getOrg().trim() + "/repos"
-                    : host + "/api/v3/user/repos";
+            boolean useOrg = owner != null && !owner.isBlank()
+                    && !"User".equalsIgnoreCase(req.getAccountType());
+            Long credId = com.gitutility.service.ScmCredentialContext.currentId();
+            if (useOrg && credId != null && scmCredentialService != null) {
+                try {
+                    String t = scmCredentialService.require(credId).getAccountType();
+                    if ("User".equalsIgnoreCase(t)) {
+                        useOrg = false;
+                    }
+                } catch (Exception ignored) {
+                    // keep useOrg
+                }
+            }
+            String userReposUrl = host + "/api/v3/user/repos";
+            String orgReposUrl = owner != null && !owner.isBlank()
+                    ? host + "/api/v3/orgs/" + owner + "/repos"
+                    : null;
+            String url = useOrg && orgReposUrl != null ? orgReposUrl : userReposUrl;
 
-            restTemplate.exchange(URI.create(url), HttpMethod.POST, new HttpEntity<>(body, headers), String.class);
+            try {
+                restTemplate.exchange(URI.create(url), HttpMethod.POST, new HttpEntity<>(body, headers), String.class);
+            } catch (org.springframework.web.client.HttpClientErrorException.NotFound e) {
+                if (orgReposUrl != null && url.equals(orgReposUrl)) {
+                    log.info("GHES org create 404 for '{}'; falling back to /user/repos", owner);
+                    restTemplate.exchange(URI.create(userReposUrl), HttpMethod.POST, new HttpEntity<>(body, headers), String.class);
+                } else {
+                    throw e;
+                }
+            }
             log.info("Created new GHES repository: {}", req.getName());
             return true;
+        } catch (org.springframework.web.client.HttpClientErrorException.Forbidden e) {
+            log.error("Failed to create GHES repository: {}", e.getMessage());
+            String respBody = e.getResponseBodyAsString();
+            if (respBody != null && respBody.contains("Resource not accessible by integration")) {
+                throw new IllegalArgumentException(
+                        "GHES rejected repository creation (403): " + com.gitutility.service.ScmCredentialService.MISSING_REPO_CREATE_PERMISSION_HINT);
+            }
+            throw new IllegalStateException("Failed to create GHES repository: " + e.getMessage(), e);
         } catch (Exception e) {
             log.error("Failed to create GHES repository: {}", e.getMessage());
-            return false;
+            throw new IllegalStateException("Failed to create GHES repository: " + e.getMessage(), e);
         }
     }
 

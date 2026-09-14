@@ -2,6 +2,7 @@ package com.gitutility.provider;
 
 import com.gitutility.model.dto.*;
 import com.gitutility.model.enums.ScmProviderType;
+import com.gitutility.service.FeatureFlagsService;
 import com.gitutility.service.ScmCredentialContext;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.transport.CredentialsProvider;
@@ -21,9 +22,11 @@ public class ScmProviderFacade {
 
     private final List<ScmProviderAdapter> adapters;
     private final Map<ScmProviderType, ScmProviderAdapter> adapterByType = new ConcurrentHashMap<>();
+    private final FeatureFlagsService featureFlagsService;
 
-    public ScmProviderFacade(List<ScmProviderAdapter> adapters) {
+    public ScmProviderFacade(List<ScmProviderAdapter> adapters, FeatureFlagsService featureFlagsService) {
         this.adapters = adapters;
+        this.featureFlagsService = featureFlagsService;
         for (ScmProviderAdapter adapter : adapters) {
             adapterByType.put(adapter.getProviderType(), adapter);
             log.info("Registered SCM Provider Adapter: {} [{}]", adapter.getProviderType(), adapter.getClass().getSimpleName());
@@ -99,6 +102,29 @@ public class ScmProviderFacade {
 
     private PermissionCheckReport testConnectionUnlocked(String provider, TestConnectionRequest safeReq) {
         if (provider != null && !provider.isBlank()) {
+            featureFlagsService.requireProviderEnabled(provider);
+        }
+        if (safeReq.getRepoUrl() != null && !safeReq.getRepoUrl().isBlank()) {
+            String detected = FeatureFlagsService.detectProviderFromUrl(safeReq.getRepoUrl());
+            if (detected != null) {
+                featureFlagsService.requireProviderEnabled(detected);
+            }
+        }
+        boolean anonymousProbe = safeReq.getCredentialId() == null
+                && (safeReq.getToken() == null || safeReq.getToken().isBlank())
+                && !Boolean.TRUE.equals(safeReq.getKnownPrivate());
+        if (anonymousProbe && !featureFlagsService.isPublicReposEnabled()) {
+            return PermissionCheckReport.builder()
+                    .valid(false)
+                    .repoFullName(safeReq.getRepoUrl())
+                    .httpStatusCode(403)
+                    .message("Public repository access is disabled in Feature toggles.")
+                    .errors(List.of("Enable \"Public repositories\" under Settings → Feature toggles, or use a credential."))
+                    .passedChecks(List.of())
+                    .warnings(List.of())
+                    .build();
+        }
+        if (provider != null && !provider.isBlank()) {
             try {
                 String norm = provider.trim().toUpperCase();
                 if ("GHES".equalsIgnoreCase(norm)) norm = "GITHUB_ENTERPRISE";
@@ -107,6 +133,8 @@ public class ScmProviderFacade {
                 if (adapter != null) {
                     return adapter.testConnection(safeReq);
                 }
+            } catch (IllegalArgumentException e) {
+                throw e;
             } catch (Exception ignored) {
             }
         }
@@ -150,6 +178,7 @@ public class ScmProviderFacade {
         if ("ALL".equals(safeProvider) || safeProvider.isBlank()) {
             throw new IllegalArgumentException("provider is required; searching all providers is not supported.");
         }
+        featureFlagsService.requireProviderEnabled(safeProvider);
         try {
             String norm = safeProvider;
             if ("GHES".equalsIgnoreCase(norm)) norm = "GITHUB_ENTERPRISE";

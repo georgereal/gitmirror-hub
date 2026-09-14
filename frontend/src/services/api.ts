@@ -306,6 +306,17 @@ export const listScmInstallations = async (id: number): Promise<import('../types
   return res.data;
 };
 
+export const previewScmInstallations = async (body: {
+  credentialId?: number;
+  provider?: string;
+  hostUrl?: string;
+  appId?: string;
+  privateKeyPem?: string;
+}): Promise<import('../types').ScmInstallationOption[]> => {
+  const res = await api.post('/scm-credentials/installations/preview', body);
+  return res.data;
+};
+
 export const searchCredentialRepositories = async (
   id: number,
   params: { query?: string; page?: number; limit?: number; access?: string }
@@ -323,6 +334,7 @@ export const createRemoteRepository = async (data: {
   repoUrl?: string;
   name?: string;
   owner?: string;
+  accountType?: string;
   isPrivate?: boolean;
   description?: string;
   credentialId?: number;
@@ -408,6 +420,18 @@ export const getStorageStatus = async (): Promise<StorageStatusResponse> => {
 
 export const triggerStorageEviction = async (): Promise<void> => {
   await api.post('/storage/evict-now');
+};
+
+export const getFeatureFlags = async (): Promise<import('../types').FeatureFlags> => {
+  const res = await api.get('/feature-flags');
+  return res.data;
+};
+
+export const saveFeatureFlags = async (
+  body: Partial<import('../types').FeatureFlags>
+): Promise<import('../types').FeatureFlags> => {
+  const res = await api.put('/feature-flags', body);
+  return res.data;
 };
 
 export const getSystemEngineConfig = async (): Promise<SystemEngineConfig> => {

@@ -21,4 +21,6 @@ public class MessagingDescriptor {
     boolean supportsPauseConsumers;
     /** Edge Worker → inbound queue path expects a broker. */
     boolean supportsInboundBrokerQueue;
+    /** Configured in-process worker threads when provider is {@code none}; null otherwise. */
+    Integer workerThreads;
 }

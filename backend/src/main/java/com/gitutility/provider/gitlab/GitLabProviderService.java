@@ -155,7 +155,7 @@ public class GitLabProviderService implements ScmProviderAdapter {
                     .repoFullName(repoFullName)
                     .defaultBranch(defaultBranch)
                     .isPrivate(isPrivate)
-                    .accessMode(publicRead || !isPrivate ? "PUBLIC" : "AUTHENTICATED")
+                    .accessMode("AUTHENTICATED")
                     .message("GitLab connection successful.")
                     .permissions(PermissionCheckReport.PermissionsDetail.builder()
                             .contentsRead(true)

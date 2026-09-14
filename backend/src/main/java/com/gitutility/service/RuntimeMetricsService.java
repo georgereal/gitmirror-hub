@@ -1,5 +1,10 @@
 package com.gitutility.service;
 
+import com.gitutility.messaging.MessagingDescriptor;
+import com.gitutility.messaging.MessagingModule;
+import com.gitutility.messaging.MessagingProvider;
+import com.gitutility.messaging.none.NoneSyncEventBus;
+import com.gitutility.messaging.SyncEventBus;
 import com.gitutility.model.dto.RuntimeMetricsResponse;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -26,6 +31,7 @@ import java.util.concurrent.TimeUnit;
 public class RuntimeMetricsService {
 
     private static final List<String> EXECUTOR_NAMES = List.of(
+            "gitmirror.messaging.none",
             "gitmirror.sync",
             "gitmirror.lfs.discovery",
             "gitmirror.lfs.transfer",
@@ -38,6 +44,8 @@ public class RuntimeMetricsService {
     private final SimulationService simulationService;
     private final InstanceIdentity instanceIdentity;
     private final InstallApiUsageTracker installApiUsageTracker;
+    private final MessagingModule messagingModule;
+    private final SyncEventBus syncEventBus;
 
     public RuntimeMetricsResponse snapshot() {
         hubMetrics.refreshRuntimeGauges();
@@ -49,6 +57,7 @@ public class RuntimeMetricsService {
         double heapPct = heapMax > 0 ? (100.0 * heap.getUsed() / heapMax) : 0.0;
 
         ThreadMXBean threads = ManagementFactory.getThreadMXBean();
+        MessagingDescriptor messaging = messagingModule.descriptor();
 
         return RuntimeMetricsResponse.builder()
                 .instanceId(instanceIdentity.getInstanceId())
@@ -72,8 +81,10 @@ public class RuntimeMetricsService {
                         .lastProbeSuccess(circuitBreakerManager.isLastProbeSuccess())
                         .build())
                 .consumerPaused(simulationService.isConsumerPaused())
+                .messagingProvider(messaging.getProvider().wireId())
+                .messagingDisplayName(messaging.getDisplayName())
                 .executors(snapshotExecutors())
-                .lanes(snapshotLanes())
+                .lanes(snapshotLanes(messaging))
                 .jobOutcomes(snapshotJobOutcomes())
                 .apiUsageByInstall(installApiUsageTracker.snapshot())
                 .actionsCancelsTotal(counterValue("gitmirror.actions.cancels"))
@@ -88,6 +99,22 @@ public class RuntimeMetricsService {
             double poolSize = gaugeValue("executor.pool.size", Tags.of("name", name));
             double completed = gaugeValue("executor.completed", Tags.of("name", name));
             Double max = optionalGauge("executor.pool.max", Tags.of("name", name));
+            if (NoneSyncEventBus.METRIC_NAME.equals(name)) {
+                double pending = gaugeValue("gitmirror.messaging.none.pending", Tags.empty());
+                double inflight = gaugeValue("gitmirror.messaging.none.inflight", Tags.empty());
+                if (!Double.isNaN(pending) || !Double.isNaN(inflight) || !Double.isNaN(poolSize)) {
+                    if (Double.isNaN(active) && !Double.isNaN(inflight)) {
+                        active = inflight;
+                    }
+                    if (Double.isNaN(queued) && !Double.isNaN(pending)) {
+                        queued = pending;
+                    }
+                    if (Double.isNaN(poolSize) && syncEventBus instanceof NoneSyncEventBus bus) {
+                        poolSize = bus.workerThreads();
+                        max = (double) bus.workerThreads();
+                    }
+                }
+            }
             if (Double.isNaN(active) && Double.isNaN(poolSize) && Double.isNaN(completed)) {
                 continue;
             }
@@ -103,23 +130,46 @@ public class RuntimeMetricsService {
         return list;
     }
 
-    private List<RuntimeMetricsResponse.LaneSnapshot> snapshotLanes() {
+    private List<RuntimeMetricsResponse.LaneSnapshot> snapshotLanes(MessagingDescriptor messaging) {
         List<RuntimeMetricsResponse.LaneSnapshot> lanes = new ArrayList<>();
-        lanes.add(lane(SyncLaneRouter.LANE_FULL, SyncLaneRouter.FULL_CONSUMER_ID));
-        lanes.add(lane(SyncLaneRouter.LANE_INCREMENTAL, SyncLaneRouter.INCREMENTAL_CONSUMER_ID));
-        lanes.add(lane(SyncLaneRouter.LANE_INBOUND, SyncLaneRouter.INBOUND_CONSUMER_ID));
+        boolean noneMode = messaging.getProvider() == MessagingProvider.NONE;
+        lanes.add(lane(SyncLaneRouter.LANE_FULL, SyncLaneRouter.FULL_CONSUMER_ID, messaging));
+        lanes.add(lane(SyncLaneRouter.LANE_INCREMENTAL, SyncLaneRouter.INCREMENTAL_CONSUMER_ID, messaging));
+        if (!noneMode && messaging.isSupportsInboundBrokerQueue()) {
+            lanes.add(lane(SyncLaneRouter.LANE_INBOUND, SyncLaneRouter.INBOUND_CONSUMER_ID, messaging));
+        }
         return lanes;
     }
 
-    private RuntimeMetricsResponse.LaneSnapshot lane(String lane, String listenerId) {
+    private RuntimeMetricsResponse.LaneSnapshot lane(String lane, String listenerId, MessagingDescriptor messaging) {
         SimulationService.ListenerHealth health = simulationService.getListenerHealth(listenerId);
         double unacked = gaugeValue("gitmirror.lane.unacked", Tags.of("lane", lane));
+        boolean noneMode = messaging.getProvider() == MessagingProvider.NONE;
+        boolean paused = simulationService.isConsumerPaused();
+        int configured;
+        int active;
+        boolean running;
+        if (noneMode) {
+            configured = messaging.getWorkerThreads() != null ? messaging.getWorkerThreads() : 8;
+            if (syncEventBus instanceof NoneSyncEventBus bus) {
+                configured = bus.workerThreads();
+                if (SyncLaneRouter.LANE_FULL.equals(lane)) {
+                    unacked = Math.max(unacked, bus.inFlightCount());
+                }
+            }
+            active = paused ? 0 : Math.min(configured, (int) nanToZero(unacked));
+            running = !paused;
+        } else {
+            configured = health.concurrentConsumers();
+            active = health.activeConsumers();
+            running = health.running();
+        }
         return RuntimeMetricsResponse.LaneSnapshot.builder()
                 .lane(lane)
                 .unacked((int) nanToZero(unacked))
-                .configuredConsumers(health.concurrentConsumers())
-                .activeConsumers(health.activeConsumers())
-                .running(health.running())
+                .configuredConsumers(configured)
+                .activeConsumers(active)
+                .running(running)
                 .build();
     }
 

@@ -55,6 +55,9 @@ public class QueueConsumerService {
     @Value("${git-utility.throttle.metadata-sync-interval-seconds:30}")
     private volatile int metadataSyncIntervalSeconds;
 
+    @Value("${git-utility.messaging.provider:rabbitmq}")
+    private String messagingProvider;
+
     private final Map<Long, ReentrantLock> repoLocks = new ConcurrentHashMap<>();
 
     private volatile Semaphore pushConcurrencyLimiter;
@@ -154,7 +157,8 @@ public class QueueConsumerService {
             jobCancellationService.registerRunning(job.getId());
         }
 
-        if (pairLeaseService != null) {
+        boolean shouldAcquireLease = pairLeaseService != null && !"none".equalsIgnoreCase(messagingProvider);
+        if (shouldAcquireLease) {
             try {
                 pairLeaseService.acquire(event.getMappingId(), job.getId());
             } catch (PairLeaseBusyException busy) {
@@ -180,10 +184,10 @@ public class QueueConsumerService {
         lock.lock();
 
         boolean acquiredPermit = false;
-        boolean leaseHeld = pairLeaseService != null;
+        boolean leaseHeld = shouldAcquireLease;
         GitSyncEngine.SyncResult result = null;
         try {
-            if (pairLeaseService != null) {
+            if (shouldAcquireLease) {
                 pairLeaseService.renew(event.getMappingId(), job.getId());
             }
             // 1. Check for injected faults (e.g., simulated network outage / pause / target down)

@@ -306,23 +306,17 @@ public class GitHubProviderService implements ScmProviderAdapter {
 
         try {
             HttpHeaders headers = createHeaders(token);
-            String login = "GitHub App";
+            // Confirm the token is usable without adding installation-wide vanity checks to the report.
             try {
                 String userUrl = "https://api.github.com/user";
-                ResponseEntity<String> userResp = restTemplate.exchange(URI.create(userUrl), HttpMethod.GET, new HttpEntity<>(headers), String.class);
-                JsonNode userNode = objectMapper.readTree(userResp.getBody());
-                login = userNode.path("login").asText("Authenticated User");
-                passed.add("GitHub Cloud Authentication Verified: Connected as @" + login);
+                restTemplate.exchange(URI.create(userUrl), HttpMethod.GET, new HttpEntity<>(headers), String.class);
             } catch (Exception userEx) {
-                // If GitHub App installation token, /user returns 403; verify via installation repositories endpoint
+                // GitHub App installation tokens often 403 on /user; confirm via installation API instead.
                 try {
                     String instUrl = "https://api.github.com/installation/repositories?per_page=1";
-                    ResponseEntity<String> instResp = restTemplate.exchange(URI.create(instUrl), HttpMethod.GET, new HttpEntity<>(headers), String.class);
-                    JsonNode instNode = objectMapper.readTree(instResp.getBody());
-                    int totalCount = instNode.path("total_count").asInt(0);
-                    passed.add("GitHub App Installation Verified: Connected with access to " + totalCount + " repositories");
+                    restTemplate.exchange(URI.create(instUrl), HttpMethod.GET, new HttpEntity<>(headers), String.class);
                 } catch (Exception instEx) {
-                    passed.add("GitHub Cloud Authentication Token Active");
+                    // Fall through — repo GET below will fail clearly if the token is unusable.
                 }
             }
 
@@ -397,7 +391,7 @@ public class GitHubProviderService implements ScmProviderAdapter {
                     .repoFullName(repoFullName)
                     .defaultBranch(defaultBranch)
                     .isPrivate(isPrivate)
-                    .accessMode(publicRead || !isPrivate ? "PUBLIC" : "AUTHENTICATED")
+                    .accessMode("AUTHENTICATED")
                     .message(isValid ? "All repository permissions verified successfully!" : "Repository access has permission restrictions.")
                     .permissions(PermissionCheckReport.PermissionsDetail.builder()
                             .contentsRead(canPull)
@@ -536,6 +530,13 @@ public class GitHubProviderService implements ScmProviderAdapter {
         String token = getEffectiveGitHubToken(null);
         if (token == null) return false;
 
+        String owner = req.getOrg() != null ? req.getOrg().trim() : null;
+        // Preflight: fail fast with actionable guidance when the App installation lacks Administration (write).
+        Long preflightCredId = com.gitutility.service.ScmCredentialContext.currentId();
+        if (preflightCredId != null) {
+            scmCredentialService.assertCanCreateRepository(preflightCredId, owner);
+        }
+
         try {
             HttpHeaders headers = createHeaders(token);
             headers.setContentType(MediaType.APPLICATION_JSON);
@@ -546,17 +547,78 @@ public class GitHubProviderService implements ScmProviderAdapter {
             body.put("private", req.isPrivateRepo());
             body.put("auto_init", false);
 
-            String url = (req.getOrg() != null && !req.getOrg().isBlank())
-                    ? "https://api.github.com/orgs/" + req.getOrg().trim() + "/repos"
-                    : "https://api.github.com/user/repos";
+            boolean useOrgEndpoint = shouldCreateUnderOrg(owner, req.getAccountType());
+            String userReposUrl = "https://api.github.com/user/repos";
+            String orgReposUrl = (owner != null && !owner.isBlank())
+                    ? "https://api.github.com/orgs/" + owner + "/repos"
+                    : null;
+            String url = useOrgEndpoint && orgReposUrl != null ? orgReposUrl : userReposUrl;
 
-            restTemplate.exchange(URI.create(url), HttpMethod.POST, new HttpEntity<>(body, headers), String.class);
-            log.info("Created new GitHub repository: {}", req.getName());
+            try {
+                restTemplate.exchange(URI.create(url), HttpMethod.POST, new HttpEntity<>(body, headers), String.class);
+            } catch (HttpClientErrorException.NotFound e) {
+                // Owner was treated as an org but is a user account (common for personal App installs).
+                if (orgReposUrl != null && url.equals(orgReposUrl)) {
+                    log.info("Org create returned 404 for owner '{}'; falling back to /user/repos", owner);
+                    restTemplate.exchange(URI.create(userReposUrl), HttpMethod.POST, new HttpEntity<>(body, headers), String.class);
+                } else {
+                    throw e;
+                }
+            }
+            log.info("Created new GitHub repository: {}/{}", owner != null ? owner : "user", req.getName());
             return true;
+        } catch (HttpClientErrorException.Forbidden e) {
+            log.error("Failed to create GitHub repository: {}", e.getMessage());
+            String respBody = e.getResponseBodyAsString();
+            if (respBody != null && respBody.contains("Resource not accessible by integration")) {
+                throw new IllegalArgumentException(
+                        "GitHub rejected repository creation (403): " + ScmCredentialService.MISSING_REPO_CREATE_PERMISSION_HINT);
+            }
+            throw new IllegalStateException("Failed to create GitHub repository: " + e.getMessage(), e);
         } catch (Exception e) {
             log.error("Failed to create GitHub repository: {}", e.getMessage());
+            throw new IllegalStateException("Failed to create GitHub repository: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * User App installs must use {@code POST /user/repos}. Only Organization accounts use {@code /orgs/{owner}/repos}.
+     * Passing a personal login as owner previously always hit the org endpoint and returned 404.
+     */
+    private boolean shouldCreateUnderOrg(String owner, String requestAccountType) {
+        if (owner == null || owner.isBlank()) {
             return false;
         }
+        if (isOrganizationAccountType(requestAccountType)) {
+            return true;
+        }
+        if (isUserAccountType(requestAccountType)) {
+            return false;
+        }
+        Long credId = ScmCredentialContext.currentId();
+        if (credId != null && scmCredentialService != null) {
+            try {
+                String accountType = scmCredentialService.require(credId).getAccountType();
+                if (isOrganizationAccountType(accountType)) {
+                    return true;
+                }
+                if (isUserAccountType(accountType)) {
+                    return false;
+                }
+            } catch (Exception ignored) {
+                // Fall through — try org URL then fall back on 404.
+            }
+        }
+        return true;
+    }
+
+    private static boolean isOrganizationAccountType(String accountType) {
+        return accountType != null
+                && ("Organization".equalsIgnoreCase(accountType) || "Org".equalsIgnoreCase(accountType));
+    }
+
+    private static boolean isUserAccountType(String accountType) {
+        return accountType != null && "User".equalsIgnoreCase(accountType);
     }
 
     @Override

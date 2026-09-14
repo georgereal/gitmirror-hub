@@ -9,9 +9,22 @@ import { ProviderConfig, GitHubRepoOption, PermissionCheckReport } from '../../t
 import { getGitHubAppConfig, saveGitHubAppConfig, listAccessibleRepositories, testProviderConnection } from '../../services/api';
 import { ScmCredentialsPanel } from './ScmCredentialsPanel';
 import { appWebhookUrls } from '../../utils/webhookUrls';
+import { useFeatureFlags } from '../../hooks/useFeatureFlags';
 
 export const ProvidersAuthPage: React.FC = () => {
+  const { flags } = useFeatureFlags();
   const [selectedProvider, setSelectedProvider] = useState<'github' | 'ghes' | 'bitbucket' | 'gitlab' | 'origin' | 'generic'>('github');
+
+  useEffect(() => {
+    const disabled =
+      (selectedProvider === 'gitlab' && !flags.providerGitlabEnabled)
+      || (selectedProvider === 'bitbucket' && !flags.providerBitbucketEnabled)
+      || (selectedProvider === 'origin' && !flags.providerOriginEnabled)
+      || (selectedProvider === 'generic' && !flags.providerGenericEnabled);
+    if (disabled) {
+      setSelectedProvider('github');
+    }
+  }, [flags, selectedProvider]);
 
   const [loadedConfig, setLoadedConfig] = useState<ProviderConfig | null>(null);
   const [authType, setAuthType] = useState<'GITHUB_APP' | 'PERSONAL_ACCESS_TOKEN'>('PERSONAL_ACCESS_TOKEN');
@@ -427,6 +440,7 @@ export const ProvidersAuthPage: React.FC = () => {
           )}
         </button>
 
+        {flags.providerBitbucketEnabled && (
         <button
           onClick={() => setSelectedProvider('bitbucket')}
           className={`flex items-center space-x-2 px-3 py-2 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${
@@ -441,7 +455,9 @@ export const ProvidersAuthPage: React.FC = () => {
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 ml-1" />
           )}
         </button>
+        )}
 
+        {flags.providerGitlabEnabled && (
         <button
           onClick={() => setSelectedProvider('gitlab')}
           className={`flex items-center space-x-2 px-3 py-2 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${
@@ -453,7 +469,9 @@ export const ProvidersAuthPage: React.FC = () => {
           <Layers className="w-3.5 h-3.5" />
           <span>GitLab</span>
         </button>
+        )}
 
+        {flags.providerOriginEnabled && (
         <button
           onClick={() => setSelectedProvider('origin')}
           className={`flex items-center space-x-2 px-3 py-2 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${
@@ -465,7 +483,9 @@ export const ProvidersAuthPage: React.FC = () => {
           <Lock className="w-3.5 h-3.5" />
           <span>Cursor Origin</span>
         </button>
+        )}
 
+        {flags.providerGenericEnabled && (
         <button
           onClick={() => setSelectedProvider('generic')}
           className={`flex items-center space-x-2 px-3 py-2 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${
@@ -477,6 +497,7 @@ export const ProvidersAuthPage: React.FC = () => {
           <Key className="w-3.5 h-3.5" />
           <span>Azure DevOps / Generic</span>
         </button>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">

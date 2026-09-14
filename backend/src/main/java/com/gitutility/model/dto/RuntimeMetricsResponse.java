@@ -21,6 +21,9 @@ public class RuntimeMetricsResponse {
     private JvmThreads threads;
     private CircuitBreakerSnapshot circuitBreaker;
     private boolean consumerPaused;
+    /** Active messaging module wire id: rabbitmq | kafka | none. */
+    private String messagingProvider;
+    private String messagingDisplayName;
     @Builder.Default
     private List<ExecutorPoolSnapshot> executors = new ArrayList<>();
     @Builder.Default

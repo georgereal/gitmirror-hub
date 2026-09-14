@@ -8,7 +8,7 @@ import {
   createScmCredential,
   updateScmCredential,
   deleteScmCredential,
-  listScmInstallations,
+  previewScmInstallations,
   testScmCredential,
 } from '../../services/api';
 import { InfoTooltip } from '../../components/InfoTooltip';
@@ -26,7 +26,7 @@ type FormState = {
   clientId: string;
   clientSecret: string;
   privateKeyPem: string;
-  installationId: string;
+  installationIds: string[];
   patToken: string;
   webhookSecret: string;
 };
@@ -39,7 +39,7 @@ const emptyForm = (provider: Props['provider']): FormState => ({
   clientId: '',
   clientSecret: '',
   privateKeyPem: '',
-  installationId: '',
+  installationIds: [],
   patToken: '',
   webhookSecret: '',
 });
@@ -107,6 +107,12 @@ export const ScmCredentialsPanel: React.FC<Props> = ({ provider }) => {
 
   const startEdit = (row: ScmCredential) => {
     setEditingId(row.id);
+    const ids =
+      row.installationIds && row.installationIds.length > 0
+        ? [...row.installationIds]
+        : row.installationId
+          ? [row.installationId]
+          : [];
     setForm({
       label: row.label,
       authMode: row.authMode,
@@ -115,7 +121,7 @@ export const ScmCredentialsPanel: React.FC<Props> = ({ provider }) => {
       clientId: row.clientId || '',
       clientSecret: '',
       privateKeyPem: '',
-      installationId: row.installationId || '',
+      installationIds: ids,
       patToken: '',
       webhookSecret: '',
     });
@@ -123,15 +129,55 @@ export const ScmCredentialsPanel: React.FC<Props> = ({ provider }) => {
   };
 
   const loadInstalls = async () => {
-    if (editingId === 'new' || editingId == null) {
-      setFeedback({ type: 'err', text: 'Save App ID and private key first, then list installations for this card.' });
+    if (editingId == null) return;
+    if (!form.appId.trim()) {
+      setFeedback({ type: 'err', text: 'Enter App ID before listing installations.' });
+      return;
+    }
+    if (!form.privateKeyPem.trim() && editingId === 'new') {
+      setFeedback({ type: 'err', text: 'Paste the private key PEM before listing installations.' });
+      return;
+    }
+    if (isGhes && !form.hostUrl.trim()) {
+      setFeedback({ type: 'err', text: 'Enter the GHES host URL before listing installations.' });
       return;
     }
     try {
-      setInstalls(await listScmInstallations(editingId));
+      setInstalls(
+        await previewScmInstallations({
+          credentialId: typeof editingId === 'number' ? editingId : undefined,
+          provider,
+          hostUrl: isGhes ? form.hostUrl : 'https://github.com',
+          appId: form.appId,
+          privateKeyPem: form.privateKeyPem || undefined,
+        })
+      );
     } catch (e: any) {
       setFeedback({ type: 'err', text: e.response?.data?.error || e.message });
     }
+  };
+
+  const toggleInstall = (id: string) => {
+    setForm((prev) => {
+      const has = prev.installationIds.includes(id);
+      return {
+        ...prev,
+        installationIds: has
+          ? prev.installationIds.filter((x) => x !== id)
+          : [...prev.installationIds, id],
+      };
+    });
+  };
+
+  const selectAllListed = () => {
+    setForm((prev) => ({
+      ...prev,
+      installationIds: installs.map((i) => i.installationId).filter(Boolean),
+    }));
+  };
+
+  const clearInstallSelection = () => {
+    setForm((prev) => ({ ...prev, installationIds: [] }));
   };
 
   const saveSharedClientSecret = async () => {
@@ -177,7 +223,11 @@ export const ScmCredentialsPanel: React.FC<Props> = ({ provider }) => {
         clientId: form.authMode === 'GITHUB_APP' ? form.clientId || undefined : undefined,
         clientSecret: form.clientSecret || undefined,
         privateKeyPem: form.privateKeyPem || undefined,
-        installationId: form.authMode === 'GITHUB_APP' ? form.installationId : undefined,
+        installationIds: form.authMode === 'GITHUB_APP' ? form.installationIds : undefined,
+        installationId:
+          form.authMode === 'GITHUB_APP' && form.installationIds.length > 0
+            ? form.installationIds[0]
+            : undefined,
         patToken: form.authMode === 'PERSONAL_ACCESS_TOKEN' ? form.patToken || undefined : undefined,
         webhookSecret: form.webhookSecret || undefined,
       };
@@ -396,19 +446,25 @@ export const ScmCredentialsPanel: React.FC<Props> = ({ provider }) => {
 
             <div>
               {fieldLabel(
-                'Installation ID',
+                'Installations',
                 <InfoTooltip
-                  title="Installation ID"
-                  whatIsIt="ID representing where this App is installed on an organization or user account."
-                  howItWorks="Required. Save App ID + PEM first, then List installs and pick the org. Hub will not auto-use installations[0]."
+                  title="App installations"
+                  whatIsIt="Organizations or user accounts where this GitHub App is installed."
+                  howItWorks="List installs from the App ID + PEM on this form (no save required). Multi-select or Select all listed — that is a snapshot; new orgs are not auto-included later. Hub never picks installations[0] for you."
                 />
               )}
               <div className="flex items-center space-x-2">
                 <input
                   className={inputClass}
-                  value={form.installationId}
-                  onChange={(e) => setForm({ ...form, installationId: e.target.value })}
-                  placeholder="Pick from List installs"
+                  value={form.installationIds.join(', ')}
+                  onChange={(e) => {
+                    const ids = e.target.value
+                      .split(/[,\s]+/)
+                      .map((s) => s.trim())
+                      .filter(Boolean);
+                    setForm({ ...form, installationIds: ids });
+                  }}
+                  placeholder="Selected ids (or use List installs)"
                 />
                 <button
                   type="button"
@@ -420,18 +476,55 @@ export const ScmCredentialsPanel: React.FC<Props> = ({ provider }) => {
                 </button>
               </div>
               {installs.length > 0 && (
-                <select
-                  className={`${inputClass} mt-2`}
-                  value={form.installationId}
-                  onChange={(e) => setForm({ ...form, installationId: e.target.value })}
-                >
-                  <option value="">Pick an installation — never auto-first</option>
-                  {installs.map((i) => (
-                    <option key={i.installationId} value={i.installationId}>
-                      {i.accountLogin} ({i.accountType}) · {i.installationId}
-                    </option>
-                  ))}
-                </select>
+                <div className="mt-2 rounded-lg border border-zinc-200 bg-white p-2 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-zinc-500 font-medium">
+                      {form.installationIds.length} selected · {installs.length} listed
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={selectAllListed}
+                        className="text-[10px] font-medium px-2 py-1 rounded-md bg-zinc-900 text-white hover:bg-zinc-800"
+                      >
+                        Select all listed
+                      </button>
+                      <button
+                        type="button"
+                        onClick={clearInstallSelection}
+                        className="text-[10px] font-medium px-2 py-1 rounded-md border border-zinc-200 text-zinc-700 hover:bg-zinc-50"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                  <div className="max-h-40 overflow-y-auto space-y-1">
+                    {installs.map((i) => {
+                      const checked = form.installationIds.includes(i.installationId);
+                      return (
+                        <label
+                          key={i.installationId}
+                          className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-zinc-50 cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleInstall(i.installationId)}
+                            className="rounded border-zinc-300"
+                          />
+                          <span className="text-zinc-800 font-medium">
+                            {i.accountLogin || 'unknown'}
+                          </span>
+                          <span className="text-zinc-400">({i.accountType || '?'})</span>
+                          <span className="ml-auto font-mono text-[10px] text-zinc-500">{i.installationId}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {form.installationIds.length === 0 && (
+                <p className="mt-1.5 text-[10px] text-amber-700">Select at least one installation before saving.</p>
               )}
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -573,10 +666,14 @@ export const ScmCredentialsPanel: React.FC<Props> = ({ provider }) => {
     return (
       <div className="space-y-2">
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-zinc-600">
-          {isApp && row.installationId && (
+          {isApp && (row.installationIds?.length || row.installationId) && (
             <span>
-              <span className="text-zinc-400 font-semibold uppercase tracking-wider text-[10px] mr-1">Install</span>
-              <span className="font-mono text-zinc-800">{row.installationId}</span>
+              <span className="text-zinc-400 font-semibold uppercase tracking-wider text-[10px] mr-1">Installs</span>
+              <span className="font-mono text-zinc-800">
+                {row.installationIds && row.installationIds.length > 0
+                  ? `${row.installationIds.length}: ${row.installationIds.join(', ')}`
+                  : row.installationId}
+              </span>
             </span>
           )}
           {isApp && row.appId && (
@@ -614,10 +711,10 @@ export const ScmCredentialsPanel: React.FC<Props> = ({ provider }) => {
             badge={isGhes ? 'On-Premises' : 'OAuth & Apps'}
             whatIsIt={
               isGhes
-                ? 'Each card is one GHES App install or PAT. Host URL lives on the card — two appliances are two cards.'
-                : 'Each card is one GitHub App installation or one PAT. Bind a card in the repo picker so pairs never guess PAT vs App.'
+                ? 'Each card is one GHES App (with one or more selected installs) or a PAT. Host URL lives on the card.'
+                : 'Each card is one GitHub App with selected installations, or one PAT. Bind a card in the repo picker — install ids are configured here, not in the picker.'
             }
-            recommended="Add one card per org install. Do not reuse a single god-row across orgs."
+            recommended="One App card can cover multiple orgs via multi-select. New installs are not auto-included until you List + add."
           />
         </div>
         <button
@@ -631,8 +728,8 @@ export const ScmCredentialsPanel: React.FC<Props> = ({ provider }) => {
       </div>
 
       <p className="text-zinc-500 leading-relaxed">
-        Each card is one installation (org) or PAT. App ID, client secret, PEM, and webhook URL belong to the GitHub App —
-        paste the URL into GitHub, not as Hub-saved config.
+        Each App card stores selected installation IDs (snapshot). List installs from the form values, multi-select or
+        Select all listed, then save. Repo picker shows the App — search unions repos across those installs.
       </p>
 
       <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 space-y-2.5">

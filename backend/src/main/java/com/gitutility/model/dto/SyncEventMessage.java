@@ -27,6 +27,8 @@ public class SyncEventMessage implements Serializable {
     private String tokenB;
     private Long sourceCredentialId;
     private Long targetCredentialId;
+    private String sourceInstallationId;
+    private String targetInstallationId;
     private String ref;
     private String branch;
     private String beforeSha;

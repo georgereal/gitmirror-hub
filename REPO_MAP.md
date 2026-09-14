@@ -73,6 +73,7 @@ gitUtility/
 │       │   │   │   ├── StorageController.java   # Local & NAS mirror disk quota & LRU eviction API
 │       │   │   │   ├── SyncJobController.java   # Sync job querying, stats, retry, and cancel
 │       │   │   │   ├── SystemEngineConfigController.java # System engine, retries, NAS validator & circuit breaker reset
+│       │   │   │   ├── FeatureFlagsController.java # Product feature toggles (public repos, optional providers)
 │       │   │   │   ├── UnmappedWebhookController.java # Discarded & unmapped webhook events API
 │       │   │   │   └── WebhookController.java   # GitHub push & PR webhook ingestion endpoint
 │       │   │   ├── provider/                    # SCM Provider Adapter (Strategy) & Facade Architecture
@@ -126,10 +127,10 @@ gitUtility/
 │       │   │   │   │   └── TestConnectionRequest.java
 │       │   │   │   ├── entity/
 │       │   │   │   │   ├── GitHubAppConfig.java # Legacy mixed SCM row (GitLab/Bitbucket/Origin; GitHub/GHES migrated)
-│       │   │   │   │   ├── ScmCredential.java   # One GitHub/GHES App install or PAT (bound on each pair side)
+│       │   │   │   │   ├── ScmCredential.java   # GitHub/GHES App (multi-install ids) or PAT; bound on each pair side
 │       │   │   │   │   ├── PrMapping.java       # Cross-repository PR ID & branch state tracking
 │       │   │   │   │   ├── RefOrigin.java       # Branch head origination ledger (pair side, fork heads)
-│       │   │   │   │   ├── RepoMapping.java     # Pair: URLs, tokens, provider, visibility, trunkConflictPolicy, sync checkpoints
+│       │   │   │   │   ├── RepoMapping.java     # Pair: URLs, tokens, provider, visibility, per-side credential+installationId, trunkConflictPolicy, sync checkpoints
 │       │   │   │   │   ├── SyncAuditLog.java    # Line-by-line execution trace records
 │       │   │   │   │   ├── SyncConflict.java    # Persisted Git-ref / tag / PR-metadata conflicts
 │       │   │   │   │   ├── SyncJob.java         # Per-event sync execution record
@@ -239,8 +240,9 @@ gitUtility/
         │   ├── SimulationPage.tsx              # Fault injection & chaos sandbox
         │   └── settings/                       # Dedicated Settings Subsystem
         │       ├── SettingsLayout.tsx          # Settings sidebar & sub-navigation shell
+        │       ├── FeatureTogglesPage.tsx      # Public repos + optional provider capability switches
         │       ├── ProvidersAuthPage.tsx       # GitLab/Bitbucket/Origin/generic + GitHub/GHES credential lists
-        │       ├── ScmCredentialsPanel.tsx     # Multi GitHub/GHES App+PAT cards, install pick, webhook URL
+        │       ├── ScmCredentialsPanel.tsx     # Multi GitHub/GHES App+PAT cards, multi-install select, preview list, webhook URL
         │       ├── SystemEnginePage.tsx        # Circuit Breaker, Jittered Retries & Concurrency Limits
         │       ├── StorageSettingsPage.tsx     # Storage Tiers, NVMe Disk Quotas & NAS/NFS Mounts
         │       └── EnterpriseLoggingPage.tsx   # Multi-Sink Logging (Splunk HEC, ELK, Syslog, File)
@@ -336,6 +338,8 @@ gitUtility/
 * `GET /api/v1/messaging`: Active messaging module descriptor for the operator UI.
 * `/simulation`: Outage simulation sandbox, consumer pausing, and synthetic push generator.
 * `/settings/providers`: SCM Provider configurations (GitHub App, GitLab, Bitbucket, Origin, Azure DevOps).
+* `/settings/providers`: SCM provider authentication (GitHub/GHES always; GitLab/Bitbucket/Origin/Generic when enabled).
+* `/settings/feature-toggles`: Product capability switches (public repos, optional providers). Saved in DB; env `FEATURE_*` seeds first row only.
 * `/settings/system-engine`: Self-healing circuit breaker, jittered retry strategy, and concurrency limits.
 * `/settings/storage`: Storage tier quotas (HOT, LRU, EPHEMERAL, NAS), manual LRU eviction, and mount tests.
 * `/settings/logging`: Enterprise multi-sink logging setup (Console, Splunk HEC, Logstash, Syslog, Rolling File).

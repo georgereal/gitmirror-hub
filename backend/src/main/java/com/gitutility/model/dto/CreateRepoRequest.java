@@ -13,6 +13,8 @@ public class CreateRepoRequest {
     private String repoUrl;
     private String name;
     private String owner;
+    /** User | Organization — from App installation; drives /user/repos vs /orgs/{owner}/repos. */
+    private String accountType;
     @Builder.Default
     private Boolean isPrivate = true;
     private String description;

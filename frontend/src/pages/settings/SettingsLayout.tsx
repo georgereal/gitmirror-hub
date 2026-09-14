@@ -1,14 +1,20 @@
 import React from 'react';
 import { NavLink, Outlet } from 'react-router';
-import { ShieldCheck, Cpu, HardDrive, Terminal } from 'lucide-react';
+import { ShieldCheck, Cpu, HardDrive, Terminal, ToggleLeft } from 'lucide-react';
 
 export const SettingsLayout: React.FC = () => {
   const navItems = [
     {
       to: '/settings/providers',
       label: 'SCM Providers & Auth',
-      description: 'GitHub App, PAT, GitLab, Bitbucket, Origin & Azure',
+      description: 'GitHub App, PAT, and enabled SCM providers',
       icon: ShieldCheck,
+    },
+    {
+      to: '/settings/feature-toggles',
+      label: 'Feature toggles',
+      description: 'Public repos, optional providers, product capability switches',
+      icon: ToggleLeft,
     },
     {
       to: '/settings/system-engine',
@@ -32,15 +38,13 @@ export const SettingsLayout: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div>
         <h2 className="text-base font-semibold text-zinc-900">Enterprise Settings & Infrastructure</h2>
         <p className="text-xs text-zinc-500 mt-0.5">
-          Configure SCM provider integrations, persistent storage tiers, retry resilience, and SIEM logging sinks.
+          Configure SCM provider integrations, feature toggles, storage tiers, retry resilience, and SIEM logging sinks.
         </p>
       </div>
 
-      {/* Settings Navigation Bar */}
       <div className="flex border-b border-zinc-200 overflow-x-auto space-x-2">
         {navItems.map((item) => {
           const Icon = item.icon;
@@ -63,7 +67,6 @@ export const SettingsLayout: React.FC = () => {
         })}
       </div>
 
-      {/* Page Content Outlet */}
       <Outlet />
     </div>
   );

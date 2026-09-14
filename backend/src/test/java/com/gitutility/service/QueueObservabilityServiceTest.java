@@ -1,5 +1,8 @@
 package com.gitutility.service;
 
+import com.gitutility.messaging.MessagingDescriptor;
+import com.gitutility.messaging.MessagingModule;
+import com.gitutility.messaging.MessagingProvider;
 import com.gitutility.messaging.SyncEventBus;
 import com.gitutility.model.dto.QueueStatusResponse;
 import org.junit.jupiter.api.BeforeEach;
@@ -26,6 +29,8 @@ class QueueObservabilityServiceTest {
     private ObjectProvider<DlqRedriveService> dlqRedriveServiceProvider;
     @Mock
     private SyncEventBus syncEventBus;
+    @Mock
+    private MessagingModule messagingModule;
 
     private ConsumerRuntimeRegistry registry;
     private QueueObservabilityService service;
@@ -34,7 +39,19 @@ class QueueObservabilityServiceTest {
     void setUp() {
         registry = new ConsumerRuntimeRegistry();
         when(dlqRedriveServiceProvider.getIfAvailable()).thenReturn(dlqRedriveService);
-        service = new QueueObservabilityService(registry, simulationService, dlqRedriveServiceProvider, syncEventBus);
+        when(messagingModule.descriptor()).thenReturn(MessagingDescriptor.builder()
+                .provider(MessagingProvider.RABBITMQ)
+                .displayName("RabbitMQ")
+                .description("test")
+                .durableBroker(true)
+                .supportsQueueManager(true)
+                .supportsDlq(true)
+                .supportsPurge(true)
+                .supportsPauseConsumers(true)
+                .supportsInboundBrokerQueue(true)
+                .build());
+        service = new QueueObservabilityService(
+                registry, simulationService, dlqRedriveServiceProvider, syncEventBus, messagingModule);
         ReflectionTestUtils.setField(service, "mainQueueName", "git.sync.queue");
         ReflectionTestUtils.setField(service, "incrementalQueueName", "git.sync.incremental.queue");
         ReflectionTestUtils.setField(service, "inboundQueueName", "git.sync.inbound.queue");

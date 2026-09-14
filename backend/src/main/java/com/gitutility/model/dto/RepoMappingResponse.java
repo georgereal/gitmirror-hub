@@ -43,8 +43,11 @@ public class RepoMappingResponse {
     private String targetProvider;
     private Long sourceCredentialId;
     private Long targetCredentialId;
+    private String sourceInstallationId;
+    private String targetInstallationId;
     private com.gitutility.model.enums.RepoVisibility sourceVisibility;
     private com.gitutility.model.enums.RepoVisibility targetVisibility;
+    private Boolean sourcePublicRead;
     private boolean hasCheckpoint;
     private String syncCheckpointStage;
     private Long lastMirrorJobId;
@@ -74,14 +77,18 @@ public class RepoMappingResponse {
         PairDiffSnapshot snapshot = PairDiffSnapshot.parseJson(entity.getDiffSnapshotJson());
         int lastMirrorLfs = entity.getLastMirrorLfsObjects() != null ? entity.getLastMirrorLfsObjects() : 0;
 
-        Integer sourceBranches = snapshot != null ? snapshot.getSourceBranchesCount() : entity.getLastMirrorBranchesCount();
-        Integer destBranches = snapshot != null ? snapshot.getDestBranchesCount() : null;
-        Integer inSyncBranches = snapshot != null ? snapshot.getInSyncBranchesCount() : null;
-        Integer pendingBranches = snapshot != null ? snapshot.getPendingBranchesCount() : null;
-        Integer divergedBranches = snapshot != null ? snapshot.getDivergedBranchesCount() : null;
+        // Box snapshot ints so ternary type is Integer — mixing primitive int with nullable
+        // entity Integer would force unboxing and NPE when last-mirror counts are null.
+        Integer sourceBranches = snapshot != null
+                ? Integer.valueOf(snapshot.getSourceBranchesCount())
+                : entity.getLastMirrorBranchesCount();
+        Integer destBranches = snapshot != null ? Integer.valueOf(snapshot.getDestBranchesCount()) : null;
+        Integer inSyncBranches = snapshot != null ? Integer.valueOf(snapshot.getInSyncBranchesCount()) : null;
+        Integer pendingBranches = snapshot != null ? Integer.valueOf(snapshot.getPendingBranchesCount()) : null;
+        Integer divergedBranches = snapshot != null ? Integer.valueOf(snapshot.getDivergedBranchesCount()) : null;
 
-        Integer prsTotal = snapshot != null ? snapshot.getPrsTotal() : null;
-        Integer prsSynced = snapshot != null ? snapshot.getPrsSynced() : null;
+        Integer prsTotal = snapshot != null ? Integer.valueOf(snapshot.getPrsTotal()) : null;
+        Integer prsSynced = snapshot != null ? Integer.valueOf(snapshot.getPrsSynced()) : null;
 
         Integer lfsTotal;
         Integer lfsSynced;
@@ -103,8 +110,10 @@ public class RepoMappingResponse {
             lfsPending = null;
         }
 
-        Integer tagsSource = snapshot != null ? snapshot.getTagsSourceCount() : entity.getLastMirrorTagsCount();
-        Integer tagsTarget = snapshot != null ? snapshot.getTagsTargetCount() : null;
+        Integer tagsSource = snapshot != null
+                ? Integer.valueOf(snapshot.getTagsSourceCount())
+                : entity.getLastMirrorTagsCount();
+        Integer tagsTarget = snapshot != null ? Integer.valueOf(snapshot.getTagsTargetCount()) : null;
 
         return RepoMappingResponse.builder()
                 .id(entity.getId())
@@ -131,8 +140,11 @@ public class RepoMappingResponse {
                 .targetProvider(entity.getTargetProvider())
                 .sourceCredentialId(entity.getSourceCredentialId())
                 .targetCredentialId(entity.getTargetCredentialId())
+                .sourceInstallationId(entity.getSourceInstallationId())
+                .targetInstallationId(entity.getTargetInstallationId())
                 .sourceVisibility(entity.getSourceVisibility())
                 .targetVisibility(entity.getTargetVisibility())
+                .sourcePublicRead(entity.getSourcePublicRead())
                 .hasCheckpoint(entity.getSyncCheckpointStage() != null && !entity.getSyncCheckpointStage().isBlank())
                 .syncCheckpointStage(entity.getSyncCheckpointStage())
                 .lastMirrorJobId(entity.getLastMirrorJobId())

@@ -4,6 +4,8 @@ import { ConsumerLaneStatus, CurrentWork } from '../types';
 interface ConsumerRuntimePanelProps {
   lanes?: ConsumerLaneStatus[];
   compact?: boolean;
+  /** When false, copy reflects in-process workers instead of AMQP queues. */
+  durableBroker?: boolean;
 }
 
 const formatElapsed = (ms?: number) => {
@@ -22,7 +24,11 @@ const workLabel = (work: CurrentWork) => {
   return `${job}${pair}${ref}`;
 };
 
-export const ConsumerRuntimePanel: React.FC<ConsumerRuntimePanelProps> = ({ lanes, compact }) => {
+export const ConsumerRuntimePanel: React.FC<ConsumerRuntimePanelProps> = ({
+  lanes,
+  compact,
+  durableBroker = true,
+}) => {
   const rows = lanes && lanes.length > 0 ? lanes : [];
   if (rows.length === 0) {
     return (
@@ -31,6 +37,11 @@ export const ConsumerRuntimePanel: React.FC<ConsumerRuntimePanelProps> = ({ lane
       </div>
     );
   }
+
+  const readyLabel = durableBroker ? 'Ready (pending)' : 'Deferred (paused)';
+  const unackedLabel = durableBroker ? 'Unacked (in-flight)' : 'In-flight';
+  const idleCopy = durableBroker ? 'Idle — no unacked message' : 'Idle — no in-flight job';
+  const threadsLabel = durableBroker ? 'Threads' : 'Worker threads';
 
   return (
     <div className={`grid gap-4 ${compact ? 'grid-cols-1 md:grid-cols-3' : 'grid-cols-1 lg:grid-cols-3'}`}>
@@ -54,20 +65,20 @@ export const ConsumerRuntimePanel: React.FC<ConsumerRuntimePanelProps> = ({ lane
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <div className="text-[10px] uppercase tracking-wide text-zinc-400">Ready (pending)</div>
+                <div className="text-[10px] uppercase tracking-wide text-zinc-400">{readyLabel}</div>
                 <div className={`text-xl font-bold ${lane.readyCount > 0 ? 'text-amber-800' : 'text-zinc-900'}`}>
                   {lane.readyCount}
                 </div>
               </div>
               <div>
-                <div className="text-[10px] uppercase tracking-wide text-zinc-400">Unacked (in-flight)</div>
+                <div className="text-[10px] uppercase tracking-wide text-zinc-400">{unackedLabel}</div>
                 <div className={`text-xl font-bold ${lane.unackedCount > 0 ? 'text-blue-800' : 'text-zinc-900'}`}>
                   {lane.unackedCount}
                 </div>
               </div>
             </div>
             <div className="text-[11px] text-zinc-600">
-              Threads {lane.activeConsumers}/{lane.configuredConcurrency}
+              {threadsLabel} {lane.activeConsumers}/{lane.configuredConcurrency}
               {lane.maxConcurrency > lane.configuredConcurrency ? ` (max ${lane.maxConcurrency})` : ''}
               {lane.idleThreads > 0 ? ` · ${lane.idleThreads} idle` : ''}
               {lane.unusedSlots > 0 ? ` · ${lane.unusedSlots} unused` : ''}
@@ -75,7 +86,7 @@ export const ConsumerRuntimePanel: React.FC<ConsumerRuntimePanelProps> = ({ lane
             </div>
             <div className="space-y-1">
               {lane.currentWork.length === 0 ? (
-                <p className="text-[11px] text-zinc-400">Idle — no unacked message</p>
+                <p className="text-[11px] text-zinc-400">{idleCopy}</p>
               ) : (
                 lane.currentWork.map((work, idx) => (
                   <div key={`${work.threadName}-${idx}`} className="text-[11px] text-zinc-700">

@@ -112,7 +112,11 @@ export const QueueControlPanel: React.FC<QueueControlPanelProps> = ({
         </div>
       )}
 
-      <ConsumerRuntimePanel lanes={queueStatus?.consumers} compact />
+      <ConsumerRuntimePanel
+        lanes={queueStatus?.consumers}
+        compact
+        durableBroker={brokerBacked}
+      />
 
       {/* Metric Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

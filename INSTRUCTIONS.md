@@ -334,10 +334,14 @@ To mirror real GitHub repositories:
 3. Click **Save Mirror Pair**.
 
 For **third-party public sources** (e.g. `https://github.com/microsoft/vscode`):
-- **Check Access** on the source: **Public** = anonymous HTTPS only; **Auto** = public probe first, then a credential modal if auth is required; **Private** = credential modal (GitHub App/PAT) then authenticated check. Intermediate Auto probe failures are not shown until the final result. Destination Check Access prompts for a credential when write/private access is needed. A public source succeeds without installing your GitHub App on that repository.
-- Bind the chosen App/PAT to the pair via that modal (or **Browse Repos**). Provider Settings alone does not select which credential a pair uses.
+- Requires **Settings → Feature toggles → Public repositories** to be **On** (default on for local/test; turn off in production). When off, Public visibility is hidden in the pair UI and the API rejects public/anonymous pairing.
+- **Visibility** (Public / Private / Auto) is the repo’s SCM privacy. **Access** is how the Hub authenticates (GitHub App/PAT by default). They are independent: a public repo browsed under your App still shows Visibility Public and Access via that App.
+- **Access** on the pair form binds one Settings credential (shown as a label when you have a single App/PAT; a chooser only when multiple exist). **Anonymous** is an explicit opt-in (source anytime when public repos are enabled; destination only for B→A read). **Add / Re-check** and **Browse** verify that bound Access credential — they never strip App/PAT just because the repo is public, and they do not try every credential.
+- If App/PAT check finds a public repo, the UI may note it is also anonymously readable; that hint is informational only — Access stays on the credential.
+- **Create private destination** uses the destination Access credential. Owner defaults from the App account; name defaults to the source repo name and is editable.
+- Bind Access via the Access row, credential modal, or **Browse Repos**. Provider Settings alone does not select which credential a pair uses.
 - GitHub App **Subscribe to events → Push** is webhook delivery only. Git clone/push requires **Repository permissions → Contents: Read and write** (scroll above the event list), plus **Actions: Read and write** (cancel mirror-triggered workflow runs) and **Workflows: Read and write** if the source has `.github/workflows`. After changing permissions, GitHub asks you to review the installation on the destination repository.
-- The destination still needs write credentials (GitHub App or PAT with Contents: Write).
+- The destination still needs write credentials (GitHub App or PAT with Contents: Write) unless you are on B→A with Anonymous Access.
 - You cannot attach a webhook to a repo you do not administer. Use **Sync Now**, initial bootstrap, or a synthetic event to run the first mirror.
 
 

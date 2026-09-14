@@ -18,7 +18,10 @@ public class ScmCredentialRequest {
     private String clientId;
     private String clientSecret;
     private String privateKeyPem;
+    /** Legacy singular; normalized into {@link #installationIds} when that list is absent. */
     private String installationId;
+    /** Selected App installation ids (multi-select). At least one required for GitHub App. */
+    private java.util.List<String> installationIds;
     private String webhookSecret;
     private String patToken;
     private Boolean enabled;

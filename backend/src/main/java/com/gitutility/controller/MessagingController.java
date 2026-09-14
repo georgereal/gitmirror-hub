@@ -31,6 +31,7 @@ public class MessagingController {
         body.put("supportsPurge", d.isSupportsPurge());
         body.put("supportsPauseConsumers", d.isSupportsPauseConsumers());
         body.put("supportsInboundBrokerQueue", d.isSupportsInboundBrokerQueue());
+        body.put("workerThreads", d.getWorkerThreads());
         return ResponseEntity.ok(body);
     }
 }

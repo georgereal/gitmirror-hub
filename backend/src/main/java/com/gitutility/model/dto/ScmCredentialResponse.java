@@ -1,5 +1,6 @@
 package com.gitutility.model.dto;
 
+import com.gitutility.model.InstallationIds;
 import com.gitutility.model.entity.ScmCredential;
 import com.gitutility.security.CryptoService;
 import lombok.AllArgsConstructor;
@@ -8,6 +9,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.time.Instant;
+import java.util.List;
 
 @Data
 @Builder
@@ -22,6 +24,7 @@ public class ScmCredentialResponse {
     private String appId;
     private String clientId;
     private String installationId;
+    private List<String> installationIds;
     private String accountLogin;
     private String accountType;
     private String repositorySelection;
@@ -51,6 +54,7 @@ public class ScmCredentialResponse {
                 .appId(entity.getAppId())
                 .clientId(entity.getClientId())
                 .installationId(entity.getInstallationId())
+                .installationIds(InstallationIds.decode(entity.getInstallationIdsJson(), entity.getInstallationId()))
                 .accountLogin(entity.getAccountLogin())
                 .accountType(entity.getAccountType())
                 .repositorySelection(entity.getRepositorySelection())

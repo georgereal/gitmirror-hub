@@ -55,7 +55,11 @@ public class QueueController {
     public ResponseEntity<QueueStatusResponse> getQueueStatus() {
         MessagingDescriptor messaging = messagingModule.descriptor();
         boolean brokerConnected = false;
-        ConnectionFactory cf = connectionFactory.getIfAvailable();
+        // Only probe the broker when the active messaging module actually uses one.
+        // In none mode the auto-configured CachingConnectionFactory still exists (spring-boot-starter-amqp),
+        // and creating a connection per status poll would log "Attempting to connect to: [localhost:5672]" on
+        // every UI refresh against a broker that is intentionally not in use.
+        ConnectionFactory cf = messaging.isDurableBroker() ? connectionFactory.getIfAvailable() : null;
         if (cf != null) {
             try (Connection conn = cf.createConnection()) {
                 brokerConnected = conn.isOpen();
@@ -96,6 +100,8 @@ public class QueueController {
                 .supportsQueueManager(messaging.isSupportsQueueManager())
                 .supportsDlq(messaging.isSupportsDlq())
                 .supportsPurge(messaging.isSupportsPurge())
+                .supportsInboundBrokerQueue(messaging.isSupportsInboundBrokerQueue())
+                .workerThreads(messaging.getWorkerThreads())
                 .queueName(mainQueueName)
                 .mainQueueMessageCount(mainQueueCount)
                 .mainQueueUnackedCount(fullLane != null ? fullLane.getUnackedCount() : 0)

@@ -198,15 +198,18 @@ export const QueueManagerPage: React.FC = () => {
   const fullCount = lanes?.find((l) => l.lane === 'FULL')?.readyCount ?? queueStatus?.mainQueueMessageCount ?? 0;
   const incrementalCount = lanes?.find((l) => l.lane === 'INCREMENTAL')?.readyCount ?? queueStatus?.incrementalQueueMessageCount ?? 0;
   const inboundCount = lanes?.find((l) => l.lane === 'INBOUND')?.readyCount ?? queueStatus?.inboundQueueMessageCount ?? 0;
-  const amqpWaiting = fullCount + incrementalCount;
+  const waitingCount = fullCount + incrementalCount;
   const fullUnacked = lanes?.find((l) => l.lane === 'FULL')?.unackedCount ?? queueStatus?.mainQueueUnackedCount ?? 0;
   const incrementalUnacked = lanes?.find((l) => l.lane === 'INCREMENTAL')?.unackedCount ?? queueStatus?.incrementalQueueUnackedCount ?? 0;
   const dlqCount = queueStatus?.dlqMessageCount ?? 0;
   const isPaused = queueStatus?.consumerPaused || false;
   const listenerRunning = queueStatus?.consumerRunning ?? true;
   const listenerStopped = !listenerRunning;
-  const orphanAmqp = amqpWaiting > 0 && queuedTotal === 0;
+  const orphanWaiting = waitingCount > 0 && queuedTotal === 0;
   const brokerBacked = queueStatus?.supportsQueueManager !== false && queueStatus?.durableBroker !== false;
+  const supportsDlq = brokerBacked && queueStatus?.supportsDlq !== false;
+  const supportsPurge = brokerBacked && queueStatus?.supportsPurge !== false;
+  const supportsInbound = brokerBacked && queueStatus?.supportsInboundBrokerQueue !== false;
   const pageTitle = brokerBacked ? 'Queue Manager' : 'Execution';
   const pageBlurb = brokerBacked
     ? 'Job history is the source of truth. RabbitMQ depths are live broker health, not the job list. Webhook syncs and full mirrors run on separate consumers so one clone cannot block other pairs.'
@@ -214,6 +217,9 @@ export const QueueManagerPage: React.FC = () => {
         queueStatus?.messagingDescription
           ?? 'No external broker — sync jobs run on this JVM. Pause defers work in memory; not for multi-pod webhook durability.'
       }`;
+  const workerHint = queueStatus?.workerThreads != null
+    ? `${queueStatus.workerThreads} in-process worker thread${queueStatus.workerThreads === 1 ? '' : 's'}`
+    : 'in-process workers';
 
   return (
     <div className="space-y-6">
@@ -230,7 +236,7 @@ export const QueueManagerPage: React.FC = () => {
         </Link>
       </div>
 
-      {isPaused && !listenerStopped && (
+      {isPaused && (
         <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4 flex items-start justify-between gap-3 text-xs">
           <div className="flex items-start space-x-2.5">
             <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
@@ -260,14 +266,16 @@ export const QueueManagerPage: React.FC = () => {
         </div>
       )}
 
-      {listenerStopped && (
+      {listenerStopped && !isPaused && (
         <div className="rounded-2xl border border-rose-200 bg-rose-50/80 p-4 flex items-start justify-between gap-3 text-xs">
           <div className="flex items-start space-x-2.5">
             <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
             <div>
               <strong className="text-rose-900">An execution worker is stopped, not paused.</strong>
               <p className="text-rose-700 text-[11px] mt-0.5">
-                Resume both listeners. Cancelled jobs are skipped and ACK&apos;d on pickup so the AMQP count drains.
+                {brokerBacked
+                  ? "Resume both listeners. Cancelled jobs are skipped and ACK'd on pickup so the AMQP count drains."
+                  : 'Resume in-process workers so deferred and queued jobs can run on this JVM.'}
               </p>
             </div>
           </div>
@@ -275,7 +283,9 @@ export const QueueManagerPage: React.FC = () => {
             onClick={() =>
               runAction('consumer', async () => {
                 await resumeConsumer();
-                return 'Consumers restarted; cancelled leftovers will be skipped';
+                return brokerBacked
+                  ? 'Consumers restarted; cancelled leftovers will be skipped'
+                  : 'Workers resumed';
               })
             }
             disabled={busy === 'consumer'}
@@ -287,29 +297,36 @@ export const QueueManagerPage: React.FC = () => {
         </div>
       )}
 
-      {orphanAmqp && !listenerStopped && (
+      {orphanWaiting && !listenerStopped && (
         <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4 flex items-start space-x-2.5 text-xs">
           <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
           <div>
             <strong className="text-amber-900">
-              {amqpWaiting} Ready (pending) message{amqpWaiting === 1 ? '' : 's'}; {cancelledCount || 0} job
+              {waitingCount} {brokerBacked ? 'Ready (pending) message' : 'deferred job'}
+              {waitingCount === 1 ? '' : 's'}; {cancelledCount || 0} job
               {cancelledCount === 1 ? ' is' : 's are'} already cancelled in history.
             </strong>
             <p className="text-amber-700 text-[11px] mt-0.5">
-              Ready is waiting in RabbitMQ. Unacked is the message a consumer thread currently holds.
-              Cancel updates the database immediately; leftovers ACK on pickup.
+              {brokerBacked
+                ? 'Ready is waiting in RabbitMQ. Unacked is the message a consumer thread currently holds. Cancel updates the database immediately; leftovers ACK on pickup.'
+                : 'Deferred jobs wait in memory while workers are paused. Cancel updates the database; resume workers to drain the rest.'}
             </p>
           </div>
         </div>
       )}
 
-      {amqpWaiting > 20 && queuedTotal > 0 && (
+      {waitingCount > 20 && queuedTotal > 0 && (
         <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4 flex items-start space-x-2.5 text-xs">
           <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
           <div>
-            <strong className="text-amber-900">{queuedTotal} queued jobs · {amqpWaiting} Ready messages waiting.</strong>
+            <strong className="text-amber-900">
+              {queuedTotal} queued jobs · {waitingCount}{' '}
+              {brokerBacked ? 'Ready messages waiting' : 'deferred / pending'}.
+            </strong>
             <p className="text-amber-700 text-[11px] mt-0.5">
-              Full mirrors ({fullCount} ready / {fullUnacked} in-flight) and webhook syncs ({incrementalCount} ready / {incrementalUnacked} in-flight) are separate lanes.
+              Full mirrors ({fullCount} ready / {fullUnacked} in-flight) and webhook syncs ({incrementalCount} ready /{' '}
+              {incrementalUnacked} in-flight) are separate lanes
+              {!brokerBacked ? ` sharing ${workerHint}` : ''}.
             </p>
           </div>
         </div>
@@ -319,17 +336,21 @@ export const QueueManagerPage: React.FC = () => {
         <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs text-blue-800">{feedback}</div>
       )}
 
-      <ConsumerRuntimePanel lanes={lanes} />
+      <ConsumerRuntimePanel lanes={lanes} durableBroker={brokerBacked} />
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <MetricCard label="Dead letter queue" value={dlqCount} hint={queueStatus?.dlqQueueName || 'git.sync.dlq'} tone={dlqCount > 0 ? 'rose' : 'zinc'} />
+      <div className={`grid grid-cols-1 ${supportsDlq ? 'sm:grid-cols-2' : ''} gap-4`}>
+        {supportsDlq && (
+          <MetricCard label="Dead letter queue" value={dlqCount} hint={queueStatus?.dlqQueueName || 'git.sync.dlq'} tone={dlqCount > 0 ? 'rose' : 'zinc'} />
+        )}
         <div className="rounded-2xl border border-zinc-200/90 bg-white p-5 shadow-sm space-y-2">
           <div className="text-xs text-zinc-500 font-medium">Execution consumers</div>
           <div className="text-lg font-bold text-zinc-900">
-            {listenerStopped ? 'Stopped' : isPaused ? 'Paused' : 'Active'}
+            {isPaused ? 'Paused' : listenerStopped ? 'Stopped' : 'Active'}
           </div>
           <p className="text-[10px] text-zinc-400">
-            Pause both Git execution lanes. Inbound webhook ingest stays up.
+            {brokerBacked
+              ? 'Pause both Git execution lanes. Inbound webhook ingest stays up.'
+              : `Pause defers new work in memory (${workerHint}).`}
           </p>
           <button
             onClick={() =>
@@ -339,7 +360,9 @@ export const QueueManagerPage: React.FC = () => {
                   return 'Consumers resumed';
                 }
                 await pauseConsumer();
-                return 'Consumers paused; messages will buffer';
+                return brokerBacked
+                  ? 'Consumers paused; messages will buffer'
+                  : 'Workers paused; new jobs deferred in memory';
               })
             }
             disabled={busy === 'consumer'}
@@ -417,8 +440,10 @@ export const QueueManagerPage: React.FC = () => {
             <div>
               <h3 className="text-sm font-semibold text-zinc-900">Job history ({historyTotal})</h3>
               <p className="text-[11px] text-zinc-500 mt-0.5">
-                Database ledger of every sync, including cancelled. AMQP Ready (pending): {amqpWaiting}.
-                Cancel marks jobs skipped; the worker ACKs those messages on pickup.
+                Database ledger of every sync, including cancelled.
+                {brokerBacked
+                  ? ` AMQP Ready (pending): ${waitingCount}. Cancel marks jobs skipped; the worker ACKs those messages on pickup.`
+                  : ` Deferred (paused): ${waitingCount}. Cancel marks jobs skipped in the database.`}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -629,7 +654,8 @@ export const QueueManagerPage: React.FC = () => {
         <div className="p-4 border-t border-zinc-100 bg-zinc-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <p className="text-[11px] text-zinc-500">
             Showing {historyJobs.length} of {historyTotal} jobs.
-            Ready (pending): {amqpWaiting}
+            {brokerBacked ? ' Ready (pending): ' : ' Deferred: '}
+            {waitingCount}
             {cancelledCount > 0 ? ` · ${cancelledCount} cancelled` : ''}
             {interruptedCount > 0 ? ` · ${interruptedCount} interrupted` : ''}
             {queuedTotal > 0 ? ` · ${queuedTotal} still queued` : ''}.
@@ -652,40 +678,44 @@ export const QueueManagerPage: React.FC = () => {
             >
               <ChevronRight className="w-3.5 h-3.5" />
             </button>
-            {confirmPurge ? (
-              <div className="flex items-center space-x-2">
-                <span className="text-[11px] text-rose-700 font-medium">Drop waiting AMQP messages on both lanes and cancel queued jobs?</span>
+            {supportsPurge && (
+              confirmPurge ? (
+                <div className="flex items-center space-x-2">
+                  <span className="text-[11px] text-rose-700 font-medium">Drop waiting AMQP messages on both lanes and cancel queued jobs?</span>
+                  <button
+                    onClick={() =>
+                      runAction('purge', async () => {
+                        const res = await purgeMainQueue();
+                        return res.message;
+                      })
+                    }
+                    disabled={busy === 'purge'}
+                    className="px-2.5 py-1.5 rounded-lg bg-rose-700 text-white text-xs font-medium"
+                  >
+                    Confirm purge
+                  </button>
+                  <button onClick={() => setConfirmPurge(false)} className="px-2.5 py-1.5 rounded-lg border border-zinc-200 text-xs">
+                    Back
+                  </button>
+                </div>
+              ) : (
                 <button
-                  onClick={() =>
-                    runAction('purge', async () => {
-                      const res = await purgeMainQueue();
-                      return res.message;
-                    })
-                  }
-                  disabled={busy === 'purge'}
-                  className="px-2.5 py-1.5 rounded-lg bg-rose-700 text-white text-xs font-medium"
+                  onClick={() => setConfirmPurge(true)}
+                  disabled={waitingCount === 0 && queuedTotal === 0}
+                  className="inline-flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg border border-rose-200 text-rose-700 text-xs font-medium disabled:opacity-40"
                 >
-                  Confirm purge
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Purge execution queues</span>
                 </button>
-                <button onClick={() => setConfirmPurge(false)} className="px-2.5 py-1.5 rounded-lg border border-zinc-200 text-xs">
-                  Back
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={() => setConfirmPurge(true)}
-                disabled={amqpWaiting === 0 && queuedTotal === 0}
-                className="inline-flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg border border-rose-200 text-rose-700 text-xs font-medium disabled:opacity-40"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Purge execution queues</span>
-              </button>
+              )
             )}
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      {(supportsDlq || supportsInbound) && (
+      <div className={`grid grid-cols-1 ${supportsDlq && supportsInbound ? 'sm:grid-cols-2' : ''} gap-4`}>
+        {supportsDlq && (
         <div className="rounded-2xl border border-zinc-200/90 bg-white p-5 shadow-sm space-y-3">
           <h3 className="text-sm font-semibold text-zinc-900">Dead letter recovery</h3>
           <p className="text-[11px] text-zinc-500">{dlqCount} failed message(s) waiting to be replayed onto the original lane or dropped.</p>
@@ -718,6 +748,8 @@ export const QueueManagerPage: React.FC = () => {
             </button>
           </div>
         </div>
+        )}
+        {supportsInbound && (
         <div className="rounded-2xl border border-zinc-200/90 bg-white p-5 shadow-sm space-y-3">
           <h3 className="text-sm font-semibold text-zinc-900">Inbound webhook buffer</h3>
           <p className="text-[11px] text-zinc-500">
@@ -737,7 +769,9 @@ export const QueueManagerPage: React.FC = () => {
             <span>Purge inbound ({inboundCount})</span>
           </button>
         </div>
+        )}
       </div>
+      )}
 
       <JobLogModal
         job={selectedJobForLogs}

@@ -56,6 +56,24 @@ class GitSyncEngineResumeTest {
     }
 
     @Test
+    void unidirectionalMappingTreatsDivergenceAsOverwrite() {
+        com.gitutility.model.entity.RepoMapping uni = com.gitutility.model.entity.RepoMapping.builder()
+                .syncDirection(com.gitutility.model.enums.SyncDirection.UNIDIRECTIONAL_A_TO_B)
+                .build();
+        com.gitutility.model.entity.RepoMapping bi = com.gitutility.model.entity.RepoMapping.builder()
+                .syncDirection(com.gitutility.model.enums.SyncDirection.BIDIRECTIONAL)
+                .build();
+        assertTrue(GitSyncEngine.isUnidirectional(uni));
+        assertFalse(GitSyncEngine.isUnidirectional(bi));
+        assertFalse(GitSyncEngine.isUnidirectional(null));
+        // Same decideTrunkPush path used when isUnidirectional → overwrite=true
+        assertEquals(GitSyncEngine.TrunkPushAction.FORCE,
+                GitSyncEngine.decideTrunkPush(false, true, com.gitutility.model.enums.TrunkConflictPolicy.ISOLATE));
+        assertEquals(GitSyncEngine.TrunkPushAction.ISOLATE,
+                GitSyncEngine.decideTrunkPush(false, false, com.gitutility.model.enums.TrunkConflictPolicy.ISOLATE));
+    }
+
+    @Test
     void isolatedConflictBranchUsesTimestampedName() {
         java.util.Date at = new java.util.Date(0L);
         assertEquals("sync-conflict/main-19700101-000000", GitSyncEngine.isolatedConflictBranch("main", at));

@@ -26,6 +26,7 @@ public class RepoMappingService {
     private final WebSocketNotificationService webSocketNotificationService;
     private final SyncCheckpointService syncCheckpointService;
     private final ScmCredentialService scmCredentialService;
+    private final FeatureFlagsService featureFlagsService;
 
     public List<RepoMapping> getAllMappings() {
         return mappingRepository.findAll();
@@ -48,7 +49,11 @@ public class RepoMappingService {
         if (mapping.getBranchPattern() == null || mapping.getBranchPattern().isBlank()) {
             mapping.setBranchPattern("*");
         }
+        if (mapping.getSourceVisibility() == com.gitutility.model.enums.RepoVisibility.PUBLIC) {
+            mapping.setSourcePublicRead(Boolean.TRUE);
+        }
 
+        featureFlagsService.assertMappingAllowed(mapping);
         validateNoRepositoryCollisions(null, mapping);
         scmCredentialService.requireBoundIfGithub(mapping);
 
@@ -146,17 +151,34 @@ public class RepoMappingService {
         }
         if (updated.getSourceVisibility() != null) {
             existing.setSourceVisibility(updated.getSourceVisibility());
+            // Pair form always sends visibility + credential together; PUBLIC may clear the binding.
+            existing.setSourceCredentialId(updated.getSourceCredentialId());
+            existing.setSourceInstallationId(updated.getSourceInstallationId());
+        } else if (updated.getSourceCredentialId() != null) {
+            existing.setSourceCredentialId(updated.getSourceCredentialId());
+            existing.setSourceInstallationId(updated.getSourceInstallationId());
+        } else if (updated.getSourceInstallationId() != null) {
+            existing.setSourceInstallationId(updated.getSourceInstallationId());
         }
         if (updated.getTargetVisibility() != null) {
             existing.setTargetVisibility(updated.getTargetVisibility());
-        }
-        if (updated.getSourceCredentialId() != null) {
-            existing.setSourceCredentialId(updated.getSourceCredentialId());
-        }
-        if (updated.getTargetCredentialId() != null) {
             existing.setTargetCredentialId(updated.getTargetCredentialId());
+            existing.setTargetInstallationId(updated.getTargetInstallationId());
+        } else if (updated.getTargetCredentialId() != null) {
+            existing.setTargetCredentialId(updated.getTargetCredentialId());
+            existing.setTargetInstallationId(updated.getTargetInstallationId());
+        } else if (updated.getTargetInstallationId() != null) {
+            existing.setTargetInstallationId(updated.getTargetInstallationId());
+        }
+        if (updated.getSourcePublicRead() != null
+                || (updated.getSourceVisibility() == com.gitutility.model.enums.RepoVisibility.PUBLIC)) {
+            existing.setSourcePublicRead(
+                    updated.getSourceVisibility() == com.gitutility.model.enums.RepoVisibility.PUBLIC
+                            ? Boolean.TRUE
+                            : updated.getSourcePublicRead());
         }
 
+        featureFlagsService.assertMappingAllowed(existing);
         validateNoRepositoryCollisions(id, existing);
         scmCredentialService.requireBoundIfGithub(existing);
 

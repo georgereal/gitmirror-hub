@@ -12,6 +12,7 @@ import com.gitutility.model.enums.LogLevel;
 import com.gitutility.model.enums.PairSide;
 import com.gitutility.model.enums.SyncCheckpointStage;
 import com.gitutility.model.enums.StorageTier;
+import com.gitutility.model.enums.SyncDirection;
 import com.gitutility.model.enums.TrunkConflictPolicy;
 import com.gitutility.repository.RepoMappingRepository;
 import com.gitutility.repository.SyncAuditLogRepository;
@@ -204,6 +205,12 @@ public class GitSyncEngine {
                     if (event.getTargetCredentialId() == null) {
                         event.setTargetCredentialId(mapping.getTargetCredentialId());
                     }
+                    if (event.getSourceInstallationId() == null) {
+                        event.setSourceInstallationId(mapping.getSourceInstallationId());
+                    }
+                    if (event.getTargetInstallationId() == null) {
+                        event.setTargetInstallationId(mapping.getTargetInstallationId());
+                    }
                 } else {
                     if (event.getSourceCredentialId() == null) {
                         event.setSourceCredentialId(mapping.getTargetCredentialId());
@@ -211,9 +218,17 @@ public class GitSyncEngine {
                     if (event.getTargetCredentialId() == null) {
                         event.setTargetCredentialId(mapping.getSourceCredentialId());
                     }
+                    if (event.getSourceInstallationId() == null) {
+                        event.setSourceInstallationId(mapping.getTargetInstallationId());
+                    }
+                    if (event.getTargetInstallationId() == null) {
+                        event.setTargetInstallationId(mapping.getSourceInstallationId());
+                    }
                 }
-                assertCredentialCanAccess(event.getSourceCredentialId(), event.getSourceRepoUrl());
-                assertCredentialCanAccess(event.getTargetCredentialId(), event.getTargetRepoUrl());
+                assertCredentialCanAccess(
+                        event.getSourceCredentialId(), event.getSourceInstallationId(), event.getSourceRepoUrl());
+                assertCredentialCanAccess(
+                        event.getTargetCredentialId(), event.getTargetInstallationId(), event.getTargetRepoUrl());
             }
         }
 
@@ -1029,7 +1044,8 @@ public class GitSyncEngine {
                                 event.getTargetRepoUrl(),
                                 pending,
                                 lfsProgress,
-                                resolveSideToken(event.getTokenB(), event.getTargetCredentialId()));
+                                resolveSideToken(event.getTokenB(), event.getTargetCredentialId(),
+                                        event.getTargetInstallationId(), event.getTargetRepoUrl()));
                         if (verify.apiSucceeded() && !verify.presentOids().isEmpty()) {
                             java.util.Set<String> present = verify.presentOids();
                             completedLfsOids.addAll(present);
@@ -1061,8 +1077,10 @@ public class GitSyncEngine {
                         var lfsStats = gitLfsSyncService.syncLfsObjects(
                                 event.getSourceRepoUrl(), event.getTargetRepoUrl(), pending,
                                 lfsProgress, () -> isStopRequested(jobId), jobId,
-                                resolveSideToken(event.getTokenA(), event.getSourceCredentialId()),
-                                resolveSideToken(event.getTokenB(), event.getTargetCredentialId()),
+                                resolveSideToken(event.getTokenA(), event.getSourceCredentialId(),
+                                        event.getSourceInstallationId(), event.getSourceRepoUrl()),
+                                resolveSideToken(event.getTokenB(), event.getTargetCredentialId(),
+                                        event.getTargetInstallationId(), event.getTargetRepoUrl()),
                                 oid -> {
                                     completedLfsOids.add(oid);
                                     stageProgress.getCompletedLfsOids().add(oid);
@@ -1193,6 +1211,15 @@ public class GitSyncEngine {
         return mapping.getTrunkConflictPolicy();
     }
 
+    /** Unidirectional pairs intentionally overwrite destination on trunk divergence. */
+    static boolean isUnidirectional(RepoMapping mapping) {
+        if (mapping == null || mapping.getSyncDirection() == null) {
+            return false;
+        }
+        SyncDirection d = mapping.getSyncDirection();
+        return d == SyncDirection.UNIDIRECTIONAL_A_TO_B || d == SyncDirection.UNIDIRECTIONAL_B_TO_A;
+    }
+
     public static boolean isTrunkBranch(String branch) {
         if (branch == null) return false;
         String b = branch.trim().toLowerCase();
@@ -1241,9 +1268,14 @@ public class GitSyncEngine {
 
     private CredentialsProvider createCredentialsProvider(SyncEventMessage event, String repoUrl, String explicitToken) {
         Long credId = credentialIdFor(event, repoUrl);
+        String installId = installationIdFor(event, repoUrl);
+        String token = explicitToken;
+        if ((token == null || token.isBlank()) && credId != null && scmCredentialService != null) {
+            token = scmCredentialService.resolveAccessToken(credId, installId, repoUrl);
+        }
         try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(credId)) {
             if (scmProviderFacade != null) {
-                return scmProviderFacade.getGitCredentials(repoUrl, explicitToken);
+                return scmProviderFacade.getGitCredentials(repoUrl, token);
             }
             return null;
         }
@@ -1262,24 +1294,38 @@ public class GitSyncEngine {
         return event.getSourceCredentialId();
     }
 
-    private String resolveSideToken(String explicit, Long credentialId) {
+    private static String installationIdFor(SyncEventMessage event, String repoUrl) {
+        if (event == null || repoUrl == null) {
+            return null;
+        }
+        if (RepoMappingService.sameRepo(repoUrl, event.getSourceRepoUrl())) {
+            return event.getSourceInstallationId();
+        }
+        if (RepoMappingService.sameRepo(repoUrl, event.getTargetRepoUrl())) {
+            return event.getTargetInstallationId();
+        }
+        return event.getSourceInstallationId();
+    }
+
+    private String resolveSideToken(String explicit, Long credentialId, String installationId, String repoUrl) {
         if (explicit != null && !explicit.isBlank()) {
             return explicit.trim();
         }
         if (credentialId == null || scmCredentialService == null) {
             return null;
         }
-        return scmCredentialService.resolveAccessToken(credentialId);
+        return scmCredentialService.resolveAccessToken(credentialId, installationId, repoUrl);
     }
 
-    private void assertCredentialCanAccess(Long credentialId, String repoUrl) {
+    private void assertCredentialCanAccess(Long credentialId, String installationId, String repoUrl) {
         if (credentialId == null || repoUrl == null || scmCredentialService == null) {
             return;
         }
         if (!ScmCredentialService.isGithubOrGhesUrl(repoUrl)) {
             return;
         }
-        scmCredentialService.assertRepoAccessible(scmCredentialService.requireEnabled(credentialId), repoUrl);
+        scmCredentialService.assertRepoAccessible(
+                scmCredentialService.requireEnabled(credentialId), repoUrl, installationId);
     }
 
     /**
@@ -1660,7 +1706,8 @@ public class GitSyncEngine {
             return new RefSpec("+" + localRefName + ":" + localRefName);
         }
         TrunkConflictPolicy policy = policyOf(mapping);
-        TrunkPushAction action = decideTrunkPush(fastForward, event != null && event.isOverwriteFromSource(), policy);
+        boolean overwrite = (event != null && event.isOverwriteFromSource()) || isUnidirectional(mapping);
+        TrunkPushAction action = decideTrunkPush(fastForward, overwrite, policy);
         String sourceSha = ObjectId.toString(localId);
         String destSha = ObjectId.toString(destId);
         if (action == TrunkPushAction.PUSH) {
@@ -1668,9 +1715,10 @@ public class GitSyncEngine {
         }
         if (action == TrunkPushAction.FORCE) {
             logAudit(jobId, LogLevel.WARN, String.format(
-                    "Force-pushing source '%s' (%s) onto destination (was %s) policy=%s overwrite=%s.",
+                    "Force-pushing source '%s' (%s) onto destination (was %s) policy=%s overwrite=%s unidirectional=%s.",
                     branchName, sourceSha.substring(0, 7), destSha.substring(0, 7), policy,
-                    event != null && event.isOverwriteFromSource()
+                    event != null && event.isOverwriteFromSource(),
+                    isUnidirectional(mapping)
             ));
             IsolatedRef iso = new IsolatedRef();
             iso.kind = ConflictKind.GIT_REF;
@@ -1738,7 +1786,8 @@ public class GitSyncEngine {
                     mappingId, jobId, iso.kind, iso.policy, iso.originalRef,
                     iso.sourceSha, iso.destSha, iso.isolatedBranch, destUrl, message);
             if (row != null && iso.action == TrunkPushAction.ISOLATE && mapping != null && destUrl != null
-                    && !isSimulationOrTestUrl(destUrl)) {
+                    && !isSimulationOrTestUrl(destUrl)
+                    && mapping.getSyncDirection() == SyncDirection.BIDIRECTIONAL) {
                 try {
                     syncConflictService.openConflictPr(row, mapping, destUrl);
                 } catch (Exception e) {
@@ -2502,7 +2551,8 @@ public class GitSyncEngine {
         }
         try {
             Long targetCredId = event.getTargetCredentialId();
-            String destToken = resolveSideToken(event.getTokenB(), targetCredId);
+            String destToken = resolveSideToken(event.getTokenB(), targetCredId,
+                    event.getTargetInstallationId(), event.getTargetRepoUrl());
             PermissionCheckReport report = scmProviderFacade.testConnection(null, TestConnectionRequest.builder()
                     .repoUrl(event.getTargetRepoUrl())
                     .token(destToken)
