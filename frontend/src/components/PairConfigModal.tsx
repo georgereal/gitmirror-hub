@@ -739,7 +739,7 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
             <div className="p-4 rounded-xl bg-zinc-50/70 border border-zinc-200/80 space-y-2.5">
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-2">
-                  <span className="font-semibold text-zinc-800">Source Repository (Origin)</span>
+                  <span className="font-semibold text-zinc-800">Source Repository</span>
                   {providerA && (
                     <span className={`inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-medium border ${providerA.color}`}>
                       {providerA.icon}
@@ -976,7 +976,7 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
             <div className="p-4 rounded-xl bg-zinc-50/70 border border-zinc-200/80 space-y-2.5">
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-2">
-                  <span className="font-semibold text-zinc-800">Destination Repository (Mirror)</span>
+                  <span className="font-semibold text-zinc-800">Destination Repository</span>
                   {providerB && (
                     <span className={`inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-medium border ${providerB.color}`}>
                       {providerB.icon}
@@ -1594,7 +1594,7 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
               })();
             }
           }}
-          title={pickerTarget === 'A' ? 'Select Source Repository (Origin)' : 'Select Destination Repository (Mirror)'}
+          title={pickerTarget === 'A' ? 'Select Source Repository' : 'Select Destination Repository'}
           access={pickerTarget === 'B' ? 'PUSH' : 'PULL'}
         />
       )}

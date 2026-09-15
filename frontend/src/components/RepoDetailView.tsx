@@ -1867,7 +1867,7 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs font-medium text-zinc-700 mb-1">
-                      Repository A (Source Origin)
+                      Repository A (Source)
                     </label>
                     <input
                       type="text"
@@ -1881,7 +1881,7 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
 
                   <div>
                     <label className="block text-xs font-medium text-zinc-700 mb-1">
-                      Repository B (Destination Mirror)
+                      Repository B (Destination)
                     </label>
                     <input
                       type="text"
