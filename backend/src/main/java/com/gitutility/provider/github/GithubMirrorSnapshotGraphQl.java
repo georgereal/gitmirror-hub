@@ -2,6 +2,7 @@ package com.gitutility.provider.github;
 
 import tools.jackson.databind.JsonNode;
 import com.gitutility.model.dto.MirrorMetadataSnapshot;
+import com.gitutility.model.dto.ReleaseListPage;
 import com.gitutility.model.dto.SyncDiffReport;
 
 import java.util.ArrayList;
@@ -40,6 +41,22 @@ public final class GithubMirrorSnapshotGraphQl {
             return List.of();
         }
         return parseReleaseNodes(data.path("repository").path("releases").path("nodes"));
+    }
+
+    /** Parses a cursor-paged {@code releases(first:, after:)} response into a {@link ReleaseListPage}. */
+    public static ReleaseListPage parseReleasesPage(JsonNode data) {
+        if (data == null || data.isMissingNode()) {
+            return ReleaseListPage.empty();
+        }
+        JsonNode releases = data.path("repository").path("releases");
+        if (releases.isMissingNode()) {
+            return ReleaseListPage.empty();
+        }
+        List<SyncDiffReport.ReleaseDetail> items = parseReleaseNodes(releases.path("nodes"));
+        boolean hasNext = releases.path("pageInfo").path("hasNextPage").asBoolean(false);
+        String endCursor = releases.path("pageInfo").path("endCursor").asText(null);
+        return new ReleaseListPage(items, hasNext ? endCursor : null, hasNext,
+                releases.path("totalCount").asLong(items.size()), true);
     }
 
     private static List<SyncDiffReport.PrSyncDetail> parsePrNodes(JsonNode nodes, String repoFullName) {

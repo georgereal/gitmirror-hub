@@ -43,6 +43,7 @@ import {
   syncPullRequests,
   syncLfsObjects,
   syncReleases,
+  syncCiChecks,
   cancelJob,
   pauseJob,
   getMappingConflicts,
@@ -146,6 +147,7 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
   const [syncingPrs, setSyncingPrs] = useState(false);
   const [syncingLfs, setSyncingLfs] = useState(false);
   const [syncingReleases, setSyncingReleases] = useState(false);
+  const [syncingCiChecks, setSyncingCiChecks] = useState(false);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [conflicts, setConflicts] = useState<SyncConflictRecord[]>([]);
   const [conflictBusyId, setConflictBusyId] = useState<number | null>(null);
@@ -336,13 +338,31 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
     setActionNotice(null);
     try {
       const res = await syncReleases(mapping.id);
-      setActionNotice(res.message || `Synchronized ${res.syncedCount} release(s)`);
-      await fetchDiffReport(false, true);
+      setActionNotice(res.message || `Release mirror started${res.jobId ? ` (job #${res.jobId})` : ''}`);
       onRefreshJobs?.();
+      if (res.jobId) {
+        // Diff refresh happens when the metadata job completes (JOB_UPDATE listener refetches).
+      } else {
+        await fetchDiffReport(false, true);
+      }
     } catch (e: any) {
       setActionNotice(`Releases sync error: ${e.response?.data?.error || e.message}`);
     } finally {
       setSyncingReleases(false);
+    }
+  };
+
+  const handleSyncCiChecks = async () => {
+    setSyncingCiChecks(true);
+    setActionNotice(null);
+    try {
+      const res = await syncCiChecks(mapping.id);
+      setActionNotice(res.message || `CI check backfill started${res.jobId ? ` (job #${res.jobId})` : ''}`);
+      onRefreshJobs?.();
+    } catch (e: any) {
+      setActionNotice(`CI check sync error: ${e.response?.data?.error || e.message}`);
+    } finally {
+      setSyncingCiChecks(false);
     }
   };
 
@@ -1489,6 +1509,9 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
                   <div className="flex items-center space-x-3">
                     <span className="text-[11px] text-zinc-400">
                       {diffReport?.releaseItems?.length ?? 0} Release(s) Published
+                      {(diffReport?.releases?.sourceReleasesCount ?? 0) > 0 && (
+                        <> · Source {diffReport?.releases?.sourceReleasesCount} / Destination {diffReport?.releases?.targetReleasesCount}</>
+                      )}
                     </span>
                     <button
                       onClick={handleSyncReleases}
@@ -1516,6 +1539,22 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
                             {rel.isPrerelease && (
                               <span className="px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded text-[10px] font-medium">
                                 Pre-release
+                              </span>
+                            )}
+                            {rel.syncStatus === 'MIRRORED' && (
+                              <span className="inline-flex items-center space-x-1 px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded text-[10px] font-medium">
+                                <Check className="w-3 h-3" />
+                                <span>Mirrored</span>
+                              </span>
+                            )}
+                            {rel.syncStatus === 'PENDING' && (
+                              <span className="px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded text-[10px] font-medium" title="Present on source but missing on the destination — run Sync Releases & Assets">
+                                Pending mirror
+                              </span>
+                            )}
+                            {rel.syncStatus === 'UNSUPPORTED' && (
+                              <span className="px-2 py-0.5 bg-zinc-100 text-zinc-500 border border-zinc-200 rounded text-[10px] font-medium" title="Destination provider has no Releases API — tags mirror via Git">
+                                Not supported on destination
                               </span>
                             )}
                           </div>
@@ -1695,9 +1734,19 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
               <div className="rounded-2xl border border-zinc-200/90 bg-white shadow-sm overflow-hidden">
                 <div className="px-6 py-3.5 border-b border-zinc-100 flex items-center justify-between bg-zinc-50/50">
                   <h4 className="text-xs font-semibold text-zinc-900">Live CI/CD Commit Checks & Status Replication</h4>
-                  <span className="text-[11px] text-zinc-400">
-                    {diffReport?.ciCheckRuns?.length ?? 0} Check(s) Inspected
-                  </span>
+                  <div className="flex items-center space-x-3">
+                    <span className="text-[11px] text-zinc-400">
+                      {diffReport?.ciCheckRuns?.length ?? 0} Check(s) Inspected
+                    </span>
+                    <button
+                      onClick={handleSyncCiChecks}
+                      disabled={syncingCiChecks || fullDiffLoading}
+                      className="inline-flex items-center space-x-1 px-2.5 py-1 bg-blue-700 hover:bg-blue-800 text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${syncingCiChecks ? 'animate-spin' : ''}`} />
+                      <span>{syncingCiChecks ? 'Backfilling…' : 'Sync CI Checks'}</span>
+                    </button>
+                  </div>
                 </div>
 
                 <div className="divide-y divide-zinc-100">

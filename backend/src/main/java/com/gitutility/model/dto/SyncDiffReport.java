@@ -217,6 +217,8 @@ public class SyncDiffReport {
         private boolean isDraft;
         private boolean isPrerelease;
         private String htmlUrl;
+        /** Destination mirror state for this release: MIRRORED / PENDING / UNSUPPORTED. */
+        private String syncStatus;
         @Builder.Default
         private List<ReleaseAssetDetail> assets = new ArrayList<>();
     }

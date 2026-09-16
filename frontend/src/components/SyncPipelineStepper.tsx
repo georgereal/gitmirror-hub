@@ -22,7 +22,8 @@ export const PIPELINE_STAGE_LABELS: Record<string, string> = {
   push_dest: 'Push to destination',
   lfs: 'Git LFS',
   pr_metadata: 'PR metadata',
-  releases: 'Releases / CI',
+  releases: 'Releases',
+  ci_checks: 'CI checks',
 };
 
 export function pipelineStageLabel(stageId?: string | null, pipeline?: SyncPipeline | null): string {

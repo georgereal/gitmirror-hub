@@ -54,6 +54,13 @@ public class AsyncConfig {
         return monitoredFixedPool(meterRegistry, Math.max(1, threads), 1000, "PrCreate-", "gitmirror.pr.create");
     }
 
+    @Bean(name = "releaseSyncExecutor", destroyMethod = "shutdown")
+    public ExecutorService releaseSyncExecutor(
+            MeterRegistry meterRegistry,
+            @Value("${git-utility.git.release-concurrency:4}") int threads) {
+        return monitoredFixedPool(meterRegistry, Math.max(1, threads), 500, "ReleaseSync-", "gitmirror.release.sync");
+    }
+
     private static ExecutorService monitoredFixedPool(MeterRegistry registry, int threads, int queueCapacity,
                                                       String threadPrefix, String metricName) {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();

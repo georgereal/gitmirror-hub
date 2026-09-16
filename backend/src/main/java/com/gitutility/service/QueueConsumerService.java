@@ -290,44 +290,115 @@ public class QueueConsumerService {
                     pipeline.markCurrent(SyncPipelineState.RELEASES);
                     broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
                 }
-                gitSyncEngine.logJobAudit(job.getId(), LogLevel.INFO, "Synchronizing releases and CI metadata...");
+                gitSyncEngine.logJobAudit(job.getId(), LogLevel.INFO, "Synchronizing releases and assets...");
                 try {
-                    releasesSynced = releaseAndStatusSyncService.syncReleases(
-                            event.getMappingId(), event.getSourceRepoUrl(), event.getTargetRepoUrl(),
-                            msg -> {
-                                gitSyncEngine.logJobAudit(job.getId(), LogLevel.INFO, msg);
-                                if (pipeline != null) {
-                                    String detail = msg.startsWith("Releases · ")
-                                            ? msg.substring("Releases · ".length()) : msg;
-                                    if (detail.length() > 96) {
-                                        detail = detail.substring(0, 93) + "...";
-                                    }
-                                    pipeline.markCurrent(SyncPipelineState.RELEASES, detail);
-                                    broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
-                                }
-                            });
+                    ReleaseAndStatusSyncService.ReleaseSyncResult releaseResult =
+                            releaseAndStatusSyncService.syncReleases(new ReleaseAndStatusSyncService.ReleaseSyncRequest(
+                                    event.getMappingId(), event.getSourceRepoUrl(), event.getTargetRepoUrl(),
+                                    event.getSourceCredentialId(), event.getSourceInstallationId(),
+                                    event.getTargetCredentialId(), event.getTargetInstallationId(),
+                                    job.getId(),
+                                    msg -> {
+                                        gitSyncEngine.logJobAudit(job.getId(), LogLevel.INFO, msg);
+                                        if (pipeline != null) {
+                                            String detail = msg.startsWith("Releases · ")
+                                                    ? msg.substring("Releases · ".length()) : msg;
+                                            if (detail.length() > 96) {
+                                                detail = detail.substring(0, 93) + "...";
+                                            }
+                                            pipeline.markCurrent(SyncPipelineState.RELEASES, detail);
+                                            broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
+                                        }
+                                    }));
+                    releasesSynced = releaseResult.mirroredCount();
                     pairCatchupLedger.recordReleaseSyncCompleted(event.getMappingId());
+                    boolean releaseFailed = releaseResult.providerSupported() && releaseResult.failed() > 0;
                     if (pipeline != null) {
-                        pipeline.markDone(SyncPipelineState.RELEASES, releasesSynced + " release(s)");
+                        if (releaseFailed) {
+                            pipeline.markFailed(SyncPipelineState.RELEASES,
+                                    releaseResult.mirroredCount() + " mirrored, " + releaseResult.failed() + " failed");
+                        } else {
+                            pipeline.markDone(SyncPipelineState.RELEASES, releasesSynced + " release(s) mirrored");
+                        }
                         broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
                     }
-                    gitSyncEngine.logJobAudit(job.getId(), LogLevel.INFO,
-                            "Release metadata sync finished: " + releasesSynced + " release(s).");
+                    gitSyncEngine.logJobAudit(job.getId(), releaseFailed ? LogLevel.WARN : LogLevel.INFO,
+                            "Release metadata sync finished: " + releaseResult.created() + " created, "
+                                    + releaseResult.updated() + " updated, " + releaseResult.unchanged()
+                                    + " unchanged, " + releaseResult.assetsUploaded() + " asset(s) streamed"
+                                    + (releaseFailed ? ", " + releaseResult.failed() + " FAILED" : ""));
                     if (releasesSynced > 0) {
-                        log.info("Synchronized {} release(s) with binary assets for pair '{}'", releasesSynced, event.getPairName());
+                        log.info("Mirrored {} release(s) with binary assets for pair '{}'", releasesSynced, event.getPairName());
                     }
-                    pairDiffSnapshotService.updateReleases(event.getMappingId(), releasesSynced, releasesSynced);
+                    if (releaseFailed) {
+                        for (String error : releaseResult.errors()) {
+                            gitSyncEngine.logJobAudit(job.getId(), LogLevel.WARN, "Release sync error: " + error);
+                        }
+                    }
+                } catch (ReleaseAndStatusSyncService.MetadataSyncException relEx) {
+                    markMetadataStageFailed(job, event, pipeline, SyncPipelineState.RELEASES, "Release metadata sync FAILED: ", relEx);
                 } catch (Exception relEx) {
-                    if (pipeline != null) {
-                        pipeline.markDone(SyncPipelineState.RELEASES, "Completed with notice");
-                        broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
-                    }
-                    gitSyncEngine.logJobAudit(job.getId(), LogLevel.WARN,
-                            "Release metadata sync completed with notice: " + relEx.getMessage());
-                    log.debug("Release metadata sync notice: {}", relEx.getMessage());
+                    markMetadataStageFailed(job, event, pipeline, SyncPipelineState.RELEASES, "Release metadata sync FAILED: ", relEx);
                 }
             } else if (pipeline != null && !result.fastPathShortCircuited) {
                 pipeline.markSkipped(SyncPipelineState.RELEASES,
+                        pairMetadata ? "Throttled" : "Branch-only job");
+                broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
+            }
+
+            // CI checks backfill for mirrored tip commits (check runs on GitHub/GHES; build statuses elsewhere).
+            if (!result.fastPathShortCircuited && pairMetadata
+                    && (pipeline == null || !pipeline.isStageSettled(SyncPipelineState.CI_CHECKS))) {
+                if (pipeline != null) {
+                    pipeline.markCurrent(SyncPipelineState.CI_CHECKS);
+                    broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
+                }
+                gitSyncEngine.logJobAudit(job.getId(), LogLevel.INFO, "Backfilling CI checks on mirrored tips...");
+                try {
+                    ReleaseAndStatusSyncService.CiCheckSyncResult ciResult =
+                            releaseAndStatusSyncService.syncCiChecks(new ReleaseAndStatusSyncService.CiCheckSyncRequest(
+                                    event.getMappingId(), event.getSourceRepoUrl(), event.getTargetRepoUrl(),
+                                    event.getSourceCredentialId(), event.getSourceInstallationId(),
+                                    event.getTargetCredentialId(), event.getTargetInstallationId(),
+                                    job.getId(), null,
+                                    msg -> {
+                                        gitSyncEngine.logJobAudit(job.getId(), LogLevel.INFO, msg);
+                                        if (pipeline != null) {
+                                            String detail = msg.startsWith("CI checks · ")
+                                                    ? msg.substring("CI checks · ".length()) : msg;
+                                            if (detail.length() > 96) {
+                                                detail = detail.substring(0, 93) + "...";
+                                            }
+                                            pipeline.markCurrent(SyncPipelineState.CI_CHECKS, detail);
+                                            broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
+                                        }
+                                    }));
+                    if (pipeline != null) {
+                        if (ciResult.errors().isEmpty()) {
+                            pipeline.markDone(SyncPipelineState.CI_CHECKS,
+                                    ciResult.checkRunsReplicated() + " replicated, "
+                                            + ciResult.statusesReplicated() + " status(es)");
+                        } else {
+                            pipeline.markFailed(SyncPipelineState.CI_CHECKS,
+                                    ciResult.checkRunsReplicated() + " replicated, "
+                                            + ciResult.errors().size() + " error(s)");
+                        }
+                        broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
+                    }
+                    gitSyncEngine.logJobAudit(job.getId(), ciResult.errors().isEmpty() ? LogLevel.INFO : LogLevel.WARN,
+                            "CI check backfill finished: " + ciResult.checkRunsReplicated() + " run(s) replicated, "
+                                    + ciResult.checkRunsSkipped() + " in sync, " + ciResult.statusesReplicated()
+                                    + " status(es) replicated across " + ciResult.tipsInspected() + " tip(s).");
+                    for (String error : ciResult.errors()) {
+                        gitSyncEngine.logJobAudit(job.getId(), LogLevel.WARN, "CI check sync error: " + error);
+                    }
+                } catch (ReleaseAndStatusSyncService.MetadataSyncException ciEx) {
+                    markMetadataStageFailed(job, event, pipeline, SyncPipelineState.CI_CHECKS, "CI check backfill FAILED: ", ciEx);
+                } catch (Exception ciEx) {
+                    markMetadataStageFailed(job, event, pipeline, SyncPipelineState.CI_CHECKS, "CI check backfill FAILED: ", ciEx);
+                }
+            } else if (pipeline != null && !result.fastPathShortCircuited) {
+                pipeline.markSkipped(SyncPipelineState.CI_CHECKS,
                         pairMetadata ? "Throttled" : "Branch-only job");
                 broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
             }
@@ -643,6 +714,18 @@ public class QueueConsumerService {
                 pipeline.toMap(),
                 traffic
         );
+    }
+
+    /** Loud, persisted failure for a metadata stage — no more silent "Completed with notice". */
+    private void markMetadataStageFailed(SyncJob job, SyncEventMessage event, SyncPipelineState pipeline,
+                                         String stageId, String prefix, Exception e) {
+        String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+        if (pipeline != null) {
+            pipeline.markFailed(stageId, message.length() > 96 ? message.substring(0, 93) + "..." : message);
+            broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
+        }
+        gitSyncEngine.logJobAudit(job.getId(), LogLevel.ERROR, prefix + message);
+        log.warn("{} for pair '{}': {}", prefix.trim(), event.getPairName(), message);
     }
 
     private static String formatDuration(long durationMs) {

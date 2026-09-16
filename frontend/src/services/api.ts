@@ -71,8 +71,13 @@ export const syncLfsObjects = async (mappingId: number): Promise<{ syncedCount: 
   return res.data;
 };
 
-export const syncReleases = async (mappingId: number): Promise<{ syncedCount: number; message: string }> => {
+export const syncReleases = async (mappingId: number): Promise<{ jobId?: number; syncedCount: number; message: string }> => {
   const res = await api.post(`/mappings/${mappingId}/sync-releases`);
+  return res.data;
+};
+
+export const syncCiChecks = async (mappingId: number): Promise<{ jobId?: number; syncedCount: number; message: string }> => {
+  const res = await api.post(`/mappings/${mappingId}/sync-ci-checks`);
   return res.data;
 };
 

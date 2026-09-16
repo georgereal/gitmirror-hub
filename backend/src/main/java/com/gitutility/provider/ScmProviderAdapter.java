@@ -118,6 +118,126 @@ public interface ScmProviderAdapter {
     List<SyncDiffReport.ReleaseDetail> listReleases(String repoFullName);
 
     /**
+     * One cursor-paged page of releases. {@code cursor} is provider-specific (GraphQL
+     * endCursor or REST page marker). Default loads the full list in one shot.
+     */
+    default ReleaseListPage listReleasesPage(String repoFullName, String cursor, int pageSize) {
+        List<SyncDiffReport.ReleaseDetail> all = listReleases(repoFullName);
+        return new ReleaseListPage(all, null, false, all.size(), false);
+    }
+
+    /**
+     * Whether this provider supports creating/updating mirror releases on a destination.
+     * Providers that only expose tags (Bitbucket) return false and release sync degrades to a notice.
+     */
+    default boolean supportsReleaseSync() {
+        return false;
+    }
+
+    /**
+     * Finds an existing release on the repository by tag for idempotent mirror diffs.
+     * Default reports the tag as missing.
+     */
+    default ReleaseLookup findReleaseByTag(String repoFullName, String tagName) {
+        return ReleaseLookup.missing();
+    }
+
+    /**
+     * Creates a release on the repository. Returns the provider release externalId
+     * (GitHub numeric id, GitLab tag name, ...) or {@code null} on failure.
+     */
+    default String createRelease(String repoFullName,
+                                 String tagName,
+                                 String name,
+                                 String body,
+                                 boolean draft,
+                                 boolean prerelease) {
+        return null;
+    }
+
+    /**
+     * Updates an existing release identified by {@code externalId} (from {@link #findReleaseByTag}).
+     * Returns true when the mutation was applied.
+     */
+    default boolean updateRelease(String repoFullName,
+                                  String externalId,
+                                  String tagName,
+                                  String name,
+                                  String body,
+                                  boolean draft,
+                                  boolean prerelease) {
+        return false;
+    }
+
+    /**
+     * Uploads one binary asset to a release from a local file. Returns true when uploaded.
+     * Implementations that cannot host binaries (GitLab links-only, Bitbucket) return false.
+     */
+    default boolean uploadReleaseAsset(String repoFullName,
+                                       String releaseExternalId,
+                                       String tagName,
+                                       String assetName,
+                                       String contentType,
+                                       java.io.File file) {
+        return false;
+    }
+
+    /**
+     * Streams a release asset from this repository to a local temp file (authenticated when
+     * the repository is private). Returns the file, or {@code null} when the asset cannot be fetched.
+     */
+    default java.io.File downloadReleaseAsset(String repoFullName,
+                                              String assetDownloadUrl,
+                                              String assetName) {
+        return null;
+    }
+
+    /**
+     * Lists CI check runs and commit status executions for a given commit.
+     */
+    List<SyncDiffReport.CiCheckRunDetail> listCiCheckRuns(String repoFullName, String commitSha);
+
+    /**
+     * One REST page of check runs for a commit. {@code cursor} is the 1-based next page
+     * number (0 starts at page 1). Default loads the single-shot list.
+     */
+    default CiCheckPage listCiCheckRunsPage(String repoFullName, String commitSha, int cursor, int pageSize) {
+        List<SyncDiffReport.CiCheckRunDetail> all = listCiCheckRuns(repoFullName, commitSha);
+        return new CiCheckPage(all, 0, false, all.size());
+    }
+
+    /**
+     * Lists legacy commit statuses on a commit, newest first.
+     */
+    default List<CommitStatusDetail> listCommitStatuses(String repoFullName, String commitSha) {
+        return List.of();
+    }
+
+    /**
+     * Whether this provider can create native check runs on a destination commit
+     * (GitHub Checks API). When false, check sync degrades to commit statuses.
+     */
+    default boolean supportsCheckRunSync() {
+        return false;
+    }
+
+    /**
+     * Creates a check run on a destination commit mirroring a source check run.
+     * Returns the created check run id, or 0 when unsupported/failed.
+     */
+    default long createCheckRun(String repoFullName,
+                                String commitSha,
+                                String name,
+                                String status,
+                                String conclusion,
+                                String startedAt,
+                                String completedAt,
+                                String detailsUrl,
+                                String summary) {
+        return 0L;
+    }
+
+    /**
      * One GraphQL round-trip (when supported): open PR total + preview rows + recent releases.
      * Default falls back to separate {@link #listOpenPullRequests} / {@link #listReleases} calls.
      */
@@ -137,11 +257,6 @@ public interface ScmProviderAdapter {
                 releases.size(),
                 releases);
     }
-
-    /**
-     * Lists CI check runs and commit status executions for a given commit.
-     */
-    List<SyncDiffReport.CiCheckRunDetail> listCiCheckRuns(String repoFullName, String commitSha);
 
     /**
      * Cancels in-flight Actions / CI workflow runs attributed to {@code actorLogin} created at or after

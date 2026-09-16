@@ -644,6 +644,8 @@ export interface PermissionCheckReport {
   passedChecks: string[];
   warnings: string[];
   errors: string[];
+  /** Destination (WRITE) checks only: true when the remote repo has zero refs (blank) — first mirror uses bulk bootstrap. */
+  emptyDestination?: boolean | null;
 }
 
 export interface GitHubRepoOption {
@@ -768,6 +770,8 @@ export interface ReleaseDetail {
   isDraft: boolean;
   isPrerelease: boolean;
   htmlUrl?: string;
+  /** Destination mirror state: MIRRORED / PENDING / UNSUPPORTED (Refresh Diff). */
+  syncStatus?: 'MIRRORED' | 'PENDING' | 'UNSUPPORTED' | string;
   assets?: ReleaseAssetDetail[];
 }
 

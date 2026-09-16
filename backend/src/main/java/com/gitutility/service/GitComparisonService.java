@@ -9,6 +9,7 @@ import com.gitutility.model.dto.SyncDiffReport.LfsSyncSummary;
 import com.gitutility.model.dto.SyncDiffReport.TagSyncSummary;
 import com.gitutility.model.entity.PrMapping;
 import com.gitutility.model.entity.RepoMapping;
+import com.gitutility.provider.ScmProviderAdapter;
 import com.gitutility.repository.PrMappingRepository;
 import com.gitutility.repository.RepoMappingRepository;
 import lombok.RequiredArgsConstructor;
@@ -507,7 +508,10 @@ public class GitComparisonService {
                 MirrorMetadataSnapshot metadata = null;
 
                 try {
-                    metadata = sourceAdapter.fetchMirrorMetadataSnapshot(sourceFullName, 100, 30);
+                    try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(
+                            mapping.getSourceCredentialId(), mapping.getSourceInstallationId())) {
+                        metadata = sourceAdapter.fetchMirrorMetadataSnapshot(sourceFullName, 100, 30);
+                    }
                     totalOpenPrs = metadata.openPrTotalCount();
                     pullRequestsTruncated = metadata.pullRequestsTruncated();
                     List<PrSyncDetail> livePrs = metadata.prPreview();
@@ -601,9 +605,47 @@ public class GitComparisonService {
                 progress.markCurrent(DiffInspectionPipeline.RELEASES, "Fetching releases & tags");
                 int releaseCount = 0;
                 try {
-                    List<SyncDiffReport.ReleaseDetail> releaseItems = metadata != null
-                            ? metadata.releases()
-                            : sourceAdapter.listReleases(sourceFullName);
+                    List<SyncDiffReport.ReleaseDetail> releaseItems;
+                    try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(
+                            mapping.getSourceCredentialId(), mapping.getSourceInstallationId())) {
+                        releaseItems = metadata != null
+                                ? metadata.releases()
+                                : listReleasesPaged(sourceAdapter, sourceFullName);
+                    }
+
+                    // Destination-side truth: list the target's releases with the target credential bound
+                    // so per-release mirror status and the pair counts are real, not echoed source counts.
+                    var targetAdapter = scmProviderFacade.getAdapterForUrl(mapping.getRepoBUrl());
+                    String targetFullName = scmProviderFacade.parseRepoFullName(mapping.getRepoBUrl());
+                    boolean targetSupportsReleases = targetAdapter != null && targetAdapter.supportsReleaseSync();
+                    Set<String> targetTags = new HashSet<>();
+                    int targetReleaseCount = 0;
+                    if (targetSupportsReleases && targetFullName != null) {
+                        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(
+                                mapping.getTargetCredentialId(), mapping.getTargetInstallationId())) {
+                            for (SyncDiffReport.ReleaseDetail targetRelease : listReleasesPaged(targetAdapter, targetFullName)) {
+                                targetReleaseCount++;
+                                if (targetRelease.getTagName() != null) {
+                                    targetTags.add(targetRelease.getTagName());
+                                }
+                            }
+                        } catch (Exception e) {
+                            log.debug("Destination release listing notice for {}: {}", targetFullName, e.getMessage());
+                        }
+                    }
+                    for (SyncDiffReport.ReleaseDetail item : releaseItems) {
+                        if (item == null) {
+                            continue;
+                        }
+                        if (!targetSupportsReleases) {
+                            item.setSyncStatus("UNSUPPORTED");
+                        } else if (item.getTagName() != null && targetTags.contains(item.getTagName())) {
+                            item.setSyncStatus("MIRRORED");
+                        } else {
+                            item.setSyncStatus("PENDING");
+                        }
+                    }
+
                     if (!releaseItems.isEmpty()) {
                         releaseCount = metadata != null && metadata.releaseTotalCount() > 0
                                 ? metadata.releaseTotalCount()
@@ -613,17 +655,19 @@ public class GitComparisonService {
                         for (var r : releaseItems) {
                             if (r.getAssets() != null) totalAssets += r.getAssets().size();
                         }
+                        boolean allMirrored = releaseItems.stream()
+                                .allMatch(r -> r.getTagName() != null && targetTags.contains(r.getTagName()));
                         reportBuilder.releases(SyncDiffReport.ReleaseSyncSummary.builder()
                                 .sourceReleasesCount(releaseCount)
-                                .targetReleasesCount(releaseCount)
-                                .inSync(true)
+                                .targetReleasesCount(targetReleaseCount)
+                                .inSync(!targetSupportsReleases || (targetReleaseCount > 0 && allMirrored))
                                 .latestReleaseTag(latestTag)
                                 .totalAssetsCount(totalAssets)
                                 .build());
                         reportBuilder.releaseItems(releaseItems);
                     }
                     progress.markDone(DiffInspectionPipeline.RELEASES,
-                            releaseCount > 0 ? releaseCount + " release(s)" : "No releases found");
+                            releaseCount > 0 ? releaseCount + " release(s) · " + targetReleaseCount + " on destination" : "No releases found");
                 } catch (Exception ignored) {
                     progress.markDone(DiffInspectionPipeline.RELEASES, "Completed with notice");
                 }
@@ -642,7 +686,11 @@ public class GitComparisonService {
                     }
 
                     if (trunkSha != null && !trunkSha.isBlank()) {
-                        List<SyncDiffReport.CiCheckRunDetail> ciRuns = sourceAdapter.listCiCheckRuns(sourceFullName, trunkSha);
+                        List<SyncDiffReport.CiCheckRunDetail> ciRuns;
+                        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(
+                                mapping.getSourceCredentialId(), mapping.getSourceInstallationId())) {
+                            ciRuns = sourceAdapter.listCiCheckRuns(sourceFullName, trunkSha);
+                        }
                         if (!ciRuns.isEmpty()) {
                             int succ = (int) ciRuns.stream().filter(c -> "success".equalsIgnoreCase(c.getConclusion())).count();
                             int fail = (int) ciRuns.stream().filter(c -> "failure".equalsIgnoreCase(c.getConclusion())).count();
@@ -753,6 +801,31 @@ public class GitComparisonService {
                 unidirectionalAToB,
                 System.currentTimeMillis() + BRANCH_LIST_CACHE_TTL_MS));
         return built;
+    }
+
+    /**
+     * Cursor-paged release walk for diff inspection (GraphQL endCursor or REST page marker).
+     * Bounded at 50 pages as a runaway-cursor safety net.
+     */
+    private List<SyncDiffReport.ReleaseDetail> listReleasesPaged(ScmProviderAdapter adapter, String repoFullName) {
+        List<SyncDiffReport.ReleaseDetail> all = new ArrayList<>();
+        String cursor = null;
+        int pages = 0;
+        while (pages < 50) {
+            var page = adapter.listReleasesPage(repoFullName, cursor, 50);
+            if (page == null) {
+                break;
+            }
+            if (page.items() != null) {
+                all.addAll(page.items());
+            }
+            pages++;
+            if (!page.hasNextPage() || page.nextCursor() == null || page.nextCursor().isBlank()) {
+                break;
+            }
+            cursor = page.nextCursor();
+        }
+        return all;
     }
 
     static PagedBranchSlice pageBranches(List<BranchDiffDetail> actionable,

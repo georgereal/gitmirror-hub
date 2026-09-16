@@ -433,6 +433,7 @@ export GIT_WORKSPACE_DIR="$HOME/git-utility-mirrors"
 export GIT_HTTP_TIMEOUT_SECONDS=600          # JGit fetch/push HTTP timeout
 export GIT_PUSH_BATCH_SIZE=8                 # Remaining refs per push after default branch
 export GIT_PUSH_BATCH_RETRIES=3              # Inner retries on connection reset / 502–504
+export GIT_PUSH_BULK_BOOTSTRAP=true          # Single-connection mirror-style push when the destination is blank (first sync)
 export GIT_HTTP_POST_BUFFER_BYTES=524288000  # 500 MiB http.postBuffer
 
 # Git LFS parallel sync
@@ -447,6 +448,11 @@ export GITHUB_GRAPHQL_ENABLED=true
 export GIT_PR_CREATE_CONCURRENCY=6
 export GIT_PR_FORK_FETCH_BATCH_SIZE=32
 export GIT_PR_LIST_PAGE_SIZE=100
+
+# Release & CI metadata mirror
+export GIT_RELEASE_PAGE_SIZE=50              # Releases per GraphQL/REST page when listing both sides
+export GIT_RELEASE_CONCURRENCY=4             # Parallel per-release mirror tasks (create/update/asset streaming)
+export GIT_CI_CHECK_TIP_LIMIT=8              # Recent tip commits backfilled with CI check runs / statuses
 
 # Agentic / ephemeral webhook gate (live incremental only; Smart full sync still tip-probes all refs)
 # export GIT_SYNC_EPHEMERAL_PREFIXES="agents/,agent/,dependabot/,renovate/,snyk-bot/,greenkeeper/,fork-pr-,sync-conflict/"
@@ -481,8 +487,8 @@ To inspect the real-time health and replication fidelity of any configured repos
   - **Pull Requests Mirror**: Cross-repository PR ID mappings and synchronizations.
   - **Git Metadata, LFS & Releases**:
     - **Tags & Notes**: Searchable catalog of lightweight and annotated tags, tagger details, messages, and Git Notes.
-    - **Releases**: Detailed GitHub/GitLab release changelogs, draft/pre-release badges, and downloadable binary assets.
+    - **Releases**: Detailed GitHub/GitLab release changelogs, draft/pre-release badges, downloadable binary assets, and a per-release mirror badge (`Mirrored` / `Pending mirror` / `Not supported on destination`) computed against the real destination listing. **Sync Releases & Assets** launches a visible job (source → destination create/update + binary asset streaming) — track it in Queue Manager and the audit log.
     - **Git LFS**: OID hashes, pointer byte sizes, and tracking branch names for mirrored binary assets.
-    - **CI Checks**: Live CI/CD check run status, conclusions (success/failure), elapsed execution times, and pipeline links.
+    - **CI Checks**: Live CI/CD check run status, conclusions (success/failure), elapsed execution times, and pipeline links. **Sync CI Checks** backfills check runs (GitHub/GHES) or build statuses (GitLab/Bitbucket) onto the most recent mirrored tips as a visible job.
   - **Storage & Settings**: Custom storage tier classification (`HOT_PERSISTENT`, `AUTO_LRU`, `EPHEMERAL_STREAM`, `NAS_MOUNT`), sync rules, and branch filters.
 

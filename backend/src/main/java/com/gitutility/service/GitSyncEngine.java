@@ -73,6 +73,9 @@ public class GitSyncEngine {
     @Value("${git-utility.git.push-batch-retries:3}")
     private int pushBatchRetries;
 
+    @Value("${git-utility.git.push-bulk-bootstrap:true}")
+    private boolean pushBulkBootstrap;
+
     @Value("${git-utility.git.http-post-buffer-bytes:524288000}")
     private int httpPostBufferBytes;
 
@@ -596,7 +599,9 @@ public class GitSyncEngine {
                     BareRepoHousekeeping.prepareRepoDirectoryAfterPackIo(repoDir);
                     int destHeads = destHeadBranchNames(git).size();
                     logAudit(jobId, LogLevel.INFO, "Destination inspection complete · " + destHeads
-                            + " branch head(s) loaded from " + destLabel + ".");
+                            + " branch head(s) loaded from " + destLabel + (destHeads == 0 && isFullMirror
+                            ? " · blank repository — bulk mirror bootstrap will be used on push." : "")
+                            + ".");
                     result.destTipFingerprint = destAdsOk
                             ? PairCatchupLedger.fingerprintTips(destAdvertised)
                             : PairCatchupLedger.fingerprintTips(collectDestTrackingTips(git));
@@ -732,6 +737,69 @@ public class GitSyncEngine {
                     pushMonitor.setCancelCheck(() -> isStopRequested(jobId));
                     List<List<RefSpec>> batches = partitionPushBatches(pushRefSpecs, Math.max(1, pushBatchSize));
                     Map<String, String> newlyPushed = new LinkedHashMap<>(alreadyPushed);
+
+                    // Bulk mirror bootstrap: when the destination is empty and this is a full mirror, push every
+                    // remaining ref in ONE connection (git fetch --all + git push --mirror style). No fallback:
+                    // the chosen path is the path; failures surface as job failures.
+                    boolean destBlank = destHeadBranchNames(git).isEmpty();
+                    boolean useBulk = shouldUseBulkBootstrapPush(
+                            pushBulkBootstrap, isFullMirror, targetReachable, destBlank, pushRefSpecs.size());
+                    if (useBulk) {
+                        logAudit(jobId, LogLevel.INFO, "Destination is blank — using bulk mirror bootstrap: "
+                                + pushRefSpecs.size() + " ref(s) in a single connection (fetch --all / push --mirror style).");
+                        pipeline.markCurrent(SyncPipelineState.PUSH_DEST,
+                                "bulk mirror bootstrap · " + pushRefSpecs.size() + " refs · 1 connection");
+                    } else if (isFullMirror && targetReachable) {
+                        logAudit(jobId, LogLevel.INFO, "Destination has existing refs — using batched precision push ("
+                                + batches.size() + " batch(es)).");
+                    }
+                    broadcastPipeline(jobId, event.getMappingId(), pipeline);
+
+                    if (useBulk) {
+                        throwIfStopRequested(jobId);
+                        PushBatchResult bulkResult = pushBatchWithRetries(git, event, pushRefSpecs, pushMonitor, jobId);
+                        if (providerRateMeter != null) {
+                            providerRateMeter.incrementGitHttpPushBatch();
+                        }
+                        int okCount = bulkResult.successfulRefNames.size() + bulkResult.deletedRemoteNames.size();
+                        int rejectedInBulk = bulkResult.rejectedMessages.size();
+                        logAudit(jobId, LogLevel.INFO, "Destination push · bulk mirror bootstrap complete: " + okCount
+                                + " ref(s) OK" + (rejectedInBulk > 0 ? ", " + rejectedInBulk + " rejected" : ""));
+                        result.updatedRefs.addAll(bulkResult.messages);
+                        recordSuccessfulRefs(git, bulkResult.successfulRefNames, newlyPushed, event.getTargetRepoUrl(),
+                                mapping, sourceSideOf(mapping, event));
+                        for (String deletedRef : bulkResult.deletedRemoteNames) {
+                            deleteDestTrackingForRemoteRef(git, deletedRef);
+                            if (dedupLedgerService != null) {
+                                dedupLedgerService.recordSystemRefDelete(event.getTargetRepoUrl(), deletedRef);
+                            }
+                        }
+                        persistCompletedPushRefs(event.getMappingId(), newlyPushed, stageProgress);
+                        if (okCount > 0 && actionsTriggerSuppressionService != null) {
+                            int cancelled;
+                            try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(event.getTargetCredentialId())) {
+                                cancelled = actionsTriggerSuppressionService.suppressAfterWrite(
+                                        event.getTargetRepoUrl(), jobId);
+                            }
+                            if (cancelled > 0) {
+                                logAudit(jobId, LogLevel.INFO, "Cancelled " + cancelled
+                                        + " mirror-triggered Actions run(s) after bulk push.");
+                            }
+                        }
+                        if (bulkResult.destinationRejected || bulkResult.authFailure) {
+                            result.rejectedPushRefs = String.join("\n", bulkResult.rejectedMessages);
+                            String failReason = bulkResult.authFailure
+                                    ? "Destination 401/403"
+                                    : firstRejectedSummary(bulkResult);
+                            pipeline.markFailed(SyncPipelineState.PUSH_DEST, failReason);
+                            persistPipeline(jobId, pipeline, result.rejectedPushRefs);
+                            throw new IllegalStateException(failReason
+                                    + "; bulk mirror bootstrap aborted on rejected ref");
+                        }
+                        pipeline.markDone(SyncPipelineState.PUSH_DEST,
+                                "bulk mirror bootstrap · " + pushRefSpecs.size() + " refs");
+                    }
+                    if (!useBulk) {
                     int batchIndex = 0;
                     for (List<RefSpec> batch : batches) {
                         throwIfStopRequested(jobId);
@@ -786,6 +854,7 @@ public class GitSyncEngine {
                         }
                     }
                     pipeline.markDone(SyncPipelineState.PUSH_DEST, batches.size() + " batch(es)");
+                    }
                 }
                 if (isFullMirror && event.getMappingId() != null) {
                     syncCheckpointService.persistStage(event.getMappingId(), SyncCheckpointStage.PUSH_DONE);
@@ -2118,6 +2187,17 @@ public class GitSyncEngine {
             batches.add(new ArrayList<>(specs.subList(i, Math.min(i + size, specs.size()))));
         }
         return batches;
+    }
+
+    /**
+     * Bulk mirror bootstrap ("git fetch --all + git push --mirror" style): a single-connection push of every
+     * remaining ref. Used ONLY for full-mirror jobs against an EMPTY destination, where mirror semantics are
+     * safe (nothing to delete, no diverged trunks, no protected-branch history) and per-connection fan-out is
+     * pure overhead. Destinations with existing refs keep the batched precision push.
+     */
+    static boolean shouldUseBulkBootstrapPush(boolean bulkEnabled, boolean isFullMirror,
+                                              boolean targetReachable, boolean destBlank, int refCount) {
+        return bulkEnabled && isFullMirror && targetReachable && destBlank && refCount > 1;
     }
 
     private static boolean isDefaultBranchSpec(RefSpec spec) {

@@ -555,4 +555,153 @@ public class GitLabProviderService implements ScmProviderAdapter {
         }
         return list;
     }
+
+    // ------------------------------------------------------------------
+    // Release mirror mutations (destination side)
+    // ------------------------------------------------------------------
+
+    @Override
+    public boolean supportsReleaseSync() {
+        return true;
+    }
+
+    @Override
+    public ReleaseListPage listReleasesPage(String repoFullName, String cursor, int pageSize) {
+        return new ReleaseListPage(listReleases(repoFullName), null, false, 0, false);
+    }
+
+    @Override
+    public ReleaseLookup findReleaseByTag(String repoFullName, String tagName) {
+        String host = getNormalizedHostUrl();
+        String token = getEffectiveToken(null);
+        if (token == null || repoFullName == null || tagName == null || tagName.isBlank()) {
+            return ReleaseLookup.missing();
+        }
+        try {
+            HttpHeaders headers = createHeaders(token);
+            String encoded = URLEncoder.encode(repoFullName, StandardCharsets.UTF_8);
+            String encodedTag = URLEncoder.encode(tagName.trim(), StandardCharsets.UTF_8);
+            String url = host + "/api/v4/projects/" + encoded + "/releases/" + encodedTag;
+            ResponseEntity<String> resp = restTemplate.exchange(URI.create(url), HttpMethod.GET, new HttpEntity<>(headers), String.class);
+            JsonNode rel = objectMapper.readTree(resp.getBody());
+            return new ReleaseLookup(true,
+                    rel.path("tag_name").asText(tagName),
+                    rel.path("tag_name").asText(tagName),
+                    rel.path("name").asText(null),
+                    rel.path("description").asText(null),
+                    false,
+                    false,
+                    List.of());
+        } catch (org.springframework.web.client.HttpClientErrorException.NotFound ignored) {
+            return ReleaseLookup.missing();
+        } catch (Exception e) {
+            throw new IllegalStateException("GitLab release lookup failed for tag " + tagName + ": " + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public String createRelease(String repoFullName, String tagName, String name, String body,
+                                boolean draft, boolean prerelease) {
+        String host = getNormalizedHostUrl();
+        String token = getEffectiveToken(null);
+        if (token == null || repoFullName == null || tagName == null) {
+            throw new IllegalStateException("GitLab release create skipped: missing token or tag.");
+        }
+        try {
+            HttpHeaders headers = createHeaders(token);
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("tag_name", tagName.trim());
+            payload.put("tag_message", name != null ? name : tagName);
+            if (name != null) payload.put("name", name);
+            if (body != null) payload.put("description", body);
+            String encoded = URLEncoder.encode(repoFullName, StandardCharsets.UTF_8);
+            String url = host + "/api/v4/projects/" + encoded + "/releases";
+            ResponseEntity<String> resp = restTemplate.exchange(URI.create(url), HttpMethod.POST,
+                    new HttpEntity<>(payload, headers), String.class);
+            log.info("Created GitLab release '{}' on {}", tagName, repoFullName);
+            return objectMapper.readTree(resp.getBody()).path("tag_name").asText(tagName);
+        } catch (org.springframework.web.client.HttpClientErrorException e) {
+            throw new IllegalStateException("GitLab release create rejected (" + e.getStatusCode() + "): "
+                    + e.getResponseBodyAsString(), e);
+        } catch (Exception e) {
+            throw new IllegalStateException("GitLab release create failed: " + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public boolean updateRelease(String repoFullName, String externalId, String tagName, String name,
+                                 String body, boolean draft, boolean prerelease) {
+        String host = getNormalizedHostUrl();
+        String token = getEffectiveToken(null);
+        if (token == null || repoFullName == null || tagName == null) {
+            return false;
+        }
+        try {
+            HttpHeaders headers = createHeaders(token);
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            Map<String, Object> payload = new HashMap<>();
+            if (name != null) payload.put("name", name);
+            if (body != null) payload.put("description", body);
+            String encoded = URLEncoder.encode(repoFullName, StandardCharsets.UTF_8);
+            String encodedTag = URLEncoder.encode(tagName.trim(), StandardCharsets.UTF_8);
+            String url = host + "/api/v4/projects/" + encoded + "/releases/" + encodedTag;
+            restTemplate.exchange(URI.create(url), HttpMethod.PUT, new HttpEntity<>(payload, headers), String.class);
+            log.info("Updated GitLab release '{}' on {}", tagName, repoFullName);
+            return true;
+        } catch (org.springframework.web.client.HttpClientErrorException e) {
+            throw new IllegalStateException("GitLab release update rejected (" + e.getStatusCode() + "): "
+                    + e.getResponseBodyAsString(), e);
+        } catch (Exception e) {
+            throw new IllegalStateException("GitLab release update failed: " + e.getMessage(), e);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // CI check mirror helpers (statuses only; no native check runs on GitLab)
+    // ------------------------------------------------------------------
+
+    @Override
+    public CiCheckPage listCiCheckRunsPage(String repoFullName, String commitSha, int cursor, int pageSize) {
+        List<SyncDiffReport.CiCheckRunDetail> all = listCiCheckRuns(repoFullName, commitSha);
+        int safePageSize = Math.max(1, Math.min(pageSize, 100));
+        int page = Math.max(1, cursor <= 0 ? 1 : cursor);
+        int from = (page - 1) * safePageSize;
+        if (from >= all.size()) {
+            return new CiCheckPage(List.of(), 0, false, all.size());
+        }
+        int to = Math.min(all.size(), from + safePageSize);
+        boolean hasNext = to < all.size();
+        return new CiCheckPage(new ArrayList<>(all.subList(from, to)), hasNext ? page + 1 : 0, hasNext, all.size());
+    }
+
+    @Override
+    public List<CommitStatusDetail> listCommitStatuses(String repoFullName, String commitSha) {
+        String host = getNormalizedHostUrl();
+        String token = getEffectiveToken(null);
+        if (token == null || repoFullName == null || commitSha == null) return List.of();
+
+        List<CommitStatusDetail> list = new ArrayList<>();
+        try {
+            HttpHeaders headers = createHeaders(token);
+            String encoded = URLEncoder.encode(repoFullName, StandardCharsets.UTF_8);
+            String url = host + "/api/v4/projects/" + encoded + "/repository/commits/"
+                    + commitSha.trim() + "/statuses?per_page=100";
+            ResponseEntity<String> resp = restTemplate.exchange(URI.create(url), HttpMethod.GET, new HttpEntity<>(headers), String.class);
+            JsonNode statuses = objectMapper.readTree(resp.getBody());
+            if (statuses.isArray()) {
+                for (JsonNode st : statuses) {
+                    list.add(new CommitStatusDetail(
+                            st.path("name").asText(null),
+                            st.path("status").asText(null),
+                            st.path("target_url").asText(null),
+                            st.path("description").asText(null),
+                            st.path("created_at").asText(null)));
+                }
+            }
+        } catch (Exception e) {
+            log.debug("GitLab commit statuses notice: {}", e.getMessage());
+        }
+        return list;
+    }
 }

@@ -11,6 +11,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -138,6 +139,8 @@ class QueueConsumerServiceSkipTest {
 
         verify(pullRequestSyncService, never()).syncOpenPullRequests(any(), any(), any());
         verify(releaseAndStatusSyncService, never()).syncReleases(any(), any(), any());
+        verify(releaseAndStatusSyncService, never()).syncReleases(any(ReleaseAndStatusSyncService.ReleaseSyncRequest.class));
+        verify(releaseAndStatusSyncService, never()).syncCiChecks(any(ReleaseAndStatusSyncService.CiCheckSyncRequest.class));
     }
 
     @Test
@@ -156,7 +159,10 @@ class QueueConsumerServiceSkipTest {
         when(gitSyncEngine.executeSync(any())).thenReturn(result);
         when(mappingRepository.findById(1L)).thenReturn(Optional.empty());
         when(pullRequestSyncService.syncOpenPullRequests(eq(1L), any(), any())).thenReturn(0);
-        when(releaseAndStatusSyncService.syncReleases(eq(1L), any(), any())).thenReturn(0);
+        when(releaseAndStatusSyncService.syncReleases(any(ReleaseAndStatusSyncService.ReleaseSyncRequest.class)))
+                .thenReturn(new ReleaseAndStatusSyncService.ReleaseSyncResult(0, 0, 0, 0, 0, 0, 0, 0, true, List.of()));
+        when(releaseAndStatusSyncService.syncCiChecks(any(ReleaseAndStatusSyncService.CiCheckSyncRequest.class)))
+                .thenReturn(new ReleaseAndStatusSyncService.CiCheckSyncResult(0, 0, 0, 0, 0, true, List.of()));
 
         SyncEventMessage event = SyncEventMessage.builder()
                 .jobId(22L)
@@ -171,6 +177,7 @@ class QueueConsumerServiceSkipTest {
         consumer.consumeSyncEvent(event);
 
         verify(pullRequestSyncService).syncOpenPullRequests(eq(1L), any(), any(), eq(22L), any());
-        verify(releaseAndStatusSyncService).syncReleases(eq(1L), any(), any(), any());
+        verify(releaseAndStatusSyncService).syncReleases(any(ReleaseAndStatusSyncService.ReleaseSyncRequest.class));
+        verify(releaseAndStatusSyncService).syncCiChecks(any(ReleaseAndStatusSyncService.CiCheckSyncRequest.class));
     }
 }

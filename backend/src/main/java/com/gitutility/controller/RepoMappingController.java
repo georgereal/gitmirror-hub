@@ -164,12 +164,26 @@ public class RepoMappingController {
 
     @PostMapping("/{id}/sync-releases")
     public ResponseEntity<Map<String, Object>> syncReleases(@PathVariable Long id) {
-        RepoMapping mapping = mappingService.getMappingById(id)
+        mappingService.getMappingById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Mapping not found for ID: " + id));
-        int count = releaseAndStatusSyncService.syncReleases(mapping.getId(), mapping.getRepoAUrl(), mapping.getRepoBUrl());
-        return ResponseEntity.ok(Map.of(
-                "syncedCount", count,
-                "message", "Synchronized " + count + " release(s) with assets"
+        Long jobId = releaseAndStatusSyncService.launchReleaseSyncJob(id);
+        return ResponseEntity.accepted().body(Map.of(
+                "jobId", jobId,
+                "syncedCount", 0,
+                "message", "Release mirror started (job #" + jobId + ") — track it in Queue Manager and the audit log"
+        ));
+    }
+
+    /** Standalone CI check backfill (check runs + commit statuses onto mirrored tips). */
+    @PostMapping("/{id}/sync-ci-checks")
+    public ResponseEntity<Map<String, Object>> syncCiChecks(@PathVariable Long id) {
+        mappingService.getMappingById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Mapping not found for ID: " + id));
+        Long jobId = releaseAndStatusSyncService.launchCiCheckSyncJob(id);
+        return ResponseEntity.accepted().body(Map.of(
+                "jobId", jobId,
+                "syncedCount", 0,
+                "message", "CI check backfill started (job #" + jobId + ") — track it in Queue Manager and the audit log"
         ));
     }
 

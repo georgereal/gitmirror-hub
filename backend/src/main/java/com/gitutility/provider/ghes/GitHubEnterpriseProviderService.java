@@ -21,8 +21,10 @@ import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter;
 import org.eclipse.jgit.transport.CredentialsProvider;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.FileSystemResource;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
 import java.io.StringReader;
@@ -245,6 +247,7 @@ public class GitHubEnterpriseProviderService implements ScmProviderAdapter {
 
             String defaultBranch = "main";
             boolean isPrivate = true;
+            boolean emptyDestination = false;
             if (repoFullName != null && repoFullName.contains("/")) {
                 String repoUrl = host + "/api/v3/repos/" + repoFullName;
                 ResponseEntity<String> repoResp = restTemplate.exchange(URI.create(repoUrl), HttpMethod.GET, new HttpEntity<>(headers), String.class);
@@ -252,6 +255,23 @@ public class GitHubEnterpriseProviderService implements ScmProviderAdapter {
                 defaultBranch = repoNode.path("default_branch").asText("main");
                 isPrivate = repoNode.path("private").asBoolean(true);
                 passed.add("Repository Metadata Verified: " + repoFullName + " (default branch: " + defaultBranch + ")");
+
+                // Detect an empty destination so the UI can pre-announce the bulk mirror bootstrap path.
+                if (writeRequired) {
+                    try {
+                        String refsUrl = host + "/api/v3/repos/" + repoFullName + "/git/refs?per_page=1";
+                        ResponseEntity<String> refsResp = restTemplate.exchange(
+                                URI.create(refsUrl), HttpMethod.GET, new HttpEntity<>(headers), String.class);
+                        JsonNode refs = objectMapper.readTree(refsResp.getBody());
+                        emptyDestination = refs.isArray() && refs.size() == 0;
+                    } catch (Exception ignored) {
+                        // Leave unknown — the sync engine re-derives blankness from the destination refs at run time.
+                    }
+                    if (emptyDestination) {
+                        warnings.add("Destination repository is empty — the first full mirror will use "
+                                + "bulk mirror bootstrap (single-connection push).");
+                    }
+                }
             }
 
             return PermissionCheckReport.builder()
@@ -260,6 +280,7 @@ public class GitHubEnterpriseProviderService implements ScmProviderAdapter {
                     .repoFullName(repoFullName)
                     .defaultBranch(defaultBranch)
                     .isPrivate(isPrivate)
+                    .emptyDestination(emptyDestination)
                     .accessMode("AUTHENTICATED")
                     .message("GHES credentials validated successfully.")
                     .permissions(PermissionCheckReport.PermissionsDetail.builder()
@@ -769,6 +790,380 @@ public class GitHubEnterpriseProviderService implements ScmProviderAdapter {
             log.debug("GHES CI checks notice: {}", e.getMessage());
         }
         return list;
+    }
+
+    // ------------------------------------------------------------------
+    // Release mirror mutations (destination side)
+    // ------------------------------------------------------------------
+
+    @Override
+    public boolean supportsReleaseSync() {
+        return true;
+    }
+
+    @Override
+    public boolean supportsCheckRunSync() {
+        return true;
+    }
+
+    @Override
+    public ReleaseListPage listReleasesPage(String repoFullName, String cursor, int pageSize) {
+        String host = getNormalizedHostUrl();
+        String token = getEffectiveGhesToken(null);
+        if (host == null || token == null || repoFullName == null) return ReleaseListPage.empty();
+
+        if (graphqlEnabled && graphQlClient != null) {
+            ReleaseListPage page = graphQlClient.fetchReleasesPage(
+                    host + "/api/graphql", token, repoFullName, cursor, pageSize);
+            if (page != null) {
+                return page;
+            }
+            log.debug("GHES GraphQL release page failed for {}, falling back to REST", repoFullName);
+        }
+
+        int safePageSize = Math.max(1, Math.min(pageSize, 100));
+        int page = 1;
+        try {
+            if (cursor != null && !cursor.isBlank()) {
+                page = Integer.parseInt(cursor.trim());
+            }
+        } catch (NumberFormatException ignored) {
+            page = 1;
+        }
+        List<SyncDiffReport.ReleaseDetail> list = new ArrayList<>();
+        try {
+            HttpHeaders headers = createHeaders(token);
+            String url = host + "/api/v3/repos/" + repoFullName + "/releases?per_page=" + safePageSize + "&page=" + page;
+            ResponseEntity<String> resp = restTemplate.exchange(URI.create(url), HttpMethod.GET, new HttpEntity<>(headers), String.class);
+            JsonNode releases = objectMapper.readTree(resp.getBody());
+            if (releases.isArray()) {
+                for (JsonNode rel : releases) {
+                    List<SyncDiffReport.ReleaseAssetDetail> assets = new ArrayList<>();
+                    JsonNode assetsNode = rel.path("assets");
+                    if (assetsNode.isArray()) {
+                        for (JsonNode asset : assetsNode) {
+                            long size = asset.path("size").asLong(0);
+                            assets.add(SyncDiffReport.ReleaseAssetDetail.builder()
+                                    .id(asset.path("id").asLong())
+                                    .name(asset.path("name").asText())
+                                    .sizeBytes(size)
+                                    .formattedSize(formatBytes(size))
+                                    .downloadUrl(asset.path("browser_download_url").asText())
+                                    .contentType(asset.path("content_type").asText("application/octet-stream"))
+                                    .downloadCount(asset.path("download_count").asInt(0))
+                                    .build());
+                        }
+                    }
+                    list.add(SyncDiffReport.ReleaseDetail.builder()
+                            .id(rel.path("id").asLong())
+                            .name(rel.path("name").asText(rel.path("tag_name").asText()))
+                            .tagName(rel.path("tag_name").asText())
+                            .body(rel.path("body").asText(""))
+                            .publishedAt(rel.path("published_at").asText(null))
+                            .author(rel.path("author").path("login").asText("GHES"))
+                            .isDraft(rel.path("draft").asBoolean(false))
+                            .isPrerelease(rel.path("prerelease").asBoolean(false))
+                            .htmlUrl(rel.path("html_url").asText(null))
+                            .assets(assets)
+                            .build());
+                }
+            }
+            String linkHeader = resp.getHeaders().getFirst(HttpHeaders.LINK);
+            boolean hasNext = linkHeader != null && linkHeader.contains("rel=\"next\"");
+            long total = list.size();
+            if (linkHeader != null) {
+                java.util.regex.Matcher m = java.util.regex.Pattern
+                        .compile("[?&]page=(\\d+)>; rel=\"last\"").matcher(linkHeader);
+                if (m.find()) {
+                    total = Long.parseLong(m.group(1)) * (long) safePageSize;
+                }
+            }
+            return new ReleaseListPage(list, hasNext ? String.valueOf(page + 1) : null, hasNext, total, false);
+        } catch (Exception e) {
+            log.debug("GHES release page notice: {}", e.getMessage());
+            return new ReleaseListPage(list, null, false, list.size(), false);
+        }
+    }
+
+    @Override
+    public ReleaseLookup findReleaseByTag(String repoFullName, String tagName) {
+        String host = getNormalizedHostUrl();
+        String token = getEffectiveGhesToken(null);
+        if (host == null || token == null || repoFullName == null || tagName == null || tagName.isBlank()) {
+            return ReleaseLookup.missing();
+        }
+        try {
+            HttpHeaders headers = createHeaders(token);
+            String encoded = java.net.URLEncoder.encode(tagName.trim(), StandardCharsets.UTF_8);
+            String url = host + "/api/v3/repos/" + repoFullName + "/releases/tags/" + encoded;
+            ResponseEntity<String> resp = restTemplate.exchange(URI.create(url), HttpMethod.GET, new HttpEntity<>(headers), String.class);
+            JsonNode rel = objectMapper.readTree(resp.getBody());
+            List<String> assetNames = new ArrayList<>();
+            JsonNode assetsNode = rel.path("assets");
+            if (assetsNode.isArray()) {
+                for (JsonNode asset : assetsNode) {
+                    assetNames.add(asset.path("name").asText());
+                }
+            }
+            return new ReleaseLookup(true,
+                    String.valueOf(rel.path("id").asLong()),
+                    rel.path("tag_name").asText(tagName),
+                    rel.path("name").asText(null),
+                    rel.path("body").asText(null),
+                    rel.path("draft").asBoolean(false),
+                    rel.path("prerelease").asBoolean(false),
+                    assetNames);
+        } catch (HttpClientErrorException.NotFound ignored) {
+            return ReleaseLookup.missing();
+        } catch (Exception e) {
+            throw new IllegalStateException("GHES release lookup failed for tag " + tagName + ": " + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public String createRelease(String repoFullName, String tagName, String name, String body,
+                                boolean draft, boolean prerelease) {
+        String host = getNormalizedHostUrl();
+        String token = getEffectiveGhesToken(null);
+        if (host == null || token == null || repoFullName == null || tagName == null) {
+            throw new IllegalStateException("GHES release create skipped: missing host, token or tag.");
+        }
+        try {
+            HttpHeaders headers = createHeaders(token);
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("tag_name", tagName.trim());
+            if (name != null) payload.put("name", name);
+            if (body != null) payload.put("body", body);
+            payload.put("draft", draft);
+            payload.put("prerelease", prerelease);
+            String url = host + "/api/v3/repos/" + repoFullName + "/releases";
+            ResponseEntity<String> resp = restTemplate.exchange(URI.create(url), HttpMethod.POST,
+                    new HttpEntity<>(payload, headers), String.class);
+            JsonNode created = objectMapper.readTree(resp.getBody());
+            String id = String.valueOf(created.path("id").asLong());
+            log.info("Created GHES release '{}' on {} (id {})", tagName, repoFullName, id);
+            return id;
+        } catch (HttpClientErrorException e) {
+            throw new IllegalStateException("GHES release create rejected (" + e.getStatusCode() + "): "
+                    + e.getResponseBodyAsString(), e);
+        } catch (Exception e) {
+            throw new IllegalStateException("GHES release create failed: " + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public boolean updateRelease(String repoFullName, String externalId, String tagName, String name,
+                                 String body, boolean draft, boolean prerelease) {
+        String host = getNormalizedHostUrl();
+        String token = getEffectiveGhesToken(null);
+        if (host == null || token == null || repoFullName == null || externalId == null || externalId.isBlank()) {
+            return false;
+        }
+        try {
+            HttpHeaders headers = createHeaders(token);
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            Map<String, Object> payload = new HashMap<>();
+            if (name != null) payload.put("name", name);
+            if (body != null) payload.put("body", body);
+            payload.put("draft", draft);
+            payload.put("prerelease", prerelease);
+            String url = host + "/api/v3/repos/" + repoFullName + "/releases/" + externalId.trim();
+            restTemplate.exchange(URI.create(url), HttpMethod.PATCH, new HttpEntity<>(payload, headers), String.class);
+            log.info("Updated GHES release {} on {} (tag {})", externalId, repoFullName, tagName);
+            return true;
+        } catch (HttpClientErrorException e) {
+            throw new IllegalStateException("GHES release update rejected (" + e.getStatusCode() + "): "
+                    + e.getResponseBodyAsString(), e);
+        } catch (Exception e) {
+            throw new IllegalStateException("GHES release update failed: " + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public boolean uploadReleaseAsset(String repoFullName, String releaseExternalId, String tagName,
+                                      String assetName, String contentType, java.io.File file) {
+        String host = getNormalizedHostUrl();
+        String token = getEffectiveGhesToken(null);
+        if (host == null || token == null || repoFullName == null || releaseExternalId == null
+                || file == null || !file.exists()) {
+            return false;
+        }
+        try {
+            HttpHeaders headers = createHeaders(token);
+            headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
+            String encodedName = java.net.URLEncoder.encode(assetName, StandardCharsets.UTF_8).replace("+", "%20");
+            String url = host + "/api/uploads/repos/" + repoFullName
+                    + "/releases/" + releaseExternalId.trim() + "/assets?name=" + encodedName;
+            ResponseEntity<String> resp = restTemplate.exchange(URI.create(url), HttpMethod.POST,
+                    new HttpEntity<>(new FileSystemResource(file), headers), String.class);
+            boolean ok = resp.getStatusCode().is2xxSuccessful();
+            if (ok) {
+                log.info("Uploaded GHES release asset '{}' ({} bytes) to {} release {}", assetName, file.length(), repoFullName, releaseExternalId);
+            }
+            return ok;
+        } catch (HttpClientErrorException e) {
+            throw new IllegalStateException("GHES asset upload rejected (" + e.getStatusCode() + "): "
+                    + e.getResponseBodyAsString(), e);
+        } catch (Exception e) {
+            throw new IllegalStateException("GHES asset upload failed: " + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public java.io.File downloadReleaseAsset(String repoFullName, String assetDownloadUrl, String assetName) {
+        String token = getEffectiveGhesToken(null);
+        if (token == null || assetDownloadUrl == null || assetDownloadUrl.isBlank()) {
+            return null;
+        }
+        java.io.File tempFile = null;
+        try {
+            HttpHeaders headers = createHeaders(token);
+            headers.setAccept(List.of(MediaType.APPLICATION_OCTET_STREAM));
+            String safe = assetName == null ? "asset" : assetName.replaceAll("[^A-Za-z0-9._-]", "_");
+            String suffix = safe.length() > 64 ? safe.substring(safe.length() - 64) : safe;
+            tempFile = java.nio.file.Files.createTempFile("gitmirror-asset-", suffix).toFile();
+            final java.io.File targetFile = tempFile;
+            restTemplate.execute(URI.create(assetDownloadUrl), HttpMethod.GET, request -> {
+                request.getHeaders().putAll(headers);
+            }, response -> {
+                try (java.io.InputStream in = response.getBody();
+                     java.io.OutputStream out = java.nio.file.Files.newOutputStream(targetFile.toPath())) {
+                    in.transferTo(out);
+                }
+                return targetFile;
+            });
+            return tempFile;
+        } catch (Exception e) {
+            log.debug("GHES release asset download notice for {}: {}", assetName, e.getMessage());
+            if (tempFile != null) {
+                try {
+                    java.nio.file.Files.deleteIfExists(tempFile.toPath());
+                } catch (Exception ignored) {
+                }
+            }
+            return null;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // CI check run mirror (destination side)
+    // ------------------------------------------------------------------
+
+    @Override
+    public CiCheckPage listCiCheckRunsPage(String repoFullName, String commitSha, int cursor, int pageSize) {
+        String host = getNormalizedHostUrl();
+        String token = getEffectiveGhesToken(null);
+        if (host == null || token == null || repoFullName == null || commitSha == null) return CiCheckPage.empty();
+
+        int safePageSize = Math.max(1, Math.min(pageSize, 100));
+        int page = Math.max(1, cursor <= 0 ? 1 : cursor);
+        List<SyncDiffReport.CiCheckRunDetail> list = new ArrayList<>();
+        try {
+            HttpHeaders headers = createHeaders(token);
+            String url = host + "/api/v3/repos/" + repoFullName + "/commits/" + commitSha.trim()
+                    + "/check-runs?per_page=" + safePageSize + "&page=" + page;
+            ResponseEntity<String> resp = restTemplate.exchange(URI.create(url), HttpMethod.GET, new HttpEntity<>(headers), String.class);
+            JsonNode root = objectMapper.readTree(resp.getBody());
+            JsonNode runs = root.path("check_runs");
+            long totalCount = root.path("total_count").asLong(0);
+            if (runs.isArray()) {
+                for (JsonNode run : runs) {
+                    list.add(SyncDiffReport.CiCheckRunDetail.builder()
+                            .id(run.path("id").asLong())
+                            .name(run.path("name").asText())
+                            .status(run.path("status").asText())
+                            .conclusion(run.path("conclusion").asText(null))
+                            .startedAt(run.path("started_at").asText(null))
+                            .completedAt(run.path("completed_at").asText(null))
+                            .htmlUrl(run.path("html_url").asText(null))
+                            .appName(run.path("app").path("name").asText("GHES Actions"))
+                            .headSha(commitSha)
+                            .build());
+                }
+            }
+            boolean hasNext = (long) page * safePageSize < totalCount;
+            return new CiCheckPage(list, hasNext ? page + 1 : 0, hasNext, totalCount);
+        } catch (Exception e) {
+            log.debug("GHES CI check page notice: {}", e.getMessage());
+            return new CiCheckPage(list, 0, false, list.size());
+        }
+    }
+
+    @Override
+    public List<CommitStatusDetail> listCommitStatuses(String repoFullName, String commitSha) {
+        String host = getNormalizedHostUrl();
+        String token = getEffectiveGhesToken(null);
+        if (host == null || token == null || repoFullName == null || commitSha == null) return List.of();
+
+        List<CommitStatusDetail> list = new ArrayList<>();
+        try {
+            HttpHeaders headers = createHeaders(token);
+            String url = host + "/api/v3/repos/" + repoFullName + "/commits/" + commitSha.trim() + "/statuses?per_page=100";
+            ResponseEntity<String> resp = restTemplate.exchange(URI.create(url), HttpMethod.GET, new HttpEntity<>(headers), String.class);
+            JsonNode statuses = objectMapper.readTree(resp.getBody());
+            if (statuses.isArray()) {
+                for (JsonNode st : statuses) {
+                    list.add(new CommitStatusDetail(
+                            st.path("context").asText(null),
+                            st.path("state").asText(null),
+                            st.path("target_url").asText(null),
+                            st.path("description").asText(null),
+                            st.path("created_at").asText(null)));
+                }
+            }
+        } catch (Exception e) {
+            log.debug("GHES commit statuses notice: {}", e.getMessage());
+        }
+        return list;
+    }
+
+    @Override
+    public long createCheckRun(String repoFullName,
+                               String commitSha,
+                               String name,
+                               String status,
+                               String conclusion,
+                               String startedAt,
+                               String completedAt,
+                               String detailsUrl,
+                               String summary) {
+        String host = getNormalizedHostUrl();
+        String token = getEffectiveGhesToken(null);
+        if (host == null || token == null || repoFullName == null || commitSha == null || name == null || name.isBlank()) {
+            return 0L;
+        }
+        try {
+            HttpHeaders headers = createHeaders(token);
+            headers.set(HttpHeaders.ACCEPT, "application/vnd.github+json");
+            headers.setContentType(MediaType.APPLICATION_JSON);
+
+            Map<String, Object> body = new HashMap<>();
+            body.put("name", name.trim());
+            body.put("head_sha", commitSha.trim());
+            if (status != null && !status.isBlank()) body.put("status", status);
+            if (conclusion != null && !conclusion.isBlank()) body.put("conclusion", conclusion);
+            if (startedAt != null && !startedAt.isBlank()) body.put("started_at", startedAt);
+            if (completedAt != null && !completedAt.isBlank()) body.put("completed_at", completedAt);
+            if (detailsUrl != null && !detailsUrl.isBlank()) body.put("details_url", detailsUrl);
+            if (conclusion != null && !conclusion.isBlank()) {
+                Map<String, Object> output = new HashMap<>();
+                output.put("title", name.trim() + " (mirrored)");
+                output.put("summary", summary != null && !summary.isBlank() ? summary : "Mirrored CI check run.");
+                body.put("output", output);
+            }
+
+            String url = host + "/api/v3/repos/" + repoFullName + "/check-runs";
+            ResponseEntity<String> resp = restTemplate.exchange(URI.create(url), HttpMethod.POST,
+                    new HttpEntity<>(body, headers), String.class);
+            JsonNode created = objectMapper.readTree(resp.getBody());
+            return created.path("id").asLong(0);
+        } catch (HttpClientErrorException e) {
+            throw new IllegalStateException("GHES check run create rejected (" + e.getStatusCode() + "): "
+                    + e.getResponseBodyAsString(), e);
+        } catch (Exception e) {
+            throw new IllegalStateException("GHES check run create failed: " + e.getMessage(), e);
+        }
     }
 
     @Override

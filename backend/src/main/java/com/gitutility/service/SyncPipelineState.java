@@ -24,10 +24,11 @@ public class SyncPipelineState {
     public static final String LFS = "lfs";
     public static final String PR_METADATA = "pr_metadata";
     public static final String RELEASES = "releases";
+    public static final String CI_CHECKS = "ci_checks";
 
     public static final List<String> STAGE_ORDER = List.of(
             FAST_PATH, VERIFY_DEST, FETCH_SOURCE, INSPECT_DEST, CONFLICT_CHECK,
-            PUSH_DEST, PR_METADATA, RELEASES, LFS
+            PUSH_DEST, PR_METADATA, RELEASES, CI_CHECKS, LFS
     );
 
     public static final String PENDING = "pending";
@@ -68,7 +69,8 @@ public class SyncPipelineState {
         state.stages.add(new Stage(CONFLICT_CHECK, "Conflict / fast-forward check", PENDING));
         state.stages.add(new Stage(PUSH_DEST, "Push to destination", PENDING));
         state.stages.add(new Stage(PR_METADATA, "PR metadata", PENDING));
-        state.stages.add(new Stage(RELEASES, "Releases / CI", PENDING));
+        state.stages.add(new Stage(RELEASES, "Releases", PENDING));
+        state.stages.add(new Stage(CI_CHECKS, "CI checks", PENDING));
         state.stages.add(new Stage(LFS, "Git LFS", PENDING));
         return state;
     }
@@ -265,6 +267,7 @@ public class SyncPipelineState {
         markSkipped(PUSH_DEST, "Fast-path");
         markSkipped(PR_METADATA, "Fast-path");
         markSkipped(RELEASES, "Fast-path");
+        markSkipped(CI_CHECKS, "Fast-path");
         markSkipped(LFS, "Fast-path");
         currentStageId = null;
     }
@@ -288,6 +291,7 @@ public class SyncPipelineState {
         if (checkpoint.ordinal() >= SyncCheckpointStage.LFS_DISCOVERY_DONE.ordinal()) {
             markDone(PR_METADATA, "Resumed");
             markDone(RELEASES, "Resumed");
+            markDone(CI_CHECKS, "Resumed");
             if (checkpoint == SyncCheckpointStage.LFS_TRANSFER_PARTIAL) {
                 markCurrent(LFS, "Resuming blob transfer");
             } else if (checkpoint.ordinal() >= SyncCheckpointStage.GIT_SYNC_DONE.ordinal()) {

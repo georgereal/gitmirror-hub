@@ -40,6 +40,13 @@ public class PermissionCheckReport {
     @Builder.Default
     private List<String> errors = new ArrayList<>();
 
+    /**
+     * Destination (WRITE) checks only: {@code true} when the remote repository has zero refs (blank),
+     * so the first full mirror will use the bulk mirror bootstrap (single-connection push).
+     * {@code null} when unknown (probe not performed / not a destination check).
+     */
+    private Boolean emptyDestination;
+
     @Data
     @Builder
     @NoArgsConstructor

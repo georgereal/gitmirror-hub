@@ -143,6 +143,38 @@ public final class GithubGraphQlQueries {
             }
             """;
 
+    /** Cursor-paged releases query for full release mirror walks. */
+    public static final String RELEASES_PAGE = """
+            query RepositoryReleasesPage($owner: String!, $name: String!, $first: Int!, $after: String) {
+              rateLimit { cost remaining limit resetAt }
+              repository(owner: $owner, name: $name) {
+                releases(first: $first, after: $after, orderBy: {field: CREATED_AT, direction: DESC}) {
+                  totalCount
+                  pageInfo { hasNextPage endCursor }
+                  nodes {
+                    databaseId
+                    name
+                    tagName
+                    description
+                    isDraft
+                    isPrerelease
+                    publishedAt
+                    url
+                    author { login }
+                    releaseAssets(first: 20) {
+                      nodes {
+                        name
+                        downloadUrl
+                        size
+                        downloadCount
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """;
+
     private GithubGraphQlQueries() {
     }
 }

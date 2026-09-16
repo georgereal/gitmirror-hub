@@ -51,7 +51,7 @@ gitUtility/
 │       │   ├── java/com/gitutility/
 │       │   │   ├── GitUtilityApplication.java   # Spring Boot entry point & seed data runner
 │       │   │   ├── config/                      # Infrastructure & Spring bean configurations
-│       │   │   │   ├── AsyncConfig.java         # Thread pools; LFS/PR pools block when queue is full
+│       │   │   │   ├── AsyncConfig.java         # Thread pools (sync, LFS discover/transfer, PR create, release sync); bounded queues block when full
 │       │   │   │   ├── CorsConfig.java          # Localhost-only CORS for the operator UI (override via GIT_CORS_*)
 │       │   │   │   ├── DatabaseSchemaMigrator.java # Automatic schema evolution & missing column migration on startup
 │       │   │   │   ├── ScmRestTemplateFactory.java # Shared RestTemplate + ProviderRateMeter interceptor
@@ -100,6 +100,8 @@ gitUtility/
 │       │   │   │   ├── dto/
 │       │   │   │   │   ├── DlqMessageDto.java
 │       │   │   │   │   ├── DiffInspectOptions.java
+│       │   │   │   │   ├── CiCheckPage.java         # One REST page of CI check runs for a commit
+│       │   │   │   │   ├── CommitStatusDetail.java  # Legacy commit status on a commit (context/state/url)
 │       │   │   │   │   ├── CreateRepoRequest.java
 │       │   │   │   │   ├── GitHubAppConfigRequest.java
 │       │   │   │   │   ├── GitHubPushPayload.java
@@ -114,6 +116,8 @@ gitUtility/
 │       │   │   │   │   ├── PullRequestSnapshot.java
 │       │   │   │   │   ├── ProviderConfigResponse.java
 │       │   │   │   │   ├── QueueStatusResponse.java
+│       │   │   │   │   ├── ReleaseListPage.java     # Cursor-paged release page (GraphQL endCursor / REST page)
+│       │   │   │   │   ├── ReleaseLookup.java       # Destination release-by-tag lookup for idempotent mirror diffs
 │       │   │   │   │   ├── RepoMappingResponse.java
 │       │   │   │   │   ├── RepoSearchResult.java       # Paginated multi-provider search results DTO
 │       │   │   │   │   ├── RuntimeMetricsResponse.java # Internals UI Micrometer snapshot
@@ -196,7 +200,7 @@ gitUtility/
 │       │   │       ├── QueueObservabilityService.java # Ready vs Unacked + listener thread snapshot
 │       │   │       ├── QueueProducerService.java# Routes full vs webhook jobs onto separate AMQP keys
 │       │   │       ├── SyncLaneRouter.java      # Full-mirror vs incremental lane selection by ref shape
-│       │   │       ├── ReleaseAndStatusSyncService.java # CI Commit Status and Release asset replication
+│       │   │       ├── ReleaseAndStatusSyncService.java # Release mirror (cursor-paged diff, create/update, asset streaming) + CI check-run/status backfill; per-side credential+installation binding; standalone metadata sync jobs
 │       │   │       ├── RepoMappingService.java  # Mapping CRUD & manual trigger helper
 │       │   │       ├── RuntimeMetricsService.java # Assembles MeterRegistry snapshot for /api/v1/runtime-metrics
 │       │   │       ├── SimulationService.java   # Consumer pause/resume & chaos injection
@@ -346,7 +350,8 @@ gitUtility/
 
 ### Backend REST API Highlights
 * `GET /api/v1/mappings/:id/sync-diff`: Live JGit & SCM difference report (`refresh`, `metadata`, branch pagination/search params). Itemized tags, releases, LFS pointers, and CI checks.
-* `POST /api/v1/mappings/:id/sync-prs` / `sync-lfs` / `sync-releases`: Standalone metadata sync actions.
+* `POST /api/v1/mappings/:id/sync-prs` / `sync-lfs`: Standalone metadata sync actions.
+* `POST /api/v1/mappings/:id/sync-releases` / `sync-ci-checks`: Launch a full release mirror / CI check backfill as a visible `MANUAL` job (`202` + `jobId`); progress streams to Queue Manager, the pipeline stepper, and the audit log.
 * `GET /api/v1/mappings/:id/conflicts`: Open and historical Git-ref / tag / PR-metadata conflicts for a pair.
 * `POST /api/v1/mappings/:id/conflicts/:conflictId/resolve`: Acknowledge a conflict.
 * `POST /api/v1/mappings/:id/conflicts/:conflictId/open-pr`: Retry opening a destination PR from an isolated conflict branch.

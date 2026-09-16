@@ -44,8 +44,9 @@ class SyncPipelineStateTest {
     void fullMirrorPipelineRunsLfsLast() {
         SyncPipelineState pipeline = SyncPipelineState.initial();
         List<SyncPipelineState.Stage> stages = pipeline.getStages();
-        assertEquals(SyncPipelineState.PR_METADATA, stages.get(stages.size() - 3).id);
-        assertEquals(SyncPipelineState.RELEASES, stages.get(stages.size() - 2).id);
+        assertEquals(SyncPipelineState.PR_METADATA, stages.get(stages.size() - 4).id);
+        assertEquals(SyncPipelineState.RELEASES, stages.get(stages.size() - 3).id);
+        assertEquals(SyncPipelineState.CI_CHECKS, stages.get(stages.size() - 2).id);
         assertEquals(SyncPipelineState.LFS, stages.get(stages.size() - 1).id);
     }
 

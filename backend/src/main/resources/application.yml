@@ -59,6 +59,7 @@ git-utility:
     http-timeout-seconds: ${GIT_HTTP_TIMEOUT_SECONDS:600}
     push-batch-size: ${GIT_PUSH_BATCH_SIZE:8}
     push-batch-retries: ${GIT_PUSH_BATCH_RETRIES:3}
+    push-bulk-bootstrap: ${GIT_PUSH_BULK_BOOTSTRAP:true}
     lfs-batch-size: ${GIT_LFS_BATCH_SIZE:50}
     lfs-discovery-threads: ${GIT_LFS_DISCOVERY_THREADS:4}
     lfs-transfer-concurrency: ${GIT_LFS_TRANSFER_CONCURRENCY:4}
@@ -69,6 +70,9 @@ git-utility:
     pr-head-prep-progress-interval: ${GIT_PR_HEAD_PREP_PROGRESS_INTERVAL:1}
     pr-fork-lazy-materialize: ${GIT_PR_FORK_LAZY_MATERIALIZE:true}
     pr-fork-push-object-refs: ${GIT_PR_FORK_PUSH_OBJECT_REFS:true}
+    release-page-size: ${GIT_RELEASE_PAGE_SIZE:50}
+    release-concurrency: ${GIT_RELEASE_CONCURRENCY:4}
+    ci-check-tip-limit: ${GIT_CI_CHECK_TIP_LIMIT:8}
     http-post-buffer-bytes: ${GIT_HTTP_POST_BUFFER_BYTES:524288000}
   sync:
     # Agentic / bot branch prefixes: live webhooks skipped; Smart full sync tip-probes them for DR.

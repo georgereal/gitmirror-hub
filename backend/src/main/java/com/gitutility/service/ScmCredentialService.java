@@ -166,7 +166,8 @@ public class ScmCredentialService {
         if (id == null) {
             return null;
         }
-        return resolveAccessToken(requireEnabled(id), null, null);
+        String installationId = ScmCredentialContext.currentInstallationId();
+        return resolveAccessToken(requireEnabled(id), installationId, null);
     }
 
     public List<String> resolvedInstallationIds(ScmCredential cred) {

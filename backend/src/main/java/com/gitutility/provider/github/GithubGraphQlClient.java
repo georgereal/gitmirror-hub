@@ -5,6 +5,7 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
 import com.gitutility.model.dto.MirrorMetadataSnapshot;
 import com.gitutility.model.dto.PrListPage;
+import com.gitutility.model.dto.ReleaseListPage;
 import com.gitutility.model.dto.SyncDiffReport;
 import com.gitutility.service.ProviderRateMeter;
 import com.gitutility.service.ScmInstallationKeyResolver;
@@ -223,6 +224,33 @@ public class GithubGraphQlClient {
             return null;
         }
         return GithubMirrorSnapshotGraphQl.parseReleases(data);
+    }
+
+    /**
+     * One cursor-paged page of releases (GraphQL {@code releases(first:, after:)}).
+     * Returns {@code null} when the GraphQL transport fails so callers can fall back to REST.
+     */
+    public ReleaseListPage fetchReleasesPage(String graphqlUrl,
+                                             String token,
+                                             String repoFullName,
+                                             String cursor,
+                                             int pageSize) {
+        String[] parts = splitRepoFullName(repoFullName);
+        if (parts == null) {
+            return ReleaseListPage.empty();
+        }
+        Map<String, Object> variables = new HashMap<>();
+        variables.put("owner", parts[0]);
+        variables.put("name", parts[1]);
+        variables.put("first", Math.max(1, Math.min(pageSize, 100)));
+        if (cursor != null && !cursor.isBlank()) {
+            variables.put("after", cursor);
+        }
+        JsonNode data = execute(graphqlUrl, token, GithubGraphQlQueries.RELEASES_PAGE, variables, repoFullName);
+        if (data == null) {
+            return null;
+        }
+        return GithubMirrorSnapshotGraphQl.parseReleasesPage(data);
     }
 
     static String[] splitRepoFullName(String repoFullName) {

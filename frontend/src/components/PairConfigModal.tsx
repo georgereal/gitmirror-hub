@@ -1204,6 +1204,11 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                         ? ` · Access via ${destCredentialLabel}`
                         : ' · Access authenticated'}
                   </p>
+                  {reportB.emptyDestination && (
+                    <p className="text-amber-700">
+                      Destination is empty — first mirror will use bulk bootstrap (single-connection push).
+                    </p>
+                  )}
                   {alsoPublicHintB && (
                     <p className="text-sky-700">
                       Also publicly readable over anonymous HTTPS — Access stays on your App/PAT.

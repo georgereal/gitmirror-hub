@@ -707,4 +707,107 @@ public class BitbucketProviderService implements ScmProviderAdapter {
         }
         return list;
     }
+
+    // ------------------------------------------------------------------
+    // Release / CI check mirror support (tags only; statuses mirror as build statuses)
+    // ------------------------------------------------------------------
+
+    @Override
+    public boolean supportsReleaseSync() {
+        // Bitbucket Cloud has no Releases API — release sync degrades to a notice and tags mirror via Git.
+        return false;
+    }
+
+    @Override
+    public CiCheckPage listCiCheckRunsPage(String repoFullName, String commitSha, int cursor, int pageSize) {
+        List<SyncDiffReport.CiCheckRunDetail> all = listCiCheckRuns(repoFullName, commitSha);
+        int safePageSize = Math.max(1, Math.min(pageSize, 100));
+        int page = Math.max(1, cursor <= 0 ? 1 : cursor);
+        int from = (page - 1) * safePageSize;
+        if (from >= all.size()) {
+            return new CiCheckPage(List.of(), 0, false, all.size());
+        }
+        int to = Math.min(all.size(), from + safePageSize);
+        boolean hasNext = to < all.size();
+        return new CiCheckPage(new ArrayList<>(all.subList(from, to)), hasNext ? page + 1 : 0, hasNext, all.size());
+    }
+
+    @Override
+    public List<CommitStatusDetail> listCommitStatuses(String repoFullName, String commitSha) {
+        String token = getEffectiveToken(null);
+        if (token == null || token.isBlank() || repoFullName == null || commitSha == null) return List.of();
+
+        List<CommitStatusDetail> list = new ArrayList<>();
+        try {
+            HttpHeaders headers = createAuthHeaders(token);
+            String url = "https://api.bitbucket.org/2.0/repositories/" + repoFullName
+                    + "/commit/" + commitSha.trim() + "/statuses?pagelen=100";
+            ResponseEntity<String> resp = restTemplate.exchange(URI.create(url), HttpMethod.GET, new HttpEntity<>(headers), String.class);
+            JsonNode root = objectMapper.readTree(resp.getBody());
+            JsonNode values = root.path("values");
+            if (values.isArray()) {
+                for (JsonNode st : values) {
+                    // Bitbucket states: SUCCESSFUL / FAILED / INPROGRESS / STOPPED → normalize to GitHub-ish
+                    String bbState = st.path("state").asText(null);
+                    String state;
+                    if ("SUCCESSFUL".equalsIgnoreCase(bbState)) state = "success";
+                    else if ("FAILED".equalsIgnoreCase(bbState)) state = "failure";
+                    else if ("STOPPED".equalsIgnoreCase(bbState)) state = "error";
+                    else state = "pending";
+                    list.add(new CommitStatusDetail(
+                            st.path("key").asText(null),
+                            state,
+                            st.path("url").asText(null),
+                            st.path("description").asText(null),
+                            st.path("created_on").asText(null)));
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Bitbucket commit statuses notice: {}", e.getMessage());
+        }
+        return list;
+    }
+
+    @Override
+    public long createCheckRun(String repoFullName,
+                               String commitSha,
+                               String name,
+                               String status,
+                               String conclusion,
+                               String startedAt,
+                               String completedAt,
+                               String detailsUrl,
+                               String summary) {
+        // Bitbucket Cloud has no check-runs API — mirror the check as a build status instead.
+        String token = getEffectiveToken(null);
+        if (token == null || token.isBlank() || repoFullName == null || commitSha == null || name == null || name.isBlank()) {
+            return 0L;
+        }
+        try {
+            HttpHeaders headers = createAuthHeaders(token);
+            headers.setContentType(MediaType.APPLICATION_JSON);
+
+            String bbState = "INPROGRESS";
+            if (conclusion != null && !conclusion.isBlank()) {
+                String lower = conclusion.toLowerCase();
+                if (lower.contains("success") || lower.equals("neutral") || lower.equals("skipped")) bbState = "SUCCESSFUL";
+                else if (lower.contains("fail") || lower.contains("error") || lower.contains("timed_out")) bbState = "FAILED";
+                else if (lower.contains("cancel")) bbState = "STOPPED";
+            }
+
+            Map<String, Object> body = new HashMap<>();
+            body.put("key", name.trim());
+            body.put("state", bbState);
+            body.put("name", name.trim());
+            if (detailsUrl != null && !detailsUrl.isBlank()) body.put("url", detailsUrl);
+            if (summary != null && !summary.isBlank()) body.put("description", summary);
+
+            String url = "https://api.bitbucket.org/2.0/repositories/" + repoFullName
+                    + "/commit/" + commitSha.trim() + "/statuses/build";
+            restTemplate.exchange(URI.create(url), HttpMethod.POST, new HttpEntity<>(body, headers), String.class);
+            return 1L;
+        } catch (Exception e) {
+            throw new IllegalStateException("Bitbucket build status create failed: " + e.getMessage(), e);
+        }
+    }
 }
