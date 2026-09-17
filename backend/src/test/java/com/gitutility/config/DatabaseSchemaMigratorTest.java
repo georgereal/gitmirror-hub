@@ -103,6 +103,37 @@ class DatabaseSchemaMigratorTest {
     }
 
     @Test
+    void widenPrTitleAllowsThousandCharTitles() throws Exception {
+        try (Connection conn = DriverManager.getConnection("jdbc:h2:mem:pr-title-widen;DB_CLOSE_DELAY=-1", "sa", "");
+             Statement stmt = conn.createStatement()) {
+            stmt.execute("""
+                    CREATE TABLE PR_MAPPINGS (
+                        ID IDENTITY PRIMARY KEY,
+                        TITLE VARCHAR(255)
+                    )
+                    """);
+            String longTitle = "PR · " + "t".repeat(995);
+            try (PreparedStatement ps = conn.prepareStatement("INSERT INTO PR_MAPPINGS(TITLE) VALUES(?)")) {
+                ps.setString(1, longTitle);
+                SQLException rejected = assertThrows(SQLException.class, ps::executeUpdate);
+                assertTrue(rejected.getMessage().contains("too long") || rejected.getMessage().contains("22001"),
+                        rejected.getMessage());
+            }
+
+            DatabaseSchemaMigrator.widenVarchar(stmt, "PR_MAPPINGS", "TITLE", 1000);
+
+            try (PreparedStatement ps = conn.prepareStatement("INSERT INTO PR_MAPPINGS(TITLE) VALUES(?)")) {
+                ps.setString(1, longTitle);
+                assertEquals(1, ps.executeUpdate());
+            }
+            try (ResultSet rs = stmt.executeQuery("SELECT LENGTH(TITLE) FROM PR_MAPPINGS")) {
+                assertTrue(rs.next());
+                assertEquals(longTitle.length(), rs.getInt(1));
+            }
+        }
+    }
+
+    @Test
     void addsConflictPolicyCasColumnsAndSyncConflictsTable() throws Exception {
         try (Connection conn = DriverManager.getConnection("jdbc:h2:mem:conflicts;DB_CLOSE_DELAY=-1", "sa", "");
              Statement stmt = conn.createStatement()) {

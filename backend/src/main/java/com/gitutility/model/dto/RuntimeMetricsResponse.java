@@ -33,6 +33,18 @@ public class RuntimeMetricsResponse {
     @Builder.Default
     private List<InstallApiUsageSnapshot> apiUsageByInstall = new ArrayList<>();
     private double actionsCancelsTotal;
+    /** Push-batch fan-out governance snapshot (active jobs, in-flight batches, throttle cooldown). */
+    private PushBatchSnapshot pushBatch;
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class PushBatchSnapshot {
+        private int activeJobs;
+        private int inFlightBatches;
+        private long throttleCooldownRemainingMs;
+    }
 
     @Data
     @Builder

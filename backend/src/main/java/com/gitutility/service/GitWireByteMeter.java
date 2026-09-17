@@ -30,11 +30,21 @@ public final class GitWireByteMeter implements AutoCloseable {
 
     private static final ThreadLocal<GitWireByteMeter> ACTIVE = new ThreadLocal<>();
 
-    private final AtomicLong readBytes = new AtomicLong();
-    private final AtomicLong writeBytes = new AtomicLong();
+    private final AtomicLong readBytes;
+    private final AtomicLong writeBytes;
     private final GitWireByteMeter previous;
 
     private GitWireByteMeter() {
+        this.readBytes = new AtomicLong();
+        this.writeBytes = new AtomicLong();
+        previous = ACTIVE.get();
+        ACTIVE.set(this);
+    }
+
+    /** Nested meter that records into a parent's counters (for parallel worker threads). */
+    private GitWireByteMeter(AtomicLong sharedReads, AtomicLong sharedWrites) {
+        this.readBytes = sharedReads;
+        this.writeBytes = sharedWrites;
         previous = ACTIVE.get();
         ACTIVE.set(this);
     }
@@ -42,6 +52,20 @@ public final class GitWireByteMeter implements AutoCloseable {
     public static GitWireByteMeter open() {
         installIfNeeded();
         return new GitWireByteMeter();
+    }
+
+    /**
+     * Opens a meter that attributes wire bytes to the given parent's counters. Push-batch
+     * worker threads have no ThreadLocal meter of their own; pushing through
+     * {@code openShared(parent)} keeps byte accounting on the owning job. Pass {@code null}
+     * to get an independent per-thread meter instead.
+     */
+    public static GitWireByteMeter openShared(GitWireByteMeter parent) {
+        installIfNeeded();
+        if (parent == null) {
+            return new GitWireByteMeter();
+        }
+        return new GitWireByteMeter(parent.readBytes, parent.writeBytes);
     }
 
     public long gitWireBytes() {

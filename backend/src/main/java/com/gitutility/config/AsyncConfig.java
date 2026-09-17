@@ -54,6 +54,13 @@ public class AsyncConfig {
         return monitoredFixedPool(meterRegistry, Math.max(1, threads), 1000, "PrCreate-", "gitmirror.pr.create");
     }
 
+    @Bean(name = "gitPushBatchExecutor", destroyMethod = "shutdown")
+    public ExecutorService gitPushBatchExecutor(
+            MeterRegistry meterRegistry,
+            @Value("${git-utility.git.push-batch-pool-max-threads:8}") int threads) {
+        return monitoredFixedPool(meterRegistry, Math.max(1, threads), 500, "GitPushBatch-", "gitmirror.git.pushbatch");
+    }
+
     @Bean(name = "releaseSyncExecutor", destroyMethod = "shutdown")
     public ExecutorService releaseSyncExecutor(
             MeterRegistry meterRegistry,

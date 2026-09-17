@@ -115,8 +115,11 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
       .catch(() => setCredentialCatalog([]));
   }, [isOpen]);
 
+  // GitHub App credentials grant the richest permissions — list them before PATs.
   const githubCredentials = useMemo(
-    () => credentialCatalog.filter((c) => c.provider === 'GITHUB' || c.provider === 'GITHUB_ENTERPRISE'),
+    () => credentialCatalog
+      .filter((c) => c.provider === 'GITHUB' || c.provider === 'GITHUB_ENTERPRISE')
+      .sort((a, b) => (a.authMode === 'GITHUB_APP' ? 0 : 1) - (b.authMode === 'GITHUB_APP' ? 0 : 1) || a.id - b.id),
     [credentialCatalog]
   );
 
@@ -422,7 +425,8 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
       setVisibilityA('PUBLIC');
       setSourcePublicRead(true);
       // App/PAT access on a public repo — keep Access; surface optional hint.
-      setAlsoPublicHintA(usedCredentialId != null);
+      // Skip the hint when the backend fell back to public read because the credential failed.
+      setAlsoPublicHintA(usedCredentialId != null && res.accessMode !== 'PUBLIC');
     } else {
       setVisibilityA('PRIVATE');
       setSourcePublicRead(false);
@@ -453,7 +457,8 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
       setAlsoPublicHintB(false);
     } else if (publicReposEnabled) {
       setVisibilityB('PUBLIC');
-      setAlsoPublicHintB(usedCredentialId != null);
+      // Skip the hint when the backend fell back to public read because the credential failed.
+      setAlsoPublicHintB(usedCredentialId != null && res.accessMode !== 'PUBLIC');
     } else {
       setVisibilityB('PRIVATE');
       setAlsoPublicHintB(false);
@@ -484,15 +489,18 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
       if (publishReport) applySourceReport(res, credentialId);
       return res;
     } catch (e: any) {
+      // Prefer the backend-authored error text (GlobalExceptionHandler payload) over generic axios copy.
+      const backendMessage: string =
+        e?.response?.data?.error || e?.response?.data?.message || e?.message || 'Verification call failed';
       const fail: PermissionCheckReport = {
         valid: false,
         repoFullName: repoAUrl,
         isPrivate: false,
-        httpStatusCode: 500,
-        message: e.message || 'Verification call failed',
+        httpStatusCode: e?.response?.status || 500,
+        message: backendMessage,
         passedChecks: [],
         warnings: [],
-        errors: [e.message || 'Connection error'],
+        errors: [backendMessage],
       };
       if (publishReport) setReportA(fail);
       return fail;
@@ -518,15 +526,18 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
       if (publishReport) applyDestReport(res, credentialId);
       return res;
     } catch (e: any) {
+      // Prefer the backend-authored error text (GlobalExceptionHandler payload) over generic axios copy.
+      const backendMessage: string =
+        e?.response?.data?.error || e?.response?.data?.message || e?.message || 'Verification call failed';
       const fail: PermissionCheckReport = {
         valid: false,
         repoFullName: repoBUrl,
         isPrivate: false,
-        httpStatusCode: 500,
-        message: e.message || 'Verification call failed',
+        httpStatusCode: e?.response?.status || 500,
+        message: backendMessage,
         passedChecks: [],
         warnings: [],
-        errors: [e.message || 'Connection error'],
+        errors: [backendMessage],
       };
       if (publishReport) setReportB(fail);
       return fail;
@@ -792,7 +803,9 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                     {sourceAccessAnonymous
                       ? ' · Access anonymous HTTPS'
                       : sourceCredentialId != null
-                        ? ` · Access via ${sourceCredentialLabel}`
+                        ? reportA?.valid && reportA.accessMode === 'PUBLIC'
+                          ? ` · Access via ${sourceCredentialLabel} (public read fallback)`
+                          : ` · Access via ${sourceCredentialLabel}`
                         : ' · Access authenticated'}
                   </p>
                   {alsoPublicHintA && (
@@ -906,11 +919,7 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                     ) : (
                       <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
                     )}
-                    <span className="font-medium">
-                      {!sourceAccessAnonymous && reportA.valid && reportA.accessMode === 'PUBLIC'
-                        ? 'Repository access verified via App/PAT.'
-                        : reportA.message}
-                    </span>
+                    <span className="font-medium">{reportA.message}</span>
                   </div>
                   {reportA.valid && repoAccessDetailChecks(reportA.passedChecks).length > 0 && (
                     <details className="text-[10px] text-zinc-500">
@@ -1201,7 +1210,9 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                     {destAccessAnonymous
                       ? ' · Access anonymous HTTPS'
                       : targetCredentialId != null
-                        ? ` · Access via ${destCredentialLabel}`
+                        ? reportB?.valid && reportB.accessMode === 'PUBLIC'
+                          ? ` · Access via ${destCredentialLabel} (public read fallback)`
+                          : ` · Access via ${destCredentialLabel}`
                         : ' · Access authenticated'}
                   </p>
                   {reportB.emptyDestination && (
@@ -1321,11 +1332,7 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                     ) : (
                       <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
                     )}
-                    <span className="font-medium">
-                      {!destAccessAnonymous && reportB.valid && reportB.accessMode === 'PUBLIC'
-                        ? 'Repository access verified via App/PAT.'
-                        : reportB.message}
-                    </span>
+                    <span className="font-medium">{reportB.message}</span>
                   </div>
 
                   {reportB.valid && repoAccessDetailChecks(reportB.passedChecks).length > 0 && (

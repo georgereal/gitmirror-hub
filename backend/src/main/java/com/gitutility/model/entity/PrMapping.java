@@ -39,6 +39,9 @@ public class PrMapping {
 
     private String headBranch;
     private String baseBranch;
+
+    /** Mirrored source PR title — clamped to 1000 chars before write (see {@link #clampColumnLimitsBeforeWrite()}). */
+    @Column(length = 1000)
     private String title;
     /** open, closed, merged, or objects_cached (fork tip stored; dest PR not created). */
     private String state;
@@ -66,4 +69,26 @@ public class PrMapping {
 
     @Builder.Default
     private Instant updatedAt = Instant.now();
+
+    /** Must match the {@code VARCHAR(1000)} width of the title columns in the database. */
+    static final int TITLE_COLUMN_LENGTH = 1000;
+
+    /**
+     * pr_mappings.title and last_pushed_title are VARCHAR(1000). Oversized source PR titles are
+     * clamped here at the entity boundary (JPA invokes this before every INSERT and UPDATE) so a
+     * single bad row can never abort the whole PR-mapping batch save.
+     */
+    @PrePersist
+    @PreUpdate
+    void clampColumnLimitsBeforeWrite() {
+        title = clampToColumnLimit(title);
+        lastPushedTitle = clampToColumnLimit(lastPushedTitle);
+    }
+
+    static String clampToColumnLimit(String value) {
+        if (value == null || value.length() <= TITLE_COLUMN_LENGTH) {
+            return value;
+        }
+        return value.substring(0, TITLE_COLUMN_LENGTH);
+    }
 }

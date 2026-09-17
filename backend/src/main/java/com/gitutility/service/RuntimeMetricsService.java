@@ -35,7 +35,8 @@ public class RuntimeMetricsService {
             "gitmirror.sync",
             "gitmirror.lfs.discovery",
             "gitmirror.lfs.transfer",
-            "gitmirror.pr.create"
+            "gitmirror.pr.create",
+            "gitmirror.git.pushbatch"
     );
 
     private final MeterRegistry meterRegistry;
@@ -46,6 +47,7 @@ public class RuntimeMetricsService {
     private final InstallApiUsageTracker installApiUsageTracker;
     private final MessagingModule messagingModule;
     private final SyncEventBus syncEventBus;
+    private final PushBatchConcurrencyService pushBatchConcurrencyService;
 
     public RuntimeMetricsResponse snapshot() {
         hubMetrics.refreshRuntimeGauges();
@@ -88,6 +90,11 @@ public class RuntimeMetricsService {
                 .jobOutcomes(snapshotJobOutcomes())
                 .apiUsageByInstall(installApiUsageTracker.snapshot())
                 .actionsCancelsTotal(counterValue("gitmirror.actions.cancels"))
+                .pushBatch(RuntimeMetricsResponse.PushBatchSnapshot.builder()
+                        .activeJobs(pushBatchConcurrencyService.activeJobCount())
+                        .inFlightBatches(pushBatchConcurrencyService.inFlightBatchCount())
+                        .throttleCooldownRemainingMs(pushBatchConcurrencyService.throttleCooldownRemainingMs())
+                        .build())
                 .build();
     }
 

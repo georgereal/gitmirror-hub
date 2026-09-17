@@ -296,6 +296,21 @@ public class GitHubEnterpriseProviderService implements ScmProviderAdapter {
                     .errors(errors)
                     .build();
         } catch (Exception e) {
+            // READ-only last resort: credential rejected (401/403/404) and the repo is publicly
+            // readable → fall back to anonymous public read with a backend-authored explanation.
+            if (e instanceof HttpClientErrorException httpError
+                    && (httpError.getStatusCode().value() == 401
+                    || httpError.getStatusCode().value() == 403
+                    || httpError.getStatusCode().value() == 404)
+                    && !PublicReadProbe.writeRequired(req)) {
+                JsonNode anonymousProbeNode = probePublicGhesRepo(host, repoFullName);
+                PermissionCheckReport publicFallback = PublicReadProbe.publicFallbackAfterCredentialFailure(
+                        anonymousProbeNode, repoFullName, "GHES", httpError.getStatusCode().value(),
+                        "GHES credential rejected the request.");
+                if (publicFallback != null) {
+                    return publicFallback;
+                }
+            }
             log.warn("GHES test connection failed: {}", e.getMessage());
             errors.add("GHES API Error: " + e.getMessage());
             return PermissionCheckReport.builder()

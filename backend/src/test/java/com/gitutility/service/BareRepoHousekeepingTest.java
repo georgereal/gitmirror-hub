@@ -2,6 +2,7 @@ package com.gitutility.service;
 
 import com.gitutility.model.dto.DiffInspectOptions;
 import com.gitutility.model.dto.SyncDiffReport.BranchDiffDetail;
+import org.eclipse.jgit.api.Git;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -90,6 +91,58 @@ class BareRepoHousekeepingTest {
             assertEquals(1, names.destOnlyBranchCount());
             assertTrue(names.sourceTags().contains("v1"));
             assertTrue(names.destTags().contains("v1"));
+        }
+    }
+
+    @Test
+    void logFailedTrackingRefUpdatesHandlesNullResult() {
+        List<String> messages = new ArrayList<>();
+        List<String> failed = BareRepoHousekeeping.logFailedTrackingRefUpdates(null, "Test context", messages::add);
+        assertTrue(failed.isEmpty());
+        assertTrue(messages.isEmpty());
+    }
+
+    @Test
+    void isTrackingRefSuccessClassifiesRefUpdateResults() {
+        assertTrue(BareRepoHousekeeping.isTrackingRefSuccess(org.eclipse.jgit.lib.RefUpdate.Result.NEW));
+        assertTrue(BareRepoHousekeeping.isTrackingRefSuccess(org.eclipse.jgit.lib.RefUpdate.Result.FAST_FORWARD));
+        assertTrue(BareRepoHousekeeping.isTrackingRefSuccess(org.eclipse.jgit.lib.RefUpdate.Result.FORCED));
+        assertTrue(BareRepoHousekeeping.isTrackingRefSuccess(org.eclipse.jgit.lib.RefUpdate.Result.NO_CHANGE));
+
+        assertFalse(BareRepoHousekeeping.isTrackingRefSuccess(org.eclipse.jgit.lib.RefUpdate.Result.LOCK_FAILURE));
+        assertFalse(BareRepoHousekeeping.isTrackingRefSuccess(org.eclipse.jgit.lib.RefUpdate.Result.IO_FAILURE));
+        assertFalse(BareRepoHousekeeping.isTrackingRefSuccess(org.eclipse.jgit.lib.RefUpdate.Result.REJECTED));
+        assertFalse(BareRepoHousekeeping.isTrackingRefSuccess(org.eclipse.jgit.lib.RefUpdate.Result.NOT_ATTEMPTED));
+        assertFalse(BareRepoHousekeeping.isTrackingRefSuccess(org.eclipse.jgit.lib.RefUpdate.Result.REJECTED_OTHER_REASON));
+    }
+
+    @Test
+    void logFailedTrackingRefUpdatesReportsNothingOnHealthyFetch(@TempDir Path tempDir) throws Exception {
+        // Real fetch: healthy tracking ref updates (NEW) must not be reported as failures.
+        java.io.File workDir = Files.createDirectories(tempDir.resolve("work")).toFile();
+        try (Git work = Git.init().setDirectory(workDir).call()) {
+            var config = work.getRepository().getConfig();
+            config.setString("user", null, "name", "Test User");
+            config.setString("user", null, "email", "test@example.com");
+            config.save();
+            Files.writeString(workDir.toPath().resolve("readme.md"), "hello");
+            work.add().addFilepattern("readme.md").call();
+            work.commit().setMessage("initial").call();
+
+            java.io.File mirrorDir = Files.createDirectories(tempDir.resolve("mirror.git")).toFile();
+            try (Git mirror = Git.init().setBare(true).setDirectory(mirrorDir).call()) {
+                List<String> messages = new ArrayList<>();
+                org.eclipse.jgit.transport.FetchResult fetchResult = mirror.fetch()
+                        .setRemote(workDir.toURI().toString())
+                        .setRefSpecs(new org.eclipse.jgit.transport.RefSpec("+refs/heads/*:refs/remotes/source/*"))
+                        .call();
+
+                List<String> failed = BareRepoHousekeeping.logFailedTrackingRefUpdates(
+                        fetchResult, "Test fetch", messages::add);
+
+                assertTrue(failed.isEmpty());
+                assertTrue(messages.isEmpty());
+            }
         }
     }
 }

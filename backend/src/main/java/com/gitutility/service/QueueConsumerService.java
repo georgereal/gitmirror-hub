@@ -16,7 +16,6 @@ import org.springframework.stereotype.Service;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -58,7 +57,7 @@ public class QueueConsumerService {
     @Value("${git-utility.messaging.provider:rabbitmq}")
     private String messagingProvider;
 
-    private final Map<Long, ReentrantLock> repoLocks = new ConcurrentHashMap<>();
+    private final RepoDirLockService repoDirLockService;
 
     private volatile Semaphore pushConcurrencyLimiter;
 
@@ -180,7 +179,9 @@ public class QueueConsumerService {
             }
         }
 
-        ReentrantLock lock = repoLocks.computeIfAbsent(event.getMappingId(), k -> new ReentrantLock());
+        // Shared per-mapping bare-repo lock — also taken by GitComparisonService refresh
+        // mode, so a diff fetch can never race a sync job on the same bare repo directory.
+        ReentrantLock lock = repoDirLockService.lockFor(event.getMappingId());
         lock.lock();
 
         boolean acquiredPermit = false;

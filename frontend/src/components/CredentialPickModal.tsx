@@ -38,7 +38,10 @@ export const CredentialPickModal: React.FC<CredentialPickModalProps> = ({
     setError(null);
     listScmCredentials(provider)
       .then((rows) => {
-        const enabled = rows.filter((r) => r.enabled);
+        // GitHub App credentials grant the richest permissions — prefer them over PATs.
+        const enabled = rows
+          .filter((r) => r.enabled)
+          .sort((a, b) => (a.authMode === 'GITHUB_APP' ? 0 : 1) - (b.authMode === 'GITHUB_APP' ? 0 : 1) || a.id - b.id);
         setCredentials(enabled);
         const preferred =
           initialCredentialId != null && enabled.some((c) => c.id === initialCredentialId)

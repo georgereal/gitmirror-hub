@@ -34,6 +34,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 @Service
 @RequiredArgsConstructor
@@ -53,6 +54,7 @@ public class GitComparisonService {
     private final DiffInspectionProgressService diffInspectionProgressService;
     private final PairCatchupLedger pairCatchupLedger;
     private final SyncCheckpointService syncCheckpointService;
+    private final RepoDirLockService repoDirLockService;
 
     private static final long QUICK_DIFF_CACHE_TTL_MS = 45_000;
     private static final long BRANCH_LIST_CACHE_TTL_MS = 120_000;
@@ -183,10 +185,22 @@ public class GitComparisonService {
 
             // 1. Optional network refresh (skipped on quick page load — uses local bare refs only)
             if (inspect.refresh()) {
+                // Refresh-mode diffs fetch into and rewrite the loose refs of this same bare
+                // repo directory that sync jobs (QueueConsumerService → GitSyncEngine) are
+                // writing. Hold the shared per-mapping bare-repo lock so a Refresh Diff can
+                // never race a running sync job — the winner of that race used to silently
+                // clobber the other's ref write (LOCK_FAILURE) and flip Source/Target tips.
+                ReentrantLock repoDirLock = repoDirLockService != null
+                        ? repoDirLockService.lockFor(mappingId)
+                        : null;
+                if (repoDirLock != null) {
+                    repoDirLock.lock();
+                }
+                try {
                 try {
                     if (!isSimulationOrTestUrl(mapping.getRepoAUrl())) {
                         progress.markCurrent(DiffInspectionPipeline.FETCH_SOURCE, mapping.getRepoAUrl());
-                        git.fetch()
+                        org.eclipse.jgit.transport.FetchResult sourceFetchResult = git.fetch()
                                 .setRemote("source")
                                 .setRefSpecs(
                                         new RefSpec("+refs/heads/*:refs/heads/*"),
@@ -196,6 +210,8 @@ public class GitComparisonService {
                                 .setCredentialsProvider(sourceCreds)
                                 .setRemoveDeletedRefs(true)
                                 .call();
+                        BareRepoHousekeeping.logFailedTrackingRefUpdates(sourceFetchResult,
+                                "Refresh diff · source fetch", null);
                         progress.markDone(DiffInspectionPipeline.FETCH_SOURCE, "Source refs updated");
                     }
                 } catch (Exception e) {
@@ -206,7 +222,7 @@ public class GitComparisonService {
                 try {
                     if (!isSimulationOrTestUrl(mapping.getRepoBUrl())) {
                         progress.markCurrent(DiffInspectionPipeline.FETCH_DEST, mapping.getRepoBUrl());
-                        git.fetch()
+                        org.eclipse.jgit.transport.FetchResult destFetchResult = git.fetch()
                                 .setRemote("target")
                                 .setRefSpecs(
                                         new RefSpec("+refs/heads/*:refs/remotes/target/*"),
@@ -215,6 +231,8 @@ public class GitComparisonService {
                                 .setCredentialsProvider(targetCreds)
                                 .setRemoveDeletedRefs(true)
                                 .call();
+                        BareRepoHousekeeping.logFailedTrackingRefUpdates(destFetchResult,
+                                "Refresh diff · target fetch", null);
                         progress.markDone(DiffInspectionPipeline.FETCH_DEST, "Destination refs updated");
                     }
                 } catch (Exception e) {
@@ -222,6 +240,11 @@ public class GitComparisonService {
                     progress.markDone(DiffInspectionPipeline.FETCH_DEST, "Completed with notice");
                 }
                 BareRepoHousekeeping.prepareRepoDirectoryAfterPackIo(repoDir);
+                } finally {
+                    if (repoDirLock != null) {
+                        repoDirLock.unlock();
+                    }
+                }
             }
 
             Repository repository = git.getRepository();

@@ -9,7 +9,9 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.Stream;
@@ -372,5 +374,61 @@ public final class BareRepoHousekeeping {
             }
         }
         return removed;
+    }
+
+    /**
+     * Success values of {@link org.eclipse.jgit.lib.RefUpdate.Result} after a fetch —
+     * everything else (LOCK_FAILURE, IO_FAILURE, REJECTED, NOT_ATTEMPTED, AWAITING_REPORT)
+     * means the local tracking ref was NOT updated and still points at the stale tip.
+     */
+    static boolean isTrackingRefSuccess(org.eclipse.jgit.lib.RefUpdate.Result result) {
+        return result == org.eclipse.jgit.lib.RefUpdate.Result.NEW
+                || result == org.eclipse.jgit.lib.RefUpdate.Result.FAST_FORWARD
+                || result == org.eclipse.jgit.lib.RefUpdate.Result.FORCED
+                || result == org.eclipse.jgit.lib.RefUpdate.Result.NO_CHANGE;
+    }
+
+    /**
+     * JGit's {@code git.fetch().call()} returns normally even when individual per-ref
+     * writes fail ({@code .lock} contention, I/O, rejection); a successful call()
+     * therefore hides silent per-ref failures and downstream readers keep consuming
+     * stale local refs indefinitely.
+     *
+     * Classifies each tracking ref update, logs a WARN per failed ref (ref name, old/new
+     * object ids, result code) through the caller-supplied logger (or SLF4J when null),
+     * and returns the list of failed ref names.
+     */
+    public static List<String> logFailedTrackingRefUpdates(
+            org.eclipse.jgit.transport.FetchResult fetchResult,
+            String contextLabel,
+            java.util.function.Consumer<String> auditLogger) {
+        List<String> failedRefs = new ArrayList<>();
+        if (fetchResult == null) {
+            return failedRefs;
+        }
+        for (org.eclipse.jgit.transport.TrackingRefUpdate update : fetchResult.getTrackingRefUpdates()) {
+            org.eclipse.jgit.lib.RefUpdate.Result result = update.getResult();
+            if (isTrackingRefSuccess(result)) {
+                continue;
+            }
+            String refName = update.getLocalName() != null && !update.getLocalName().isBlank()
+                    ? update.getLocalName()
+                    : update.getRemoteName();
+            failedRefs.add(refName);
+            String message = contextLabel + ": local ref update failed for '" + refName
+                    + "' (" + result + "), old=" + update.getOldObjectId()
+                    + " new=" + update.getNewObjectId()
+                    + " — bare-repo tracking ref left at the stale tip; subsequent diffs will read it until the next successful write.";
+            if (auditLogger != null) {
+                auditLogger.accept(message);
+            } else {
+                log.warn(message);
+            }
+        }
+        if (!failedRefs.isEmpty()) {
+            log.warn("{}: {} tracking ref update(s) failed silently — refs {}",
+                    contextLabel, failedRefs.size(), failedRefs);
+        }
+        return failedRefs;
     }
 }

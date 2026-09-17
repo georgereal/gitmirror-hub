@@ -195,6 +195,10 @@ public class DatabaseSchemaMigrator {
             widenVarcharToClob(stmt, "SYNC_JOBS", "COMMIT_MESSAGE");
             widenVarcharToClob(stmt, "UNMAPPED_WEBHOOK_EVENTS", "COMMIT_MESSAGE");
 
+            // Source PR titles exceed the Hibernate default VARCHAR(255) and abort PR sync
+            // persistence. Widen to match the entity's @Column(length = 1000).
+            widenVarchar(stmt, "PR_MAPPINGS", "TITLE", 1000);
+
             try {
                 stmt.execute("ALTER TABLE pr_mappings ADD COLUMN IF NOT EXISTS fork_pr_head BOOLEAN DEFAULT FALSE");
                 log.info("Database migration: verified pr_mappings.fork_pr_head column.");
@@ -383,6 +387,26 @@ public class DatabaseSchemaMigrator {
             try {
                 stmt.execute(sql);
                 log.info("Database migration: widened {}.{} to VARCHAR(50).", table, column);
+                return;
+            } catch (Exception e) {
+                log.debug("Schema migration notice ({}.{}): {}", table, column, e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Widens a bounded VARCHAR column (e.g. the Hibernate default 255) to the given size.
+     * No-ops (with a debug notice) when the dialect rejects the statement.
+     */
+    static void widenVarchar(Statement stmt, String table, String column, int size) {
+        String[] attempts = {
+                "ALTER TABLE " + table + " ALTER COLUMN " + column + " SET DATA TYPE VARCHAR(" + size + ")",
+                "ALTER TABLE " + table + " ALTER COLUMN " + column + " VARCHAR(" + size + ")"
+        };
+        for (String sql : attempts) {
+            try {
+                stmt.execute(sql);
+                log.info("Database migration: widened {}.{} to VARCHAR({}).", table, column, size);
                 return;
             } catch (Exception e) {
                 log.debug("Schema migration notice ({}.{}): {}", table, column, e.getMessage());

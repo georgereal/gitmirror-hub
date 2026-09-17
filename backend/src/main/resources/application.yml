@@ -60,6 +60,16 @@ git-utility:
     push-batch-size: ${GIT_PUSH_BATCH_SIZE:8}
     push-batch-retries: ${GIT_PUSH_BATCH_RETRIES:3}
     push-bulk-bootstrap: ${GIT_PUSH_BULK_BOOTSTRAP:true}
+    # Push-batch fan-out: per-job parallel batches (wave), capped by the shared pool size,
+    # a pod-wide per-destination-host connection cap, live resource headroom, and a
+    # pod-wide cooldown that collapses fan-out after a detected Git throttle/429.
+    push-batch-concurrency: ${GIT_PUSH_BATCH_CONCURRENCY:2}
+    push-batch-pool-max-threads: ${GIT_PUSH_BATCH_POOL_MAX_THREADS:8}
+    push-batch-per-host-max: ${GIT_PUSH_BATCH_PER_HOST_MAX:4}
+    push-batch-throttle-cooldown-seconds: ${GIT_PUSH_BATCH_THROTTLE_COOLDOWN_SECONDS:60}
+    push-batch-cpu-high-watermark: ${GIT_PUSH_BATCH_CPU_HIGH_WATERMARK:0.90}
+    push-batch-heap-high-watermark-percent: ${GIT_PUSH_BATCH_HEAP_HIGH_WATERMARK_PERCENT:85}
+    push-batch-disk-low-watermark-percent: ${GIT_PUSH_BATCH_DISK_LOW_WATERMARK_PERCENT:10}
     lfs-batch-size: ${GIT_LFS_BATCH_SIZE:50}
     lfs-discovery-threads: ${GIT_LFS_DISCOVERY_THREADS:4}
     lfs-transfer-concurrency: ${GIT_LFS_TRANSFER_CONCURRENCY:4}

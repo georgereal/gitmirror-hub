@@ -5,6 +5,7 @@ import com.gitutility.model.dto.TestConnectionRequest;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.transport.CredentialsProvider;
+import tools.jackson.databind.JsonNode;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -114,5 +115,34 @@ public final class PublicReadProbe {
                 .passedChecks(List.of("Public read access verified (anonymous HTTPS)"))
                 .errors(List.of("Write/Push requires a provider token or App with Contents: Write on this repository."))
                 .build();
+    }
+
+    /**
+     * Last-resort fallback for READ-only checks: the selected App/PAT credential failed, so probe
+     * anonymous public read. When the repository is publicly readable, return a success report whose
+     * message and warnings are authored here (backend) so the UI renders the fallback reason verbatim
+     * instead of composing its own copy. Returns {@code null} when the repository is not publicly
+     * readable and the original credential failure report must stand.
+     */
+    public static PermissionCheckReport publicFallbackAfterCredentialFailure(
+            JsonNode publicRepoNode,
+            String repoFullName,
+            String providerLabel,
+            int credentialHttpStatus,
+            String credentialProblem) {
+        if (publicRepoNode == null || publicRepoNode.path("private").asBoolean(true)) {
+            return null;
+        }
+        String defaultBranch = publicRepoNode.path("default_branch").asText("main");
+        PermissionCheckReport report = publicReadSuccess(repoFullName, defaultBranch, providerLabel);
+        report.setMessage("Public read access verified — the selected credential could not access this repository, "
+                + "so anonymous public read is used for this side.");
+        List<String> fallbackWarnings = new ArrayList<>();
+        fallbackWarnings.add("Selected credential check failed (HTTP " + credentialHttpStatus + "): " + credentialProblem);
+        fallbackWarnings.add("Fell back to anonymous public read — mirroring from this side works read-only without credentials.");
+        fallbackWarnings.add("Fix the credential (App installation / PAT scope) to restore authenticated access "
+                + "plus PR, release and CI metadata sync.");
+        report.setWarnings(fallbackWarnings);
+        return report;
     }
 }

@@ -46,6 +46,7 @@ class QueueConsumerServiceSkipTest {
     @Mock private QueueProducerService queueProducerService;
     @Mock private ScmInstallationKeyResolver installationKeyResolver;
     @Mock private PairCatchupLedger pairCatchupLedger;
+    @Mock private RepoDirLockService repoDirLockService;
 
     private QueueConsumerService consumer;
     private ConsumerRuntimeRegistry registry;
@@ -53,6 +54,9 @@ class QueueConsumerServiceSkipTest {
     @BeforeEach
     void setUp() {
         registry = new ConsumerRuntimeRegistry();
+        org.mockito.Mockito.lenient()
+                .when(repoDirLockService.lockFor(any()))
+                .thenAnswer(inv -> new java.util.concurrent.locks.ReentrantLock());
         consumer = new QueueConsumerService(
                 gitSyncEngine,
                 syncJobRepository,
@@ -75,7 +79,8 @@ class QueueConsumerServiceSkipTest {
                 instanceIdentity,
                 queueProducerService,
                 installationKeyResolver,
-                pairCatchupLedger
+                pairCatchupLedger,
+                repoDirLockService
         );
     }
 

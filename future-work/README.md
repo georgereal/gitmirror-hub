@@ -13,6 +13,7 @@ Deferred design plans. These are **not** delivery schedules. Shipped plans live 
 | [multi-config-webhook-ingest.md](multi-config-webhook-ingest.md) | Parked | One Worker + one inbound queue; identity on envelope; no Kafka / per-card Worker |
 | [ephemeral-agentic-ref-webhooks.md](ephemeral-agentic-ref-webhooks.md) | Partial (core shipped) | Pair UI for prefixes; scheduled Smart sync; discard filter chips |
 | [fork-pr-lazy-dr-materialize.md](fork-pr-lazy-dr-materialize.md) | Partial (core shipped) | UI materialize action; legacy fork-pr cleanup; diff status for objects_cached |
+| [fetch-ref-verification-and-repo-dir-mutex.md](fetch-ref-verification-and-repo-dir-mutex.md) | Partial (core shipped) | Surface silent per-ref fetch failures + shared bare-repo lock; PR-service fetch sites, bounded retry, UI staleness indicator |
 
 ## Done
 

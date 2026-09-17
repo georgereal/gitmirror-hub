@@ -1182,7 +1182,7 @@ public class PullRequestSyncService {
             mappingIndex.remember(pr.getSourcePrNumber(), pr.getHeadBranch(), pr.getBaseBranch());
         }
         if (!toSave.isEmpty()) {
-            prMappingRepository.saveAll(toSave);
+            savePrMappingsResilient(toSave);
         }
     }
 
@@ -1729,7 +1729,7 @@ public class PullRequestSyncService {
         }
 
         if (!toSave.isEmpty()) {
-            prMappingRepository.saveAll(toSave);
+            savePrMappingsResilient(toSave);
         }
         return syncedCount.get();
     }
@@ -2365,6 +2365,32 @@ public class PullRequestSyncService {
         }
         return Objects.equals(nullToEmpty(pm.getLastPushedTitle()), nullToEmpty(replica.getTitle()))
                 && Objects.equals(nullToEmpty(pm.getLastPushedBody()), nullToEmpty(replica.getBody()));
+    }
+
+    /**
+     * Batch save with per-row isolation: one un-persistable mapping must not roll back every
+     * other PR mapping created in the same batch. Titles are already clamped at the entity
+     * ({@link PrMapping#clampColumnLimitsBeforeWrite()}); this guards against any other
+     * unexpected column overflow.
+     */
+    private void savePrMappingsResilient(List<PrMapping> mappings) {
+        if (mappings == null || mappings.isEmpty()) {
+            return;
+        }
+        try {
+            prMappingRepository.saveAll(mappings);
+        } catch (Exception batchEx) {
+            log.warn("PR mapping batch save failed ({}); retrying per-row to isolate the bad row",
+                    batchEx.getMessage());
+            for (PrMapping pm : mappings) {
+                try {
+                    prMappingRepository.save(pm);
+                } catch (Exception rowEx) {
+                    log.error("Skipping un-persistable PR mapping (source PR #{} on {}): {}",
+                            pm.getSourcePrNumber(), pm.getSourceRepo(), rowEx.getMessage());
+                }
+            }
+        }
     }
 
     static void rememberLastPush(PrMapping pm, String title, String body) {

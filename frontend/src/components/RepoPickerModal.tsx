@@ -65,7 +65,10 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
       const p = provider === 'GHES' ? 'GITHUB_ENTERPRISE' : 'GITHUB';
       listScmCredentials(p)
         .then((rows) => {
-          const enabled = rows.filter((r) => r.enabled);
+          // GitHub App credentials grant the richest permissions — prefer them over PATs.
+          const enabled = rows
+            .filter((r) => r.enabled)
+            .sort((a, b) => (a.authMode === 'GITHUB_APP' ? 0 : 1) - (b.authMode === 'GITHUB_APP' ? 0 : 1) || a.id - b.id);
           setCredentials(enabled);
           setCredentialId(enabled[0]?.id ?? '');
         })

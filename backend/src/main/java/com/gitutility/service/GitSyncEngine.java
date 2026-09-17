@@ -32,6 +32,7 @@ import org.eclipse.jgit.transport.CredentialsProvider;
 import org.eclipse.jgit.transport.PushResult;
 import org.eclipse.jgit.transport.RefSpec;
 import org.eclipse.jgit.transport.RemoteRefUpdate;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
@@ -52,10 +53,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service
 @Slf4j
@@ -100,6 +105,9 @@ public class GitSyncEngine {
 
     private final ThreadLocal<JobStageProgress> activeStageProgress = new ThreadLocal<>();
 
+    private final PushBatchConcurrencyService pushBatchConcurrencyService;
+    private final ExecutorService gitPushBatchExecutor;
+
     public GitSyncEngine(
             SyncAuditLogRepository auditLogRepository,
             DedupLedgerService dedupLedgerService,
@@ -118,7 +126,9 @@ public class GitSyncEngine {
             SyncCheckpointService syncCheckpointService,
             JobExecutionStateService jobExecutionStateService,
             @Lazy ActionsTriggerSuppressionService actionsTriggerSuppressionService,
-            @Lazy ScmCredentialService scmCredentialService) {
+            @Lazy ScmCredentialService scmCredentialService,
+            PushBatchConcurrencyService pushBatchConcurrencyService,
+            @Qualifier("gitPushBatchExecutor") ExecutorService gitPushBatchExecutor) {
         this.auditLogRepository = auditLogRepository;
         this.dedupLedgerService = dedupLedgerService;
         this.gitLfsSyncService = gitLfsSyncService;
@@ -137,6 +147,8 @@ public class GitSyncEngine {
         this.jobExecutionStateService = jobExecutionStateService;
         this.actionsTriggerSuppressionService = actionsTriggerSuppressionService;
         this.scmCredentialService = scmCredentialService;
+        this.pushBatchConcurrencyService = pushBatchConcurrencyService;
+        this.gitPushBatchExecutor = gitPushBatchExecutor;
     }
 
     public static class SyncResult {
@@ -147,6 +159,8 @@ public class GitSyncEngine {
         public List<IsolatedRef> isolatedRefs = new ArrayList<>();
         public String message;
         public List<String> updatedRefs = new ArrayList<>();
+        /** Tracking refs whose local write failed during fetch (LOCK_FAILURE/IO_FAILURE/REJECTED…) — tips stay stale until a later successful write. */
+        public List<String> failedFetchRefs = new ArrayList<>();
         public long durationMs;
         public int branchesCount;
         public int sourceBranchesCount;
@@ -448,9 +462,16 @@ public class GitSyncEngine {
                 logAudit(jobId, LogLevel.INFO, "Source fetch · " + sourceLabel + ": Fetching latest refs from source repository"
                         + (includePullHeads ? " (including PR heads)..." : " (heads/tags/notes; PR heads omitted)..."));
                 try {
+                    java.util.List<String> sourceFailedFetchRefs = new ArrayList<>();
                     boolean usedPublic = runSourceFetchWithHeartbeat(jobId, fetchMonitor, () ->
                             fetchSourcePublicFirst(git, sourceCreds, cachedPublicRead, fetchMonitor, event,
-                                    includePullHeads));
+                                    includePullHeads, jobId, sourceFailedFetchRefs));
+                    if (result != null && !sourceFailedFetchRefs.isEmpty()) {
+                        result.failedFetchRefs.addAll(sourceFailedFetchRefs);
+                        logAudit(jobId, LogLevel.WARN, "Source fetch · " + sourceFailedFetchRefs.size()
+                                + " tracking ref update(s) failed locally (" + String.join(", ", sourceFailedFetchRefs)
+                                + ") — stale tips stay until the next successful write.");
+                    }
                     if (providerRateMeter != null) {
                         providerRateMeter.incrementGitHttpFetch();
                     }
@@ -578,7 +599,7 @@ public class GitSyncEngine {
                                         + ": still negotiating destination tips (no object transfer yet)...";
                             },
                             () -> {
-                                git.fetch()
+                                org.eclipse.jgit.transport.FetchResult inspectFetchResult = git.fetch()
                                         .setRemote("target")
                                         .setRefSpecs(
                                                 new RefSpec("+refs/heads/*:refs/remotes/target/*"),
@@ -589,6 +610,17 @@ public class GitSyncEngine {
                                         .setProgressMonitor(inspectMonitor)
                                         .setTimeout(httpTimeoutSeconds)
                                         .call();
+                                List<String> failedInspectRefs = BareRepoHousekeeping.logFailedTrackingRefUpdates(
+                                        inspectFetchResult, "Inspect destination",
+                                        msg -> logAudit(jobId, LogLevel.WARN, msg));
+                                if (result != null && !failedInspectRefs.isEmpty()) {
+                                    result.failedFetchRefs.addAll(failedInspectRefs);
+                                    logAudit(jobId, LogLevel.WARN, "Inspect destination · "
+                                            + failedInspectRefs.size()
+                                            + " tracking ref update(s) failed locally ("
+                                            + String.join(", ", failedInspectRefs)
+                                            + ") — job continues, but stale tips stay until the next successful write.");
+                                }
                                 return null;
                             });
                     targetReachable = true;
@@ -800,60 +832,27 @@ public class GitSyncEngine {
                                 "bulk mirror bootstrap · " + pushRefSpecs.size() + " refs");
                     }
                     if (!useBulk) {
-                    int batchIndex = 0;
-                    for (List<RefSpec> batch : batches) {
-                        throwIfStopRequested(jobId);
-                        batchIndex++;
-                        String batchDetail = "batch " + batchIndex + "/" + batches.size() + " · " + describeBatch(batch);
-                        pipeline.markCurrent(SyncPipelineState.PUSH_DEST, batchDetail);
-                        broadcastPipeline(jobId, event.getMappingId(), pipeline);
-                        logAudit(jobId, LogLevel.INFO, "Destination push batch " + batchIndex + "/" + batches.size()
-                                + " (" + batch.size() + " ref" + (batch.size() == 1 ? "" : "s") + ") → "
-                                + describeBatch(batch));
-                        PushBatchResult batchResult = pushBatchWithRetries(git, event, batch, pushMonitor, jobId);
-                        if (providerRateMeter != null) {
-                            providerRateMeter.incrementGitHttpPushBatch();
+                    int wave = 1;
+                    if (pushBatchConcurrencyService != null) {
+                        pushBatchConcurrencyService.jobBegin(jobId);
+                    }
+                    try {
+                        if (pushBatchConcurrencyService != null && gitPushBatchExecutor != null) {
+                            wave = pushBatchConcurrencyService.waveSize(jobId);
                         }
-                        int okCount = batchResult.successfulRefNames.size() + batchResult.deletedRemoteNames.size();
-                        int rejectedInBatch = batchResult.rejectedMessages.size();
-                        logAudit(jobId, LogLevel.INFO, "Destination push batch " + batchIndex + "/" + batches.size()
-                                + " complete: " + okCount + " ref(s) OK"
-                                + (rejectedInBatch > 0 ? ", " + rejectedInBatch + " rejected" : ""));
-                        result.updatedRefs.addAll(batchResult.messages);
-                        recordSuccessfulRefs(git, batchResult.successfulRefNames, newlyPushed, event.getTargetRepoUrl(),
-                                mapping, sourceSideOf(mapping, event));
-                        for (String deletedRef : batchResult.deletedRemoteNames) {
-                            deleteDestTrackingForRemoteRef(git, deletedRef);
-                            if (dedupLedgerService != null) {
-                                dedupLedgerService.recordSystemRefDelete(event.getTargetRepoUrl(), deletedRef);
-                            }
+                        if (wave > 1 && batches.size() > 1) {
+                            pushBatchesInParallel(batches, wave, git, event, wireMeter, pushMonitor, jobId,
+                                    result, newlyPushed, mapping, pipeline, stageProgress, destLabel, isFullMirror);
+                        } else {
+                            pushBatchesSequentially(batches, git, event, pushMonitor, jobId,
+                                    result, newlyPushed, mapping, pipeline, stageProgress, isFullMirror);
                         }
-                        persistCompletedPushRefs(event.getMappingId(), newlyPushed, stageProgress);
-                        if (okCount > 0 && actionsTriggerSuppressionService != null) {
-                            int cancelled;
-                            try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(event.getTargetCredentialId())) {
-                                cancelled = actionsTriggerSuppressionService.suppressAfterWrite(
-                                        event.getTargetRepoUrl(), jobId);
-                            }
-                            if (cancelled > 0) {
-                                logAudit(jobId, LogLevel.INFO, "Cancelled " + cancelled
-                                        + " mirror-triggered Actions run(s) after push batch "
-                                        + batchIndex + ".");
-                            }
-                        }
-                        if (batchResult.destinationRejected || batchResult.authFailure) {
-                            result.rejectedPushRefs = String.join("\n", batchResult.rejectedMessages);
-                            String failReason = batchResult.authFailure
-                                    ? "Destination 401/403"
-                                    : firstRejectedSummary(batchResult);
-                            pipeline.markFailed(SyncPipelineState.PUSH_DEST, failReason);
-                            persistPipeline(jobId, pipeline, result.rejectedPushRefs);
-                            throw new IllegalStateException(failReason + (isFullMirror
-                                    ? "; aborting remaining destination push batches"
-                                    : ""));
+                        pipeline.markDone(SyncPipelineState.PUSH_DEST, batches.size() + " batch(es)");
+                    } finally {
+                        if (pushBatchConcurrencyService != null) {
+                            pushBatchConcurrencyService.jobEnd(jobId);
                         }
                     }
-                    pipeline.markDone(SyncPipelineState.PUSH_DEST, batches.size() + " batch(es)");
                     }
                 }
                 if (isFullMirror && event.getMappingId() != null) {
@@ -1402,11 +1401,12 @@ public class GitSyncEngine {
      */
     private boolean fetchSourcePublicFirst(Git git, CredentialsProvider sourceCreds, Boolean cachedPublicRead,
                                           LiveGitProgressMonitor monitor, SyncEventMessage event,
-                                          boolean includePullHeads) throws Exception {
+                                          boolean includePullHeads, Long jobId,
+                                          List<String> failedFetchRefsOut) throws Exception {
         boolean knownPrivate = Boolean.FALSE.equals(cachedPublicRead);
         if (!knownPrivate) {
             try {
-                doSourceFetch(git, null, monitor, event, includePullHeads);
+                doSourceFetch(git, null, monitor, event, includePullHeads, jobId, failedFetchRefsOut);
                 return true;
             } catch (Exception e) {
                 if (sourceCreds == null || !isAuthFailure(e)) {
@@ -1418,14 +1418,15 @@ public class GitSyncEngine {
         if (sourceCreds == null) {
             throw new IllegalStateException("Source repository is not publicly readable and no credentials are configured.");
         }
-        doSourceFetch(git, sourceCreds, monitor, event, includePullHeads);
+        doSourceFetch(git, sourceCreds, monitor, event, includePullHeads, jobId, failedFetchRefsOut);
         return false;
     }
 
     private void doSourceFetch(Git git, CredentialsProvider creds, LiveGitProgressMonitor monitor,
-                               SyncEventMessage event, boolean includePullHeads) throws Exception {
+                               SyncEventMessage event, boolean includePullHeads, Long jobId,
+                               List<String> failedFetchRefsOut) throws Exception {
         RefSpec[] refSpecs = sourceFetchRefSpecs(event, includePullHeads);
-        git.fetch()
+        org.eclipse.jgit.transport.FetchResult fetchResult = git.fetch()
                 .setRemote("source")
                 .setRefSpecs(refSpecs)
                 .setCredentialsProvider(creds)
@@ -1433,6 +1434,11 @@ public class GitSyncEngine {
                 .setTimeout(httpTimeoutSeconds)
                 .setRemoveDeletedRefs(true)
                 .call();
+        List<String> failed = BareRepoHousekeeping.logFailedTrackingRefUpdates(fetchResult, "Source fetch",
+                jobId == null ? null : msg -> logAudit(jobId, LogLevel.WARN, msg));
+        if (failedFetchRefsOut != null && !failed.isEmpty()) {
+            failedFetchRefsOut.addAll(failed);
+        }
     }
 
     static RefSpec[] sourceFetchRefSpecs(SyncEventMessage event) {
@@ -2218,6 +2224,232 @@ public class GitSyncEngine {
         return 6;
     }
 
+    /**
+     * Fan-out push: the default-branch batch (index 0) still runs solo as the fat-pack barrier,
+     * then the remaining batches run {@code wave} at a time on the pod-wide push-batch pool,
+     * additionally capped by the per-destination-host connection semaphore. All shared-state
+     * mutation (resume ledger, dest-tracking deletes, pipeline, Actions suppression) stays on
+     * the calling job thread; worker threads only run the transport push. The first rejected
+     * or auth-failed batch aborts the remaining ones exactly like the sequential path.
+     */
+    private void pushBatchesInParallel(List<List<RefSpec>> batches, int wave, Git git, SyncEventMessage event,
+                                       GitWireByteMeter wireMeter, LiveGitProgressMonitor pushMonitor, Long jobId,
+                                       SyncResult result, Map<String, String> newlyPushed, RepoMapping mapping,
+                                       SyncPipelineState pipeline, JobStageProgress stageProgress,
+                                       String destLabel, boolean isFullMirror) throws Exception {
+        logAudit(jobId, LogLevel.INFO, "Destination push · parallel fan-out: batch 1/" + batches.size()
+                + " solo (default-branch barrier), then " + (batches.size() - 1)
+                + " batch(es) at wave size " + wave + ".");
+        pipeline.markCurrent(SyncPipelineState.PUSH_DEST,
+                "batch 1/" + batches.size() + " · " + describeBatch(batches.get(0)) + " (default-branch barrier)");
+        broadcastPipeline(jobId, event.getMappingId(), pipeline);
+
+        // Barrier: the default-branch fat pack goes first, exactly like the sequential path.
+        logAudit(jobId, LogLevel.INFO, "Destination push batch 1/" + batches.size()
+                + " (" + batches.get(0).size() + " ref" + (batches.get(0).size() == 1 ? "" : "s") + ") → "
+                + describeBatch(batches.get(0)));
+        PushBatchResult barrierResult = pushBatchWithRetries(git, event, batches.get(0), pushMonitor, jobId);
+        if (providerRateMeter != null) {
+            providerRateMeter.incrementGitHttpPushBatch();
+        }
+        String barrierFail = applyPushBatchResult(1, batches.size(), barrierResult, git, event, jobId,
+                result, newlyPushed, mapping, pipeline, stageProgress);
+        if (barrierFail != null) {
+            throw new IllegalStateException(barrierFail + (isFullMirror
+                    ? "; aborting remaining destination push batches"
+                    : ""));
+        }
+
+        Semaphore wavePermits = new Semaphore(wave);
+        AtomicBoolean abortRemaining = new AtomicBoolean(false);
+        Semaphore hostPermits = pushBatchConcurrencyService.hostSemaphore(event.getTargetRepoUrl());
+        List<CompletableFuture<BatchOutcome>> futures = new ArrayList<>();
+        for (int i = 1; i < batches.size(); i++) {
+            final int batchIndex = i;
+            final List<RefSpec> batch = batches.get(i);
+            futures.add(CompletableFuture.supplyAsync(() -> pushOneBatchInParallel(
+                    batchIndex, batches.size(), batch, git, event, wireMeter, jobId,
+                    wavePermits, hostPermits, abortRemaining, pipeline, destLabel),
+                    gitPushBatchExecutor));
+        }
+        collectParallelBatchOutcomes(futures, batches.size(), git, event, jobId, result, newlyPushed,
+                mapping, pipeline, stageProgress, abortRemaining, isFullMirror);
+    }
+
+    /** Worker body: wave + host permit acquisition, per-thread Git facade, shared wire-byte metering. */
+    private BatchOutcome pushOneBatchInParallel(int batchIndex, int totalBatches, List<RefSpec> batch,
+                                                Git git, SyncEventMessage event, GitWireByteMeter wireMeter,
+                                                Long jobId, Semaphore wavePermits, Semaphore hostPermits,
+                                                AtomicBoolean abortRemaining, SyncPipelineState pipeline,
+                                                String destLabel) {
+        if (abortRemaining.get()) {
+            return BatchOutcome.skipped(batchIndex);
+        }
+        try {
+            wavePermits.acquire();
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            return BatchOutcome.failed(batchIndex, ie);
+        }
+        try {
+            if (abortRemaining.get()) {
+                return BatchOutcome.skipped(batchIndex);
+            }
+            throwIfStopRequested(jobId);
+            logAudit(jobId, LogLevel.INFO, "Destination push batch " + (batchIndex + 1) + "/" + totalBatches
+                    + " (" + batch.size() + " ref" + (batch.size() == 1 ? "" : "s") + ") → "
+                    + describeBatch(batch));
+            hostPermits.acquire();
+            try {
+                pushBatchConcurrencyService.beginBatch();
+                try {
+                    LiveGitProgressMonitor batchMonitor = newPushBatchMonitor(event, destLabel, pipeline, jobId);
+                    // Per-thread Git facade over the same bare repository: each PushCommand
+                    // opens its own independent transport connection.
+                    Git batchGit = Git.wrap(git.getRepository());
+                    try (GitWireByteMeter batchMeter = GitWireByteMeter.openShared(wireMeter)) {
+                        PushBatchResult batchResult = pushBatchWithRetries(batchGit, event, batch, batchMonitor, jobId);
+                        if (providerRateMeter != null) {
+                            providerRateMeter.incrementGitHttpPushBatch();
+                        }
+                        return BatchOutcome.of(batchIndex, batchResult);
+                    }
+                } finally {
+                    pushBatchConcurrencyService.endBatch();
+                }
+            } finally {
+                hostPermits.release();
+            }
+        } catch (Exception e) {
+            return BatchOutcome.failed(batchIndex, e);
+        } finally {
+            wavePermits.release();
+        }
+    }
+
+    /** Coordinator-side fan-in: applies each finished batch in submission order; first failure aborts the rest. */
+    private void collectParallelBatchOutcomes(List<CompletableFuture<BatchOutcome>> futures, int totalBatches,
+                                              Git git, SyncEventMessage event, Long jobId, SyncResult result,
+                                              Map<String, String> newlyPushed, RepoMapping mapping,
+                                              SyncPipelineState pipeline, JobStageProgress stageProgress,
+                                              AtomicBoolean abortRemaining, boolean isFullMirror) {
+        for (CompletableFuture<BatchOutcome> future : futures) {
+            BatchOutcome outcome = future.join();
+            if (outcome.skipped()) {
+                continue;
+            }
+            if (outcome.failure() != null) {
+                abortRemaining.set(true);
+                rethrowIfStopRequested(jobId, outcome.failure());
+                throw (outcome.failure() instanceof RuntimeException rte ? rte
+                        : new RuntimeException(cleanRootCauseMessage(outcome.failure), outcome.failure()));
+            }
+            String failReason = applyPushBatchResult(outcome.index() + 1, totalBatches, outcome.result(), git,
+                    event, jobId, result, newlyPushed, mapping, pipeline, stageProgress);
+            if (failReason != null) {
+                abortRemaining.set(true);
+                throw new IllegalStateException(failReason + (isFullMirror
+                        ? "; aborting remaining destination push batches"
+                        : ""));
+            }
+        }
+    }
+
+    /** Sequential push of ref batches — the original path (fan-out disabled, or a single batch remains). */
+    private void pushBatchesSequentially(List<List<RefSpec>> batches, Git git, SyncEventMessage event,
+                                         LiveGitProgressMonitor pushMonitor, Long jobId, SyncResult result,
+                                         Map<String, String> newlyPushed, RepoMapping mapping,
+                                         SyncPipelineState pipeline, JobStageProgress stageProgress,
+                                         boolean isFullMirror) throws Exception {
+        int batchIndex = 0;
+        for (List<RefSpec> batch : batches) {
+            throwIfStopRequested(jobId);
+            batchIndex++;
+            String batchDetail = "batch " + batchIndex + "/" + batches.size() + " · " + describeBatch(batch);
+            pipeline.markCurrent(SyncPipelineState.PUSH_DEST, batchDetail);
+            broadcastPipeline(jobId, event.getMappingId(), pipeline);
+            logAudit(jobId, LogLevel.INFO, "Destination push batch " + batchIndex + "/" + batches.size()
+                    + " (" + batch.size() + " ref" + (batch.size() == 1 ? "" : "s") + ") → "
+                    + describeBatch(batch));
+            PushBatchResult batchResult = pushBatchWithRetries(git, event, batch, pushMonitor, jobId);
+            if (providerRateMeter != null) {
+                providerRateMeter.incrementGitHttpPushBatch();
+            }
+            String failReason = applyPushBatchResult(batchIndex, batches.size(), batchResult, git, event, jobId,
+                    result, newlyPushed, mapping, pipeline, stageProgress);
+            if (failReason != null) {
+                throw new IllegalStateException(failReason + (isFullMirror
+                        ? "; aborting remaining destination push batches"
+                        : ""));
+            }
+        }
+    }
+
+    /**
+     * Coordinator-side merge of one finished push batch: audit summary, resume ledger,
+     * dest-tracking deletes, dedup ledger, Actions suppression, and reject/authFailure
+     * detection. Always called on the job thread (never concurrently). Returns the failure
+     * reason when the batch was rejected (caller aborts remaining batches), else {@code null}.
+     */
+    private String applyPushBatchResult(int batchIndex, int totalBatches, PushBatchResult batchResult,
+                                        Git git, SyncEventMessage event, Long jobId, SyncResult result,
+                                        Map<String, String> newlyPushed, RepoMapping mapping,
+                                        SyncPipelineState pipeline, JobStageProgress stageProgress) {
+        int okCount = batchResult.successfulRefNames.size() + batchResult.deletedRemoteNames.size();
+        int rejectedInBatch = batchResult.rejectedMessages.size();
+        logAudit(jobId, LogLevel.INFO, "Destination push batch " + batchIndex + "/" + totalBatches
+                + " complete: " + okCount + " ref(s) OK"
+                + (rejectedInBatch > 0 ? ", " + rejectedInBatch + " rejected" : ""));
+        result.updatedRefs.addAll(batchResult.messages);
+        recordSuccessfulRefs(git, batchResult.successfulRefNames, newlyPushed, event.getTargetRepoUrl(),
+                mapping, sourceSideOf(mapping, event));
+        for (String deletedRef : batchResult.deletedRemoteNames) {
+            deleteDestTrackingForRemoteRef(git, deletedRef);
+            if (dedupLedgerService != null) {
+                dedupLedgerService.recordSystemRefDelete(event.getTargetRepoUrl(), deletedRef);
+            }
+        }
+        persistCompletedPushRefs(event.getMappingId(), newlyPushed, stageProgress);
+        if (okCount > 0 && actionsTriggerSuppressionService != null) {
+            int cancelled;
+            try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(event.getTargetCredentialId())) {
+                cancelled = actionsTriggerSuppressionService.suppressAfterWrite(
+                        event.getTargetRepoUrl(), jobId);
+            }
+            if (cancelled > 0) {
+                logAudit(jobId, LogLevel.INFO, "Cancelled " + cancelled
+                        + " mirror-triggered Actions run(s) after push batch "
+                        + batchIndex + ".");
+            }
+        }
+        if (batchResult.destinationRejected || batchResult.authFailure) {
+            result.rejectedPushRefs = String.join("\n", batchResult.rejectedMessages);
+            String failReason = batchResult.authFailure
+                    ? "Destination 401/403"
+                    : firstRejectedSummary(batchResult);
+            pipeline.markFailed(SyncPipelineState.PUSH_DEST, failReason);
+            persistPipeline(jobId, pipeline, result.rejectedPushRefs);
+            return failReason;
+        }
+        return null;
+    }
+
+    /** Fresh progress monitor per parallel push batch — the outer monitor is owned by the job thread. */
+    private LiveGitProgressMonitor newPushBatchMonitor(SyncEventMessage event, String destLabel,
+                                                       SyncPipelineState pipeline, Long jobId) {
+        LiveGitProgressMonitor monitor = new LiveGitProgressMonitor(
+                jobId, event.getMappingId(), "push", "destination", destLabel,
+                webSocketNotificationService,
+                (phase, msg) -> logAudit(jobId, LogLevel.INFO, msg),
+                pipeline::toMap,
+                this::trafficSnapshot,
+                providerRateMeter != null ? providerRateMeter::wallElapsedMs : null,
+                () -> touchRunningDuration(jobId)
+        );
+        monitor.setCancelCheck(() -> isStopRequested(jobId));
+        return monitor;
+    }
+
     private PushBatchResult pushBatchWithRetries(Git git, SyncEventMessage event, List<RefSpec> batch,
                                                  LiveGitProgressMonitor monitor, Long jobId) throws Exception {
         int attempts = Math.max(1, pushBatchRetries);
@@ -2251,6 +2483,9 @@ public class GitSyncEngine {
                 String cleanErr = cleanRootCauseMessage(e);
                 if (providerRateMeter != null && ProviderRateMeter.looksLikeGitThrottle(cleanErr)) {
                     providerRateMeter.recordGitHttpThrottle(cleanErr);
+                }
+                if (pushBatchConcurrencyService != null) {
+                    pushBatchConcurrencyService.recordThrottle(cleanErr);
                 }
                 if (isAuthFailure(e) && !refreshedAuth) {
                     refreshedAuth = true;
@@ -2804,6 +3039,21 @@ public class GitSyncEngine {
         List<String> rejectedMessages = new ArrayList<>();
         boolean destinationRejected;
         boolean authFailure;
+    }
+
+    /** Outcome of one parallel push-batch worker ({@code index} is its position in the batch list). */
+    private record BatchOutcome(int index, PushBatchResult result, Exception failure, boolean skipped) {
+        static BatchOutcome of(int index, PushBatchResult result) {
+            return new BatchOutcome(index, result, null, false);
+        }
+
+        static BatchOutcome failed(int index, Exception failure) {
+            return new BatchOutcome(index, null, failure, false);
+        }
+
+        static BatchOutcome skipped(int index) {
+            return new BatchOutcome(index, null, null, true);
+        }
     }
 
     private static final class ThrottledAuditProgress {

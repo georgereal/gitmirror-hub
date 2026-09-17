@@ -424,6 +424,13 @@ public class GitHubProviderService implements ScmProviderAdapter {
                     .errors(errors)
                     .build();
         } catch (HttpClientErrorException.Unauthorized | HttpClientErrorException.Forbidden e) {
+            // READ-only last resort: if the repo is publicly readable, fall back to anonymous public
+            // read and let the backend-authored report explain the credential failure to the user.
+            PermissionCheckReport publicFallback = tryPublicFallbackAfterCredentialFailure(req, repoFullName,
+                    e.getStatusCode().value(), "Authentication failed or token lacks required scope.");
+            if (publicFallback != null) {
+                return publicFallback;
+            }
             errors.add("Authentication failed (HTTP " + e.getStatusCode().value() + "): Invalid credentials or token lacks required scope.");
             return PermissionCheckReport.builder()
                     .valid(false)
@@ -433,6 +440,12 @@ public class GitHubProviderService implements ScmProviderAdapter {
                     .errors(errors)
                     .build();
         } catch (HttpClientErrorException.NotFound e) {
+            // App not installed on the repo / PAT lacks access — public fallback still applies for READ checks.
+            PermissionCheckReport publicFallback = tryPublicFallbackAfterCredentialFailure(req, repoFullName,
+                    404, "Repository is not visible to this credential (App not installed on it, or PAT lacks access).");
+            if (publicFallback != null) {
+                return publicFallback;
+            }
             errors.add("Repository not found (HTTP 404). Either repository does not exist or GitHub App / token is not installed on this repository.");
             return PermissionCheckReport.builder()
                     .valid(false)
@@ -452,6 +465,22 @@ public class GitHubProviderService implements ScmProviderAdapter {
                     .errors(errors)
                     .build();
         }
+    }
+
+    /**
+     * READ-only last resort when the selected credential fails (401/403/404): probe anonymous public
+     * read. Returns a backend-authored public-read report when the repository is publicly readable,
+     * else {@code null} so the original credential-failure report stands. WRITE checks never fall
+     * back — a public mirror destination cannot accept pushes.
+     */
+    private PermissionCheckReport tryPublicFallbackAfterCredentialFailure(
+            TestConnectionRequest req, String repoFullName, int credentialHttpStatus, String credentialProblem) {
+        if (PublicReadProbe.writeRequired(req)) {
+            return null;
+        }
+        JsonNode publicRepoNode = probePublicGithubRepo(repoFullName);
+        return PublicReadProbe.publicFallbackAfterCredentialFailure(
+                publicRepoNode, repoFullName, "GitHub", credentialHttpStatus, credentialProblem);
     }
 
     private JsonNode probePublicGithubRepo(String repoFullName) {
