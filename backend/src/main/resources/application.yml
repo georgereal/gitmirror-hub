@@ -108,6 +108,13 @@ git-utility:
     none:
       # In-process full+incremental sync worker threads (GIT_MESSAGING_PROVIDER=none only)
       worker-threads: ${GIT_MESSAGING_NONE_WORKER_THREADS:8}
+  bulk:
+    # Bulk migration soft request guard (submission-time probing) — NOT an execution cap:
+    # execution is paced by lane threads/consumer concurrency; extra jobs wait as QUEUED.
+    max-items: ${GIT_BULK_MAX_ITEMS:1000}
+    # Destination probes (exists / write / has-commits) process items in chunks of this size
+    probe-chunk-size: ${GIT_BULK_PROBE_CHUNK_SIZE:250}
+    probe-concurrency: ${GIT_BULK_PROBE_CONCURRENCY:5}
   queue:
     pause-consumers-on-startup: ${GIT_QUEUE_PAUSE_ON_STARTUP:true}
     orphan-job-grace-seconds: ${GIT_QUEUE_ORPHAN_GRACE_SEC:120}

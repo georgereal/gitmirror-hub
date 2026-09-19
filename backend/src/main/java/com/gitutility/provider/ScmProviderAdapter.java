@@ -53,6 +53,23 @@ public interface ScmProviderAdapter {
     boolean createRemoteRepository(CreateRepoRequest req);
 
     /**
+     * Cheap existence probe for a repository URL (used by bulk-migration preflight and by
+     * the sync engine's create-destination stage). 404 ⇒ false; 200 ⇒ true; errors ⇒ false
+     * (ambiguity is logged by the caller — job-time creation is idempotent either way).
+     */
+    default boolean repositoryExists(String repoUrl) {
+        return false;
+    }
+
+    /**
+     * Lightweight "destination has content" probe (bulk migration Option 2): whether the
+     * default branch has any commits. Unsupported providers return false (no warning).
+     */
+    default boolean hasCommits(String repoUrl) {
+        return false;
+    }
+
+    /**
      * Fetches open pull requests from the remote repository.
      */
     List<SyncDiffReport.PrSyncDetail> listOpenPullRequests(String repoFullName);

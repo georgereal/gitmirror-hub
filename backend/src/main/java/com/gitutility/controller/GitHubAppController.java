@@ -15,6 +15,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/v1/github-app")
@@ -80,5 +81,14 @@ public class GitHubAppController {
     @PostMapping("/create-repo")
     public ResponseEntity<GitHubRepoOption> createRepository(@RequestBody CreateRepoRequest request) {
         return ResponseEntity.ok(scmProviderFacade.createRemoteRepository(request));
+    }
+
+    /** Lightweight "destination has commits" probe for bulk migration Option 2 (operator decision). */
+    @GetMapping("/repo-has-commits")
+    public ResponseEntity<Map<String, Object>> repoHasCommits(
+            @RequestParam String url,
+            @RequestParam(required = false) Long credentialId) {
+        boolean hasCommits = scmProviderFacade.hasCommits(url, credentialId);
+        return ResponseEntity.ok(Map.of("url", url, "hasCommits", hasCommits));
     }
 }

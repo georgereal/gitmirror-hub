@@ -175,6 +175,18 @@ public class RepoMapping {
 
     private Instant createdAt;
 
+    /**
+     * Bulk migration (Option 1): create the destination repository at the start of the first
+     * sync job, then flip this flag off. Never set for user-selected existing destinations.
+     */
+    @Column
+    @Builder.Default
+    private Boolean destinationAutoCreate = Boolean.FALSE;
+
+    /** Bulk migration submission that created this pair (null for single-pair creation). */
+    @Column
+    private Long bulkSubmissionId;
+
     @PrePersist
     protected void onCreate() {
         if (this.createdAt == null) {

@@ -15,6 +15,7 @@ import org.eclipse.jgit.transport.CredentialsProvider;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
 import java.net.URI;
@@ -396,6 +397,54 @@ public class BitbucketProviderService implements ScmProviderAdapter {
     @Override
     public List<GitHubRepoOption> listAccessibleRepositories() {
         return searchRepositories("", 1, 50).getItems();
+    }
+
+    @Override
+    public boolean repositoryExists(String repoUrl) {
+        String fullSlug = parseRepoFullName(repoUrl);
+        if (fullSlug == null || !fullSlug.contains("/")) {
+            return false;
+        }
+        try {
+            String token = getEffectiveToken(null);
+            if (token == null || token.isBlank()) {
+                return false;
+            }
+            HttpHeaders headers = createAuthHeaders(token);
+            String url = "https://api.bitbucket.org/2.0/repositories/" + fullSlug;
+            restTemplate.exchange(URI.create(url), HttpMethod.GET, new HttpEntity<>(headers), String.class);
+            return true;
+        } catch (HttpClientErrorException.NotFound e) {
+            return false;
+        } catch (Exception e) {
+            log.debug("Bitbucket existence probe for {}: {}", fullSlug, e.getMessage());
+            return false;
+        }
+    }
+
+    @Override
+    public boolean hasCommits(String repoUrl) {
+        String fullSlug = parseRepoFullName(repoUrl);
+        if (fullSlug == null || !fullSlug.contains("/")) {
+            return false;
+        }
+        try {
+            String token = getEffectiveToken(null);
+            if (token == null || token.isBlank()) {
+                return false;
+            }
+            HttpHeaders headers = createAuthHeaders(token);
+            String url = "https://api.bitbucket.org/2.0/repositories/" + fullSlug + "/commits?pagelen=1";
+            ResponseEntity<String> resp = restTemplate.exchange(
+                    URI.create(url), HttpMethod.GET, new HttpEntity<>(headers), String.class);
+            JsonNode root = resp.getBody() != null ? objectMapper.readTree(resp.getBody()) : null;
+            return root != null && root.path("values").isArray() && root.path("values").size() > 0;
+        } catch (HttpClientErrorException.NotFound e) {
+            return false;
+        } catch (Exception e) {
+            log.debug("Bitbucket has-commits probe for {}: {}", fullSlug, e.getMessage());
+            return false;
+        }
     }
 
     @Override

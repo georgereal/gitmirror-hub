@@ -481,6 +481,8 @@ Long full mirrors and LFS transfers support cooperative control from **Queue Man
 
 To inspect the real-time health and replication fidelity of any configured repository pair:
 
+> **Note:** *Refresh Diff* (and the sync engine) hold the shared per-mapping bare-repo lock (`RepoDirLockService`), so a refresh started while a sync job is running on the same pair will visibly wait instead of racing it. If the job log ever shows `local ref update failed for '...' (LOCK_FAILURE)`, that ref's tip stayed stale — re-run the sync; do not trust the branch table for that branch until a sync succeeds.
+
 1. Click on any repository card on the **Repositories** page (`/repos`).
 2. Navigate across the 4 specialized tabs:
   - **Branches & Commits**: Real-time ahead/behind commit calculation and 1-click branch sync triggers.

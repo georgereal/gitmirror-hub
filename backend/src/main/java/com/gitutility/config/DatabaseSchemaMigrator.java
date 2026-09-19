@@ -33,6 +33,33 @@ public class DatabaseSchemaMigrator {
                 log.debug("Schema migration notice (repo_mappings.storage_tier): {}", e.getMessage());
             }
 
+            // 1a. Bulk migration: destination auto-create flag + submission linkage
+            try {
+                stmt.execute("ALTER TABLE repo_mappings ADD COLUMN IF NOT EXISTS destination_auto_create BOOLEAN DEFAULT FALSE");
+                stmt.execute("ALTER TABLE repo_mappings ADD COLUMN IF NOT EXISTS bulk_submission_id BIGINT");
+                log.info("Database migration: verified repo_mappings bulk migration columns.");
+            } catch (Exception e) {
+                log.debug("Schema migration notice (repo_mappings bulk columns): {}", e.getMessage());
+            }
+
+            // 1b. Bulk migration submission records
+            try {
+                stmt.execute("""
+                        CREATE TABLE IF NOT EXISTS bulk_submissions (
+                            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                            mode VARCHAR(30) NOT NULL,
+                            item_count INT NOT NULL,
+                            created_count INT DEFAULT 0 NOT NULL,
+                            skipped_json CLOB,
+                            cancelled_at TIMESTAMP,
+                            created_at TIMESTAMP
+                        )
+                        """);
+                log.info("Database migration: verified bulk_submissions table.");
+            } catch (Exception e) {
+                log.debug("Schema migration notice (bulk_submissions): {}", e.getMessage());
+            }
+
             // 2. Ensure scm_provider_configs columns exist
             String[] scmColumns = {
                     "ALTER TABLE scm_provider_configs ADD COLUMN IF NOT EXISTS default_pat_token VARCHAR(2000)",

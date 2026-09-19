@@ -1,6 +1,6 @@
 # Future plan: PR sync parity (toward Origin-like coverage)
 
-> **Status:** Partial — PR **shell** shipped; discussion/reviews/merge/webhooks still pending.  
+> **Status:** Partial — PR **shell** shipped; `pull_request` webhooks shipped; discussion/reviews/merge still pending.  
 > **Folder:** [`future-work/`](README.md)  
 > **Context:** Cursor Origin mirrors a richer PR collaboration surface (comments, reviews, merge, checks UI). Hub today mirrors a **PR shell** for DR/failover.
 
@@ -20,7 +20,7 @@
 | Draft flag on create | **Pending** (read for UI only) |
 | Merge completion on replica | **Pending** |
 | Reopen / `synchronize` | **Pending** |
-| GitHub `pull_request` webhooks | **Pending** — push-only at controller + Cloudflare worker |
+| GitHub `pull_request` webhooks | **Shipped** (`WebhookIngestionService.processInboundPayload` → `handlePrWebhookEvent`; Worker dispatches `pull_request`) |
 
 Bulk open-PR sync is **A → B**; realtime PR path is limited by ingress.
 
@@ -37,7 +37,7 @@ Bulk open-PR sync is **A → B**; realtime PR path is limited by ingress.
 | Tier | Scope | Status | Effort | Risk |
 | :--- | :--- | :--- | :--- | :--- |
 | **Shell (base)** | Open/edit/close, fork heads, `refs/pull/*/head` cache | **Shipped** | — | — |
-| **A – Shell polish** | Draft on create; reopen; head `synchronize`; re-enable GitHub PR webhooks safely | **Pending** | Days–~1 week | Low–medium |
+| **A – Shell polish** | Draft on create; reopen; head `synchronize`; re-enable GitHub PR webhooks safely | **Partial** (PR webhooks shipped; draft-on-create / reopen / `synchronize` pending) | Days–~1 week | Low–medium |
 | **B – Discussion** | Issue + inline review comments both ways; comment id mapping; echo dedup | **Pending** | 1–2+ weeks | Medium |
 | **C – Reviews** | Request reviewers; approve / changes requested / dismiss | **Pending** | +1–2 weeks on B | High |
 | **D – Merge parity** | Merge (not only close); conflict/check awareness; authority policy | **Pending** | Large | High |

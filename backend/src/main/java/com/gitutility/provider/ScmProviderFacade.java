@@ -252,6 +252,40 @@ public class ScmProviderFacade {
         return createRemoteRepositoryUnlocked(req);
     }
 
+    /** Cheap existence probe routed to the URL's adapter (bulk migration preflight + engine create stage). */
+    public boolean repositoryExists(String repoUrl, Long credentialId) {
+        if (repoUrl == null || repoUrl.isBlank()) {
+            return false;
+        }
+        ScmProviderAdapter adapter = getAdapterForUrl(repoUrl);
+        if (adapter == null) {
+            return false;
+        }
+        if (credentialId != null) {
+            try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(credentialId)) {
+                return adapter.repositoryExists(repoUrl);
+            }
+        }
+        return adapter.repositoryExists(repoUrl);
+    }
+
+    /** Lightweight "has commits" probe routed to the URL's adapter (bulk migration Option 2). */
+    public boolean hasCommits(String repoUrl, Long credentialId) {
+        if (repoUrl == null || repoUrl.isBlank()) {
+            return false;
+        }
+        ScmProviderAdapter adapter = getAdapterForUrl(repoUrl);
+        if (adapter == null) {
+            return false;
+        }
+        if (credentialId != null) {
+            try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(credentialId)) {
+                return adapter.hasCommits(repoUrl);
+            }
+        }
+        return adapter.hasCommits(repoUrl);
+    }
+
     private GitHubRepoOption createRemoteRepositoryUnlocked(CreateRepoRequest req) {
         String targetUrl = req.getRepoUrl();
         ScmProviderAdapter adapter = getAdapterForUrl(targetUrl);

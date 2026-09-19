@@ -5,8 +5,10 @@ import {
 } from 'lucide-react';
 import { RepoMapping, SyncDirection, StorageTier, PermissionCheckReport, GitHubRepoOption, TrunkConflictPolicy, ScmCredential, ScmInstallationOption } from '../types';
 import { testRepoConnection, createRemoteRepository, listScmCredentials, listScmInstallations } from '../services/api';
+import type { BulkMirrorResponse } from '../services/api';
 import { RepoPickerModal } from './RepoPickerModal';
 import { CredentialPickModal } from './CredentialPickModal';
+import { BulkMigrationTab } from './BulkMigrationTab';
 import { InfoTooltip } from './InfoTooltip';
 import { findRepoCollision } from '../utils/repoUrl';
 import { shouldWarnBidirectionalBackup } from '../utils/mirrorTopology';
@@ -54,6 +56,8 @@ interface PairConfigModalProps {
   onClose: () => void;
   onSave: (data: Partial<RepoMapping>) => Promise<void>;
   existingMappings?: RepoMapping[];
+  /** Called after a successful bulk submission so the parent can refresh its list. */
+  onBulkSubmitted?: (response: { submissionId: number; createdQueuedCount: number }) => Promise<void> | void;
 }
 
 export const PairConfigModal: React.FC<PairConfigModalProps> = ({
@@ -62,9 +66,13 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
   onClose,
   onSave,
   existingMappings = [],
+  onBulkSubmitted,
 }) => {
   const { flags } = useFeatureFlags();
   const publicReposEnabled = flags.publicReposEnabled;
+  const isEditMode = Boolean(mapping && mapping.id);
+  const [activeTab, setActiveTab] = useState<'SINGLE' | 'BULK'>('SINGLE');
+  const [bulkResult, setBulkResult] = useState<BulkMirrorResponse | null>(null);
   const [repoAUrl, setRepoAUrl] = useState('');
   const [repoBUrl, setRepoBUrl] = useState('');
   const [branchPattern, setBranchPattern] = useState('*');
@@ -110,6 +118,7 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
 
   useEffect(() => {
     if (!isOpen) return;
+    setActiveTab('SINGLE');
     void listScmCredentials()
       .then((rows) => setCredentialCatalog(rows.filter((r) => r.enabled)))
       .catch(() => setCredentialCatalog([]));
@@ -323,6 +332,35 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
   const hasCollision = Boolean(collisionA || collisionB);
 
   if (!isOpen) return null;
+
+  // Bulk migration tab (add mode only): a self-contained submission flow inside the same modal.
+  if (activeTab === 'BULK' && !isEditMode) {
+    return (
+      <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="bg-white border border-zinc-200 rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col my-auto max-h-[90vh]">
+          <div className="px-6 py-4 border-b border-zinc-100 flex items-center justify-between shrink-0">
+            <div>
+              <h3 className="text-sm font-semibold text-zinc-900">Add New Mirror Repository</h3>
+              <p className="text-xs text-zinc-500">Mirror many repositories in one submission</p>
+            </div>
+            <button onClick={onClose} className="p-1.5 text-zinc-400 hover:text-zinc-700 rounded-lg hover:bg-zinc-100 transition-colors">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <BulkMigrationTab
+            existingMappings={existingMappings}
+            githubCredentials={githubCredentials}
+            publicReposEnabled={publicReposEnabled}
+            onClose={onClose}
+            onSubmitted={async (response) => {
+              setBulkResult(response);
+              await onBulkSubmitted?.(response);
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
 
   const deriveRepoName = (url: string) => deriveRepoNameFromUrl(url) || `repo-${Date.now()}`;
 
@@ -743,6 +781,26 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
               <X className="w-4 h-4" />
             </button>
           </div>
+
+          {/* Mode tabs — bulk migration only in add mode */}
+          {!isEditMode && (
+            <div className="px-6 pt-0 pb-3 border-b border-zinc-100 flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setActiveTab('SINGLE')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${activeTab === 'SINGLE' ? 'bg-zinc-900 text-white' : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200'}`}
+              >
+                Single pair
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('BULK')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${activeTab === 'BULK' ? 'bg-zinc-900 text-white' : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200'}`}
+              >
+                Bulk migration
+              </button>
+            </div>
+          )}
 
           {/* Form Body */}
           <form onSubmit={handleSubmit} className="p-6 space-y-4 text-xs overflow-y-auto flex-1">

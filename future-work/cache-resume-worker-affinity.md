@@ -1,6 +1,6 @@
 # Future plan: Resume, cache lifecycle & worker affinity
 
-> **Status:** Partial — resume ledgers and in-process pair lock shipped; distributed lease, fetch seal, LRU in-flight skip, cold snapshots, and shard affinity are still pending.  
+> **Status:** Partial — resume ledgers, dest-SHA-trusted resume, DB `pair_leases` lease, and the in-JVM pair lock shipped; fetch seal, LRU in-flight skip, cold snapshots, and shard affinity are still pending.  
 > **Folder:** [`future-work/`](README.md)  
 > **Inspired by:** Continuity (Cursor Origin) — object-store WAL as truth, local NVMe as rebuildable Git cache — adapted for a **mirror relay** (truth = GitHub/GHES, not Hub).  
 > **Non-goal:** Continuity-style git hosting or running JGit against R2/S3 as the live `objects/` store.
@@ -36,7 +36,7 @@ At scale (many pairs, large monorepos, multi-worker):
 - Skip source fetch when packs already on disk
 - Push batching + per-batch ledger
 - Startup: pause consumers; operator dispatch
-- In-process `repoLocks` per `mappingId` in `QueueConsumerService` (same JVM only)
+- In-process per-mapping bare-repo lock in `RepoDirLockService` (same JVM only)
 
 ```mermaid
 flowchart TD
@@ -62,13 +62,13 @@ flowchart TD
 
 **Effort:** small–medium · **Deps:** none
 
-1. **Ledger ↔ disk consistency** — **pending**
-   - On resume: if bare repo missing/corrupt → clear `completed_push_refs` (+ related fetch markers); do not trust push ledger alone.
-   - Optionally verify dest already has SHA before skipping a ref.
+1. **Ledger ↔ disk consistency** — **partial**
+   - On resume: if bare repo missing/corrupt → clear `completed_push_refs` (+ related fetch markers); do not trust push ledger alone. — **pending**
+   - Optionally verify dest already has SHA before skipping a ref. — **Shipped** (resume trusts destination SHAs for heads; a poisoned ledger cannot hide a failed `main`).
 
-2. **In-flight pair lock** — **partial**
-   - **Shipped:** in-process `ReentrantLock` per mapping.
-   - **Pending:** DB/Redis lease per `mappingId` for multi-worker.
+2. **In-flight pair lock** — **Shipped**
+   - **Shipped:** in-process `ReentrantLock` per mapping (`RepoDirLockService`).
+   - **Shipped:** DB lease per `mappingId` for multi-worker (`PairLeaseService` + `pair_leases`; busy lease republishes the job).
 
 3. **Evict safety** — **pending**
    - LRU must never delete `pair-N.git` while job for N is `IN_PROGRESS` / `PAUSED` / `INTERRUPTED` with active resume. Current hourly LRU does not skip in-flight jobs.

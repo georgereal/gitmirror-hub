@@ -1,5 +1,7 @@
 package com.gitutility.controller;
 
+import com.gitutility.model.dto.BulkMirrorRequest;
+import com.gitutility.model.dto.BulkMirrorResponse;
 import com.gitutility.model.dto.DiffInspectOptions;
 import com.gitutility.model.dto.RepoMappingResponse;
 import com.gitutility.model.dto.SyncDiffReport;
@@ -24,6 +26,7 @@ import java.util.Map;
 public class RepoMappingController {
 
     private final RepoMappingService mappingService;
+    private final BulkMirrorService bulkMirrorService;
     private final GitComparisonService gitComparisonService;
     private final PullRequestSyncService pullRequestSyncService;
     private final GitLfsSyncService gitLfsSyncService;
@@ -52,6 +55,12 @@ public class RepoMappingController {
     public ResponseEntity<RepoMappingResponse> createMapping(@RequestBody RepoMapping mapping) {
         RepoMapping created = mappingService.createMapping(mapping);
         return ResponseEntity.status(HttpStatus.CREATED).body(RepoMappingResponse.fromEntity(created));
+    }
+
+    /** Bulk migration submission (Bulk migration tab): one pair + bootstrap job per accepted row. */
+    @PostMapping("/bulk")
+    public ResponseEntity<BulkMirrorResponse> createBulkMappings(@RequestBody BulkMirrorRequest request) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(bulkMirrorService.submit(request));
     }
 
     @PutMapping("/{id}")

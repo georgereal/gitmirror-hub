@@ -4,6 +4,7 @@ import { Play, Pause, RefreshCw, Trash2, AlertTriangle, Activity, RotateCcw } fr
 import { QueueStatus } from '../types';
 import { probeAndResetCircuitBreaker } from '../services/api';
 import { ConsumerRuntimePanel } from './ConsumerRuntimePanel';
+import { BulkSubmissionsPanel } from './BulkSubmissionsPanel';
 
 interface QueueControlPanelProps {
   queueStatus: QueueStatus | null;
@@ -159,6 +160,9 @@ export const QueueControlPanel: React.FC<QueueControlPanelProps> = ({
           </p>
         </div>
       </div>
+
+      {/* Bulk migration submissions: per-row outcomes (incl. skipped rows) + Cancel all */}
+      <BulkSubmissionsPanel />
 
       {/* Control Actions Box */}
       <div className="rounded-2xl border border-zinc-200/90 bg-white p-6 shadow-sm space-y-4">

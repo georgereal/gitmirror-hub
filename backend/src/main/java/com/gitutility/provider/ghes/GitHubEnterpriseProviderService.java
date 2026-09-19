@@ -397,6 +397,51 @@ public class GitHubEnterpriseProviderService implements ScmProviderAdapter {
     }
 
     @Override
+    public boolean repositoryExists(String repoUrl) {
+        String host = getNormalizedHostUrl();
+        String repoFullName = parseRepoFullName(repoUrl);
+        if (host == null || host.isBlank() || repoFullName == null || !repoFullName.contains("/")) {
+            return false;
+        }
+        try {
+            HttpHeaders headers = createHeaders(getEffectiveGhesToken(null));
+            restTemplate.exchange(
+                    URI.create(host + "/api/v3/repos/" + repoFullName),
+                    HttpMethod.GET, new HttpEntity<>(headers), String.class);
+            return true;
+        } catch (HttpClientErrorException.NotFound e) {
+            return false;
+        } catch (Exception e) {
+            log.debug("GHES existence probe for {}: {}", repoFullName, e.getMessage());
+            return false;
+        }
+    }
+
+    @Override
+    public boolean hasCommits(String repoUrl) {
+        String host = getNormalizedHostUrl();
+        String repoFullName = parseRepoFullName(repoUrl);
+        if (host == null || host.isBlank() || repoFullName == null || !repoFullName.contains("/")) {
+            return false;
+        }
+        try {
+            HttpHeaders headers = createHeaders(getEffectiveGhesToken(null));
+            restTemplate.exchange(
+                    URI.create(host + "/api/v3/repos/" + repoFullName + "/commits?per_page=1"),
+                    HttpMethod.GET, new HttpEntity<>(headers), String.class);
+            return true;
+        } catch (HttpClientErrorException.NotFound e) {
+            return false;
+        } catch (HttpClientErrorException.Conflict e) {
+            // GHES returns 409 Conflict for an empty repository (no commits yet)
+            return false;
+        } catch (Exception e) {
+            log.debug("GHES has-commits probe for {}: {}", repoFullName, e.getMessage());
+            return false;
+        }
+    }
+
+    @Override
     public boolean createRemoteRepository(CreateRepoRequest req) {
         String host = getNormalizedHostUrl();
         String token = getEffectiveGhesToken(null);

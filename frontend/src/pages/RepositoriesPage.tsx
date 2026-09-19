@@ -87,6 +87,9 @@ export const RepositoriesPage: React.FC = () => {
         }}
         onSave={handleSavePair}
         existingMappings={mappings}
+        onBulkSubmitted={async () => {
+          await loadData();
+        }}
       />
     </div>
   );

@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Search, X, Globe, GitFork, Layers, Lock,
-  Loader2, ArrowRight, Filter, Server
+  Loader2, ArrowRight, Filter, Server, Check
 } from 'lucide-react';
 import { GitHubRepoOption, RepoSearchResult, ScmCredential } from '../types';
 import { searchRemoteRepositories, listScmCredentials, searchCredentialRepositories } from '../services/api';
@@ -14,7 +14,25 @@ interface RepoPickerModalProps {
   title?: string;
   defaultProvider?: string;
   access?: 'PULL' | 'PUSH';
+  /** Multi-select mode (bulk migration): checkboxes, selection survives paging/search. */
+  multiSelect?: boolean;
+  initialSelection?: GitHubRepoOption[];
+  onConfirmMulti?: (repos: GitHubRepoOption[]) => void;
+  /** Normalized clone URLs already part of an active pair — rows get an "already mirrored" badge. */
+  conflictKeys?: Set<string>;
 }
+
+/** Canonical repo URL key — mirrors backend RepoMappingService.normalizeRepoKey. */
+const repoKey = (url?: string | null): string => {
+  if (!url) return '';
+  let s = url.trim().toLowerCase();
+  s = s.replace(/\/+$/, '');
+  s = s.replace(/\.git$/, '');
+  s = s.replace(/^(https?|ssh|git):\/\//, '');
+  s = s.replace(/^git@([^:]+):/, '$1/');
+  s = s.replace(/^[^@/]+@/, '');
+  return s;
+};
 
 const ALL_PROVIDERS = ['GITHUB', 'GHES', 'GITLAB', 'BITBUCKET', 'ORIGIN'] as const;
 const PAGE_SIZE_OPTIONS = [15, 30, 50] as const;
@@ -26,6 +44,10 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
   title = 'Select repository',
   defaultProvider = 'GITHUB',
   access = 'PULL',
+  multiSelect = false,
+  initialSelection = [],
+  onConfirmMulti,
+  conflictKeys,
 }) => {
   const { flags } = useFeatureFlags();
   const PROVIDERS = ALL_PROVIDERS.filter((p) => isProviderUiEnabled(flags, p));
@@ -43,6 +65,10 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
   /** False until user searches or clicks List accessible — avoids loading all repos on open. */
   const [hasLoaded, setHasLoaded] = useState(false);
   const debounceTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Multi-select: persistent selection map keyed by normalized clone URL — survives paging/search. */
+  const [selection, setSelection] = useState<Map<string, GitHubRepoOption>>(new Map());
+
+  const selectedRepos = useMemo(() => Array.from(selection.values()), [selection]);
 
   useEffect(() => {
     if (!PROVIDERS.includes(provider as typeof ALL_PROVIDERS[number])) {
@@ -60,6 +86,16 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
     setHasMore(false);
     setError(null);
     setHasLoaded(false);
+    if (multiSelect) {
+      // Seed persistent selection from the parent (cross-modal continuity), don't clear it.
+      const seeded = new Map<string, GitHubRepoOption>();
+      for (const repo of initialSelection) {
+        seeded.set(repoKey(repo.cloneUrl), repo);
+      }
+      setSelection(seeded);
+    } else {
+      setSelection(new Map());
+    }
     if (debounceTimeout.current) clearTimeout(debounceTimeout.current);
     if (needsCredential) {
       const p = provider === 'GHES' ? 'GITHUB_ENTERPRISE' : 'GITHUB';
@@ -194,6 +230,37 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
     }
   };
 
+  const toggleRepo = (repo: GitHubRepoOption) => {
+    const key = repoKey(repo.cloneUrl);
+    setSelection((prev) => {
+      const next = new Map(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.set(key, { ...repo, credentialId: repo.credentialId || (credentialId === '' ? undefined : Number(credentialId)) });
+      }
+      return next;
+    });
+  };
+
+  const selectAllOnPage = () => {
+    setSelection((prev) => {
+      const next = new Map(prev);
+      for (const repo of repos) {
+        const key = repoKey(repo.cloneUrl);
+        if (!next.has(key)) {
+          next.set(key, { ...repo, credentialId: repo.credentialId || (credentialId === '' ? undefined : Number(credentialId)) });
+        }
+      }
+      return next;
+    });
+  };
+
+  const confirmMulti = () => {
+    onConfirmMulti?.(Array.from(selection.values()));
+    onClose();
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -302,28 +369,69 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
             </p>
           ) : (
             <>
-              {repos.map((repo) => (
+              {multiSelect && repos.length > 0 && (
+                <div className="flex items-center justify-between px-1 pb-1">
+                  <button
+                    type="button"
+                    onClick={selectAllOnPage}
+                    className="text-[11px] font-medium text-zinc-600 hover:text-zinc-900"
+                  >
+                    Select all on this page ({repos.length})
+                  </button>
+                  <span className="text-[11px] text-zinc-400">Selection persists across pages & searches</span>
+                </div>
+              )}
+              {repos.map((repo) => {
+                const key = repoKey(repo.cloneUrl);
+                const isSelected = multiSelect && selection.has(key);
+                const isConflict = conflictKeys?.has(key);
+                return (
                 <div
                   key={repo.id || repo.cloneUrl}
                   onClick={() => {
+                    if (multiSelect) {
+                      toggleRepo(repo);
+                      return;
+                    }
                     onSelectRepo({ ...repo, credentialId: repo.credentialId || (credentialId === '' ? undefined : Number(credentialId)) });
                     onClose();
                   }}
-                  className="p-3 bg-white hover:bg-zinc-50 border border-zinc-200 rounded-xl cursor-pointer flex items-center justify-between"
+                  className={`p-3 border rounded-xl cursor-pointer flex items-center justify-between ${
+                    isSelected ? 'bg-zinc-900/5 border-zinc-900/30' : 'bg-white hover:bg-zinc-50 border-zinc-200'
+                  }`}
                 >
                   <div className="flex items-start space-x-3 min-w-0">
+                    {multiSelect && (
+                      <span
+                        className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
+                          isSelected ? 'bg-zinc-900 border-zinc-900' : 'bg-white border-zinc-300'
+                        }`}
+                      >
+                        {isSelected && <Check className="w-3 h-3 text-white" />}
+                      </span>
+                    )}
                     <div className="p-2 bg-zinc-50 rounded-lg border">{renderProviderIcon(repo.provider)}</div>
                     <div className="min-w-0">
-                      <div className="font-semibold text-zinc-900 text-xs truncate">{repo.fullName}</div>
+                      <div className="font-semibold text-zinc-900 text-xs truncate flex items-center gap-1.5">
+                        {repo.fullName}
+                        {isConflict && (
+                          <span className="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 text-[9px] font-semibold uppercase tracking-wide">
+                            already mirrored
+                          </span>
+                        )}
+                      </div>
                       <p className="text-[11px] font-mono text-zinc-400 truncate">{repo.cloneUrl}</p>
                     </div>
                   </div>
-                  <span className="text-[11px] flex items-center space-x-1 text-zinc-600">
-                    <span>Select</span>
-                    <ArrowRight className="w-3 h-3" />
-                  </span>
+                  {!multiSelect && (
+                    <span className="text-[11px] flex items-center space-x-1 text-zinc-600">
+                      <span>Select</span>
+                      <ArrowRight className="w-3 h-3" />
+                    </span>
+                  )}
                 </div>
-              ))}
+                );
+              })}
               {hasMore && (
                 <button
                   type="button"
@@ -346,6 +454,32 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
             </>
           )}
         </div>
+
+        {multiSelect && (
+          <div className="px-4 py-3 border-t border-zinc-200 bg-white flex items-center justify-between shrink-0">
+            <div className="text-xs text-zinc-600">
+              <span className="font-semibold text-zinc-900">{selectedRepos.length}</span> selected
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setSelection(new Map())}
+                disabled={selectedRepos.length === 0}
+                className="px-3 py-1.5 rounded-lg border border-zinc-200 text-zinc-600 text-xs hover:bg-zinc-50 disabled:opacity-40"
+              >
+                Clear
+              </button>
+              <button
+                type="button"
+                onClick={confirmMulti}
+                disabled={selectedRepos.length === 0}
+                className="px-3 py-1.5 rounded-lg bg-zinc-900 text-white text-xs font-medium hover:bg-zinc-800 disabled:opacity-40 flex items-center gap-1.5"
+              >
+                <Check className="w-3.5 h-3.5" /> Confirm selection
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

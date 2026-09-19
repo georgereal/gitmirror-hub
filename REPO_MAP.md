@@ -175,7 +175,7 @@ gitUtility/
 │       │   │       ├── GitHubAuthService.java   # GitHub App/PAT authentication & token validation
 │       │   │       ├── GitComparisonService.java# Branch ahead/behind calculation & diff inspection (GraphQL snapshot fast path)
 │       │   │       ├── GitLfsSyncService.java   # Parallel LFS pointer scan & batched blob streaming with checkpoint resume
-│       │   │       ├── GitSyncEngine.java       # JGit public-first fetch, dest WRITE preflight, resumable batched push, full-mirror FF/isolate, conflict PR open
+│       │   │       ├── GitSyncEngine.java       # JGit public-first fetch (+ per-ref fetch verification), dest WRITE preflight, resumable batched push, full-mirror FF/isolate, conflict PR open
 │       │   │       ├── HubMetrics.java          # Low-cardinality Micrometer gauges/timers for Internals UI
 │       │   │       ├── GitWireByteMeter.java    # JGit smart-HTTP byte counter for transfer metrics
 │       │   │       ├── JobExecutionStateService.java # Per-job pipeline cursor & stage progress for pause/resume
@@ -195,6 +195,7 @@ gitUtility/
 │       │   │       ├── InboundWebhookConsumerService.java # Consumes edge messages from git.sync.inbound.queue
 │       │   │       ├── PullRequestSyncService.java# Pull Request, review comment, and issue comment sync
 │       │   │       ├── QueueConsumerService.java# Full + incremental @RabbitListener workers; skip-ACK cancelled jobs
+│       │   │       ├── RepoDirLockService.java  # Shared per-mapping bare-repo mutex (sync jobs + diff refresh)
 │       │   │       ├── PairLeaseService.java    # DB lease per mappingId for multi-pod safety
 │       │   │       ├── ConsumerRuntimeRegistry.java # In-process unacked slots (job, thread, lane)
 │       │   │       ├── QueueObservabilityService.java # Ready vs Unacked + listener thread snapshot
@@ -299,6 +300,7 @@ gitUtility/
 | **Backend** | `RefInterestPolicy` | Agentic churn gate: ephemeral prefixes, `branchPattern`, non-trunk coalesce window. |
 | **Backend** | `InboundWebhookConsumerService` | `@RabbitListener` consuming from `git.sync.inbound.queue` pushed by Cloudflare Worker or external gateways. |
 | **Backend** | `DatabaseSchemaMigrator` | Automatically evolves persistent H2 database schemas on startup (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`) without manual database wipes. |
+| **Backend** | `RepoDirLockService` | Shared per-mapping `ReentrantLock` registry guarding the bare repo directory: sync jobs (`QueueConsumerService`) and `GitComparisonService` refresh-mode diffs serialize on the same lock so two JGit operations never race loose-ref writes (`LOCK_FAILURE`). |
 | **Backend** | `GitComparisonService` | Live JGit & SCM introspection calculating branch ahead/behind diffs, tag notes, LFS pointer trees, release assets, and CI/CD check runs. |
 | **Backend** | `GitSyncEngine` | Executes JGit bare repository operations with destination WRITE preflight, public-first source fetch, skip re-fetch when packs exist, destination credential refresh per push batch, resumable ref-batched push (`completed_push_refs` only for OK/UP_TO_DATE), abort remaining full-mirror batches on first `REJECTED_*`, dual-write audit, pack/LFS volume metrics, and conflict-isolated push (full-mirror and incremental). |
 | **Backend** | `SyncConflictService` | Persists split-brain / tag / PR-metadata conflicts and opens destination PRs from `sync-conflict/*` isolation branches. |

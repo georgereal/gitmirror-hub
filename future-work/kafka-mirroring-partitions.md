@@ -21,7 +21,7 @@ It is **not** a plan to replace RabbitMQ in this branch. If Kafka is ever adopte
 | Inbound topic | `git.sync.inbound` with **P = 64** |
 | Co-location of same pair | **Co-partition** full + incremental; custom **co-partitioning assignor** so partition `k` of both topics stays on the same member |
 | Per-pod concurrency | One Kafka listener thread **per assigned partition**; Git still capped by `GIT_THROTTLE_MAX_CONCURRENT_PUSHES` |
-| Pair exclusivity | Keep **`pair_leases`** + in-JVM `repoLocks` (mandatory) |
+| Pair exclusivity | Keep **`pair_leases`** + in-JVM `RepoDirLockService` lock (mandatory) |
 | Offset commit | **After** Git success, skip/cancel, **or** a Git-subsumed skip — then lease release if held |
 | Lease busy / stale Git work | **Never pause the partition.** Commit and either **skip** (Git subsumed) or **re-produce same key** so other pairs on this shard keep draining |
 | Failures | Bounded in-place retries → topic-specific **DLT**; redrive with **same key** |
@@ -41,7 +41,7 @@ GitMirror Hub is a **mirror relay**. Source of truth remains GitHub / GHES / oth
 2. Runs [`GitSyncEngine.executeSync`](../backend/src/main/java/com/gitutility/service/GitSyncEngine.java) against a local/NAS bare repo `pair-{mappingId}.git`.
 3. Optionally runs LFS and, on **full-mirror** jobs only, PR/release metadata ([`SyncLaneRouter.includePairMetadata`](../backend/src/main/java/com/gitutility/service/SyncLaneRouter.java)).
 
-**Correctness:** at most one Git writer per `mappingId` (object DB, dest remotes, push ledgers). Today: `repoLocks` + [`PairLeaseService`](../backend/src/main/java/com/gitutility/service/PairLeaseService.java).
+**Correctness:** at most one Git writer per `mappingId` (object DB, dest remotes, push ledgers). Today: [`RepoDirLockService`](../backend/src/main/java/com/gitutility/service/RepoDirLockService.java) + [`PairLeaseService`](../backend/src/main/java/com/gitutility/service/PairLeaseService.java).
 
 **Parallelism:** many pairs at once; full on pair A may overlap incremental on pair B.
 
@@ -136,7 +136,7 @@ flowchart TB
 1. Persist `SyncJob`; produce with key `String.valueOf(mappingId)`.
 2. Owner of partition `k = hash(mappingId) % 32` polls the record.
 3. Apply **§5.1** (subsumption / stale / lease). A full is never skipped because incrementals ran.
-4. If running Git: acquire `pair_leases`; take `repoLocks`; `GitSyncEngine.executeSync`.
+4. If running Git: acquire `pair_leases`; take `RepoDirLockService.lockFor(mappingId)`; `GitSyncEngine.executeSync`.
 5. Success, skip, cancel, or busy re-produce: **commit offset** (lease held only during Git).
 6. Retryable SCM failure: do not commit; retry in place; after max attempts → DLT with same key, then commit source offset.
 

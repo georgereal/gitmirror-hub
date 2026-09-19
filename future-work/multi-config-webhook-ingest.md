@@ -45,7 +45,7 @@ flowchart LR
 - **One Worker** — path multiplex only (`/webhook/github`, `/webhook/ghes`, `/webhook/gitlab`, `/webhook/bitbucket`). Extra Workers only for blast-radius isolation (separate Cloudflare account / region), not per org.
 - **One inbound queue** — `git.sync.inbound.queue` (routing key `git.webhook.inbound`). Identity lives on the envelope, not in routing keys.
 - **RabbitMQ, not Kafka** — replacing or duplicating the broker does not solve HMAC routing or pair matching. Kafka would be a second system with the same “put identity on the record” problem.
-- **Existing execution split** — webhook work already goes to `git.sync.incremental.queue`; full mirrors to `git.sync.queue`. Same pair still serializes on `repoLocks`. Throughput of **mirrors** is Hub pods + later shard affinity ([`cache-resume-worker-affinity.md`](cache-resume-worker-affinity.md)), not more ingest topics.
+- **Existing execution split** — webhook work already goes to `git.sync.incremental.queue`; full mirrors to `git.sync.queue`. Same pair still serializes on the shared bare-repo lock (`RepoDirLockService`). Throughput of **mirrors** is Hub pods + later shard affinity ([`cache-resume-worker-affinity.md`](cache-resume-worker-affinity.md)), not more ingest topics.
 
 ## Envelope identity (when ingest work is scheduled)
 

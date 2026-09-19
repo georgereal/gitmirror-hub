@@ -1,6 +1,6 @@
 # Future Plan: In-Job Fan-Out / Fan-In Multi-Threaded Git Mirroring
 
-> **Status:** Partial — LFS transfer and PR-create thread pools shipped; Git ref-push batches and scatter-gather ACK are still sequential.  
+> **Status:** Partial — parallel Git push waves (`PushBatchConcurrencyService` + `gitPushBatchExecutor`) shipped alongside LFS/PR-create pools; scatter-gather fan-in ACK across git+LFS+PR+release and high-load integration tests still pending.  
 > **Target Milestone**: Post-V1 Stability Testing  
 > **Risk Level**: High (Requires careful testing of JGit transport concurrency and provider rate limits)
 
@@ -66,7 +66,7 @@ flowchart TD
 ## 3. Detailed Execution Phases
 
 ### Phase 1: Preparation & Trunk Branch Barrier
-* **Per-Repository Lock**: A per-pair lock (`repoLocks`) remains mandatory so concurrent events for the *same* repository do not corrupt local JGit ref storage or trigger `LockFailedException`.
+* **Per-Repository Lock**: A per-pair lock (`RepoDirLockService.lockFor(mappingId)`) remains mandatory so concurrent events for the *same* repository do not corrupt local JGit ref storage or trigger `LockFailedException`.
 * **Source Fetch**: JGit fetches all refs with multi-core object decompression enabled (`PackConfig.setThreads(Runtime.getRuntime().availableProcessors())`).
 * **Trunk Branch Barrier (`main` / `master`)**:
   * The default branch is pushed **first and synchronously** to target.
@@ -112,7 +112,7 @@ Once the trunk branch succeeds on the target remote, remaining work uses bounded
 | Task ID | Status | Description | Target Files |
 | :--- | :--- | :--- | :--- |
 | `ARCH-FANOUT-1` | **Shipped** (as `AsyncConfig` pools, not a generic scatter executor) | Bounded executors for LFS + PR create | `AsyncConfig.java`, `application.yml` |
-| `ARCH-FANOUT-2` | **Pending** | Parallel Git push batches after trunk barrier | `GitSyncEngine.java` |
+| `ARCH-FANOUT-2` | **Shipped** (`PushBatchConcurrencyService` wave executor: wave sizing, per-host semaphores, throttle cooldown collapse, resource-pressure collapse; `pushBatchesInParallel` in `GitSyncEngine`) | Parallel Git push batches after trunk barrier | `GitSyncEngine.java`, `PushBatchConcurrencyService.java` |
 | `ARCH-FANOUT-3` | **Shipped** | Parallel Git LFS blob uploads | `GitLfsSyncService.java` |
 | `ARCH-FANOUT-4` | **Pending** | Scatter-gather coordination / ACK after all siblings | `QueueConsumerService.java` |
-| `ARCH-FANOUT-5` | **Pending** | High-load concurrency and rate-limit tests | `GitSyncEngineResumeTest.java`, integration suite |
+| `ARCH-FANOUT-5` | **Partial** (unit tests: `PushBatchConcurrencyServiceTest` covers wave caps, fair share, host semaphores, throttle/resource collapse; high-load + rate-limit integration suite still pending) | High-load concurrency and rate-limit tests | `PushBatchConcurrencyServiceTest.java`, integration suite |

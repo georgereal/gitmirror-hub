@@ -15,6 +15,7 @@ import org.eclipse.jgit.transport.CredentialsProvider;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
 import java.net.URI;
@@ -253,6 +254,49 @@ public class GitLabProviderService implements ScmProviderAdapter {
     @Override
     public List<GitHubRepoOption> listAccessibleRepositories() {
         return searchRepositories("", 1, 50).getItems();
+    }
+
+    @Override
+    public boolean repositoryExists(String repoUrl) {
+        String host = getNormalizedHostUrl();
+        String repoFullName = parseRepoFullName(repoUrl);
+        if (host == null || repoFullName == null || repoFullName.isBlank()) {
+            return false;
+        }
+        try {
+            HttpHeaders headers = createHeaders(getEffectiveToken(null));
+            String encodedPath = URLEncoder.encode(repoFullName, StandardCharsets.UTF_8);
+            String projectUrl = host + "/api/v4/projects/" + encodedPath;
+            restTemplate.exchange(URI.create(projectUrl), HttpMethod.GET, new HttpEntity<>(headers), String.class);
+            return true;
+        } catch (HttpClientErrorException.NotFound e) {
+            return false;
+        } catch (Exception e) {
+            log.debug("GitLab existence probe for {}: {}", repoFullName, e.getMessage());
+            return false;
+        }
+    }
+
+    @Override
+    public boolean hasCommits(String repoUrl) {
+        String host = getNormalizedHostUrl();
+        String repoFullName = parseRepoFullName(repoUrl);
+        if (host == null || repoFullName == null || repoFullName.isBlank()) {
+            return false;
+        }
+        try {
+            HttpHeaders headers = createHeaders(getEffectiveToken(null));
+            String encodedPath = URLEncoder.encode(repoFullName, StandardCharsets.UTF_8);
+            // Empty projects return an empty array (200)
+            String url = host + "/api/v4/projects/" + encodedPath + "/repository/commits?per_page=1";
+            ResponseEntity<String> resp = restTemplate.exchange(
+                    URI.create(url), HttpMethod.GET, new HttpEntity<>(headers), String.class);
+            JsonNode root = resp.getBody() != null ? objectMapper.readTree(resp.getBody()) : null;
+            return root != null && root.isArray() && root.size() > 0;
+        } catch (Exception e) {
+            log.debug("GitLab has-commits probe for {}: {}", repoFullName, e.getMessage());
+            return false;
+        }
     }
 
     @Override

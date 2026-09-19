@@ -41,6 +41,91 @@ export const createMapping = async (mapping: Partial<RepoMapping>): Promise<Repo
   return res.data;
 };
 
+// ── Bulk migration ─────────────────────────────────────────────────────────────
+
+export interface BulkMirrorRow {
+  sourceUrl?: string;
+  destUrl?: string;
+  outcome: 'CREATED_QUEUED' | 'SKIPPED' | 'FAILED_VALIDATION';
+  reason?: string;
+  mappingId?: number;
+  jobId?: number;
+}
+
+export interface BulkMirrorRequest {
+  mode: 'CREATE_DEST' | 'USE_EXISTING';
+  items: Array<{
+    sourceUrl: string;
+    sourceProvider?: string;
+    sourceCredentialId?: number;
+    sourceInstallationId?: string;
+    sourceVisibility?: 'UNKNOWN' | 'PUBLIC' | 'PRIVATE';
+    sourcePublicRead?: boolean;
+    destName?: string;
+    destUrl?: string;
+    destCredentialId?: number;
+    destInstallationId?: string;
+    includeNonEmptyDest?: boolean;
+  }>;
+  branchPattern?: string;
+  syncDirection?: string;
+  trunkConflictPolicy?: string;
+  storageTier?: string;
+  active?: boolean;
+  destOwner?: string;
+  destCredentialId?: number;
+  destInstallationId?: string;
+  destPrivate?: boolean;
+}
+
+export interface BulkMirrorResponse {
+  submissionId: number;
+  rows: BulkMirrorRow[];
+  createdQueuedCount: number;
+  skippedCount: number;
+  failedValidationCount: number;
+}
+
+export const submitBulkMigration = async (payload: BulkMirrorRequest): Promise<BulkMirrorResponse> => {
+  const res = await api.post('/mappings/bulk', payload);
+  return res.data;
+};
+
+export const getBulkSubmission = async (id: number) => {
+  const res = await api.get(`/bulk/${id}`);
+  return res.data;
+};
+
+export interface BulkSubmissionRecord {
+  id: number;
+  mode: 'CREATE_DEST' | 'USE_EXISTING' | string;
+  itemCount: number;
+  createdCount: number;
+  skippedJson?: string | null;
+  cancelledAt?: string | null;
+  createdAt?: string | null;
+}
+
+export const listBulkSubmissions = async (): Promise<BulkSubmissionRecord[]> => {
+  const res = await api.get('/bulk');
+  return res.data;
+};
+
+export const cancelBulkSubmission = async (id: number, reason?: string) => {
+  const res = await api.post(`/bulk/${id}/cancel`, { reason });
+  return res.data as { submissionId: number; cancelled: number; status: string };
+};
+
+/** Lightweight "destination has commits" probe (bulk migration Option 2 pre-submit warning). */
+export const probeRepoHasCommits = async (url: string, credentialId?: number): Promise<boolean> => {
+  try {
+    const res = await api.get('/github-app/repo-has-commits', { params: { url, credentialId } });
+    return Boolean(res.data?.hasCommits);
+  } catch {
+    return false;
+  }
+};
+
 export const updateMapping = async (id: number, mapping: Partial<RepoMapping>): Promise<RepoMapping> => {
   const res = await api.put(`/mappings/${id}`, mapping);
   return res.data;

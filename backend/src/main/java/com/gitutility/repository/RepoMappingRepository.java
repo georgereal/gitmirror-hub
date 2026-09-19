@@ -20,4 +20,7 @@ public interface RepoMappingRepository extends JpaRepository<RepoMapping, Long> 
     List<RepoMapping> findActiveMatchingRepo(@Param("url") String url, @Param("repoPath") String repoPath);
 
     long countBySourceCredentialIdOrTargetCredentialId(Long sourceCredentialId, Long targetCredentialId);
+
+    List<RepoMapping> findByBulkSubmissionId(Long bulkSubmissionId);
 }
+

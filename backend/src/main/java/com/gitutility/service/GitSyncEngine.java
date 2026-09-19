@@ -4,13 +4,17 @@ import com.gitutility.model.dto.JobStageProgress;
 import com.gitutility.model.dto.PermissionCheckReport;
 import com.gitutility.model.dto.SyncEventMessage;
 import com.gitutility.model.dto.TestConnectionRequest;
+import com.gitutility.model.dto.CreateRepoRequest;
+import com.gitutility.model.dto.GitHubRepoOption;
 import com.gitutility.model.entity.RepoMapping;
 import com.gitutility.model.entity.SyncJob;
 import com.gitutility.model.entity.SyncAuditLog;
 import com.gitutility.model.enums.ConflictKind;
 import com.gitutility.model.enums.LogLevel;
 import com.gitutility.model.enums.PairSide;
+import com.gitutility.model.enums.RepoVisibility;
 import com.gitutility.model.enums.SyncCheckpointStage;
+import com.gitutility.model.enums.SyncStatus;
 import com.gitutility.model.enums.StorageTier;
 import com.gitutility.model.enums.SyncDirection;
 import com.gitutility.model.enums.TrunkConflictPolicy;
@@ -36,6 +40,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpClientErrorException;
 
 import java.io.File;
 import java.io.IOException;
@@ -102,6 +107,7 @@ public class GitSyncEngine {
     private final JobExecutionStateService jobExecutionStateService;
     private final ActionsTriggerSuppressionService actionsTriggerSuppressionService;
     private final ScmCredentialService scmCredentialService;
+    private final BulkSubmissionService bulkSubmissionService;
 
     private final ThreadLocal<JobStageProgress> activeStageProgress = new ThreadLocal<>();
 
@@ -127,6 +133,7 @@ public class GitSyncEngine {
             JobExecutionStateService jobExecutionStateService,
             @Lazy ActionsTriggerSuppressionService actionsTriggerSuppressionService,
             @Lazy ScmCredentialService scmCredentialService,
+            @Lazy BulkSubmissionService bulkSubmissionService,
             PushBatchConcurrencyService pushBatchConcurrencyService,
             @Qualifier("gitPushBatchExecutor") ExecutorService gitPushBatchExecutor) {
         this.auditLogRepository = auditLogRepository;
@@ -147,6 +154,7 @@ public class GitSyncEngine {
         this.jobExecutionStateService = jobExecutionStateService;
         this.actionsTriggerSuppressionService = actionsTriggerSuppressionService;
         this.scmCredentialService = scmCredentialService;
+        this.bulkSubmissionService = bulkSubmissionService;
         this.pushBatchConcurrencyService = pushBatchConcurrencyService;
         this.gitPushBatchExecutor = gitPushBatchExecutor;
     }
@@ -187,6 +195,92 @@ public class GitSyncEngine {
         public String sourceTipFingerprint;
         public String destTipFingerprint;
         public java.util.Set<String> lfsScannedTipOids;
+    }
+
+    /** Outcome of the bulk-migration at-job-start destination creation stage. */
+    private enum DestinationCreateOutcome { OK, RACE_EXISTS, ACCESS_FAILED }
+
+    /**
+     * Bulk migration (Option 1): create the destination repository at the start of the first
+     * sync job, then flip {@code destinationAutoCreate} off. Reads the flag from the mapping
+     * entity (not the event) so orphan recovery / re-dispatch / multi-pod rebuilds behave.
+     *
+     * <ul>
+     *   <li>Race (destination appeared between submission probe and this run): permanent fail —
+     *   it was not created by this tool, so overwriting it is unsafe. No retry.</li>
+     *   <li>Access failures (401/403): permanent fail with no retry + sibling queued jobs of the
+     *   same submission (same destination credential) cancelled — they would fail identically.</li>
+     *   <li>Transient failures: rethrown so the normal retry path (3 attempts → DLQ) applies.</li>
+     * </ul>
+     */
+    private DestinationCreateOutcome ensureDestinationRepository(
+            RepoMapping mapping, SyncEventMessage event, Long jobId) {
+        String targetUrl = event.getTargetRepoUrl() != null ? event.getTargetRepoUrl() : mapping.getRepoBUrl();
+        try (ScmCredentialContext.Scope ignored =
+                     ScmCredentialContext.open(event.getTargetCredentialId(), event.getTargetInstallationId())) {
+            if (scmProviderFacade.repositoryExists(targetUrl, null)) {
+                logAudit(jobId, LogLevel.ERROR,
+                        "Destination " + maskUrl(targetUrl) + " already exists — it was created during the migration "
+                                + "window and not by GitMirror Hub. Refusing to touch it; remove or rename it, then re-run.");
+                failJobPermanently(jobId, "Destination repository was created during the migration window and not "
+                        + "by GitMirror Hub — refusing to touch it.");
+                return DestinationCreateOutcome.RACE_EXISTS;
+            }
+
+            logAudit(jobId, LogLevel.INFO, "Creating destination repository " + maskUrl(targetUrl) + " (bulk migration)...");
+            CreateRepoRequest createReq = CreateRepoRequest.builder()
+                    .repoUrl(targetUrl)
+                    .isPrivate(mapping.getTargetVisibility() != RepoVisibility.PUBLIC)
+                    .credentialId(event.getTargetCredentialId())
+                    .build();
+            GitHubRepoOption created = scmProviderFacade.createRemoteRepository(createReq);
+            logAudit(jobId, LogLevel.INFO, "Destination repository created"
+                    + (created != null && created.getHtmlUrl() != null && !created.getHtmlUrl().isBlank()
+                       ? ": " + created.getHtmlUrl() : "")
+                    + " — continuing mirror bootstrap.");
+            mapping.setDestinationAutoCreate(Boolean.FALSE);
+            repoMappingRepository.save(mapping);
+            return DestinationCreateOutcome.OK;
+        } catch (HttpClientErrorException.Unauthorized | HttpClientErrorException.Forbidden e) {
+            logAudit(jobId, LogLevel.ERROR,
+                    "Destination creation failed (access): " + e.getMessage()
+                            + " — access will not heal through retries; failing fast and stopping the sibling queued "
+                            + "jobs of this bulk submission.");
+            failJobPermanently(jobId, "Destination creation failed (access) — batch stopped.");
+            if (bulkSubmissionService != null) {
+                bulkSubmissionService.stopRemainingQueuedOnAccessFailure(
+                        mapping, "Destination creation failed (access) — batch stopped");
+            }
+            return DestinationCreateOutcome.ACCESS_FAILED;
+        } catch (Exception e) {
+            // Transient (network, 5xx, 429) → normal retry path
+            logAudit(jobId, LogLevel.WARN,
+                    "Destination creation failed transiently: " + e.getMessage() + " — will retry.");
+            throw new IllegalStateException("Failed to create destination repository: " + e.getMessage(), e);
+        }
+    }
+
+    /** Marks a job permanently FAILED at the destination-creation stage (no retry). */
+    private void failJobPermanently(Long jobId, String errorMessage) {
+        if (jobId == null) {
+            return;
+        }
+        try {
+            SyncJob job = syncJobRepository.findById(jobId).orElse(null);
+            if (job != null) {
+                job.setStatus(SyncStatus.FAILED);
+                job.setCompletedAt(java.time.Instant.now());
+                job.setErrorMessage(errorMessage);
+                if (job.getStartedAt() != null && job.getCompletedAt() != null) {
+                    job.setDurationMs(Math.max(0, java.time.Duration.between(
+                            job.getStartedAt(), job.getCompletedAt()).toMillis()));
+                }
+                syncJobRepository.save(job);
+                webSocketNotificationService.notifyJobUpdated(job);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to persist permanent failure for Job #{}: {}", jobId, e.getMessage());
+        }
     }
 
     /**
@@ -242,6 +336,21 @@ public class GitSyncEngine {
                         event.setTargetInstallationId(mapping.getSourceInstallationId());
                     }
                 }
+                // Bulk migration (Option 1): create the destination before any access assert —
+                // a not-yet-created repo would fail the target assert. Permanent failures
+                // (race / access) fail fast with no retry and stop sibling queued jobs.
+                if (mapping != null && Boolean.TRUE.equals(mapping.getDestinationAutoCreate())) {
+                    DestinationCreateOutcome createOutcome = ensureDestinationRepository(mapping, event, jobId);
+                    if (createOutcome != DestinationCreateOutcome.OK) {
+                        result.success = false;
+                        result.message = createOutcome == DestinationCreateOutcome.RACE_EXISTS
+                                ? "Destination repository appeared during the migration window (not created by GitMirror Hub) — refusing to touch it; remove or rename it, then re-run"
+                                : "Destination creation failed (access) — job failed fast; sibling queued jobs of this bulk submission were cancelled";
+                        log.warn("Job #{} failed at destination creation stage: {}", jobId, result.message);
+                        return result;
+                    }
+                }
+
                 assertCredentialCanAccess(
                         event.getSourceCredentialId(), event.getSourceInstallationId(), event.getSourceRepoUrl());
                 assertCredentialCanAccess(

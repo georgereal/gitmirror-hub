@@ -573,6 +573,48 @@ public class GitHubProviderService implements ScmProviderAdapter {
     }
 
     @Override
+    public boolean repositoryExists(String repoUrl) {
+        String fullName = parseRepoFullName(repoUrl);
+        if (fullName == null || !fullName.contains("/")) {
+            return false;
+        }
+        try {
+            HttpHeaders headers = createHeaders(getEffectiveGitHubToken(null));
+            String url = "https://api.github.com/repos/" + fullName;
+            restTemplate.exchange(URI.create(url), HttpMethod.GET, new HttpEntity<>(headers), String.class);
+            return true;
+        } catch (HttpClientErrorException.NotFound e) {
+            return false;
+        } catch (Exception e) {
+            // 403 / rate limit etc. — cannot confirm; treat as missing (job-time creation is idempotent)
+            log.debug("GitHub existence probe for {}: {}", fullName, e.getMessage());
+            return false;
+        }
+    }
+
+    @Override
+    public boolean hasCommits(String repoUrl) {
+        String fullName = parseRepoFullName(repoUrl);
+        if (fullName == null || !fullName.contains("/")) {
+            return false;
+        }
+        try {
+            HttpHeaders headers = createHeaders(getEffectiveGitHubToken(null));
+            String url = "https://api.github.com/repos/" + fullName + "/commits?per_page=1";
+            restTemplate.exchange(URI.create(url), HttpMethod.GET, new HttpEntity<>(headers), String.class);
+            return true;
+        } catch (HttpClientErrorException.NotFound e) {
+            return false;
+        } catch (HttpClientErrorException.Conflict e) {
+            // GitHub returns 409 Conflict for an empty repository (no commits yet)
+            return false;
+        } catch (Exception e) {
+            log.debug("GitHub has-commits probe for {}: {}", fullName, e.getMessage());
+            return false;
+        }
+    }
+
+    @Override
     public boolean createRemoteRepository(CreateRepoRequest req) {
         String token = getEffectiveGitHubToken(null);
         if (token == null) return false;
