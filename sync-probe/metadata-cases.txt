@@ -1,0 +1,9 @@
+Metadata sync probe on georgereal/gitmirror-hub.
+
+- Branch test/meta-sync: commit sync
+- Tag meta-sync-v1: tag create
+- Pull request: open against main
+- Release meta-sync-v1: publish plus sync-probe/release-asset.txt
+- Commit status gitmirror-hub/meta-status on this commit
+- GitHub Actions workflow meta-sync-check: completed check run
+- sync-probe/lfs-sample.bin: Git LFS object
