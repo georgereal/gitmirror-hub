@@ -14,7 +14,7 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class ScmInstallationsPreviewRequest {
     /** When set and {@link #privateKeyPem} is blank, reuse the stored PEM from this card. */
-    private Long credentialId;
+    private String credentialId;
     private String provider;
     private String hostUrl;
     private String appId;

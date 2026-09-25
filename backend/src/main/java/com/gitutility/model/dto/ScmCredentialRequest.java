@@ -15,6 +15,8 @@ public class ScmCredentialRequest {
     private String hostUrl;
     private String authMode;
     private String appId;
+    /** GitHub Enterprise Cloud slug. Ignored for GHES and PAT credentials. */
+    private String enterpriseSlug;
     private String clientId;
     private String clientSecret;
     private String privateKeyPem;

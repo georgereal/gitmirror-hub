@@ -32,6 +32,7 @@ public class MessagingController {
         body.put("supportsPauseConsumers", d.isSupportsPauseConsumers());
         body.put("supportsInboundBrokerQueue", d.isSupportsInboundBrokerQueue());
         body.put("workerThreads", d.getWorkerThreads());
+        body.put("laneMaxConcurrency", d.getLaneMaxConcurrency());
         return ResponseEntity.ok(body);
     }
 }

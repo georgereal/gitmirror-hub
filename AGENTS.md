@@ -18,7 +18,16 @@ Only synchronize **[`REPO_MAP.md`](REPO_MAP.md)**, **[`ARCHITECTURE.md`](ARCHITE
 * **Git commits & PR milestones** (before committing changes, ensure docs reflect the new codebase state).
 * **Major architectural changes** (adding a new service/worker module, changing queue bindings/exchanges, or adding SCM integrations).
 
-### 3. Module Overview
+### 3. Basic checks only
+After a code change, check editor diagnostics on the files just edited. That is the default.
+
+Do **not** run a full build, test suite, dev server, or browser validation unless the user asked for that check in this conversation, or approved it after you asked. This includes Maven, Gradle, `npm run build`, `npm test`, `tsc`, `spring-boot:run`, `npm run dev`, and Cursor browser tools (navigate, snapshot, click).
+
+Do **not** launch a subagent unless the user asked for one, or approved it after you asked. That includes explore, general-purpose, Bugbot, security review, CI investigator, best-of-n, and cloud tasks.
+
+When something heavier would help, ask in one sentence what you want to run and why, then wait.
+
+### 4. Module Overview
 - `backend/`: Java 21/23 + Spring Boot 4.1.1 + JGit + Spring AMQP (RabbitMQ / CloudAMQP), with pluggable `GIT_MESSAGING_PROVIDER=rabbitmq|kafka|none`. Build with **Maven** (`pom.xml`, preferred for local) or **Gradle Wrapper** (`build.gradle.kts`).
 - `frontend/`: React 19 + Vite 8 + Tailwind CSS 4 + SockJS / STOMP.
 - `webhook-worker/`: TypeScript Cloudflare Worker for edge webhook ingestion.

@@ -29,6 +29,21 @@ public class PermissionCheckReport {
     /** PUBLIC = anonymous Access check succeeded; AUTHENTICATED = App/PAT Access check succeeded. */
     private String accessMode;
 
+    /** Credential the check authenticated with. Absent on anonymous public read. */
+    private String credentialId;
+
+    /** App installation token the check used. Absent for PATs and anonymous public read. */
+    private String installationId;
+
+    /** Account login of {@link #installationId}, so the UI can show the owner that was checked. */
+    private String installationLogin;
+
+    /**
+     * Provider-reported visibility: PUBLIC, PRIVATE, or INTERNAL.
+     * The UI displays this value; it does not infer visibility from {@link #isPrivate}.
+     */
+    private String visibility;
+
     private PermissionsDetail permissions;
 
     @Builder.Default

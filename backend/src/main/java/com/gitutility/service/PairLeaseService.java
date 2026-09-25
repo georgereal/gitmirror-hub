@@ -25,7 +25,7 @@ public class PairLeaseService {
     private int leaseTtlSeconds;
 
     @Transactional
-    public void acquire(Long mappingId, Long jobId) {
+    public void acquire(String mappingId, String jobId) {
         if (mappingId == null) {
             return;
         }
@@ -63,7 +63,7 @@ public class PairLeaseService {
     }
 
     @Transactional
-    public void renew(Long mappingId, Long jobId) {
+    public void renew(String mappingId, String jobId) {
         if (mappingId == null) {
             return;
         }
@@ -77,7 +77,7 @@ public class PairLeaseService {
     }
 
     @Transactional
-    public void release(Long mappingId) {
+    public void release(String mappingId) {
         if (mappingId == null) {
             return;
         }

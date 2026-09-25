@@ -87,15 +87,15 @@ class QueueConsumerServiceSkipTest {
     @Test
     void cancelledJobIsSkippedWithoutThrowingSoAmqpAcks() throws Exception {
         SyncJob job = SyncJob.builder()
-                .id(20L)
+                .id("20")
                 .pairName("vscode")
                 .status(SyncStatus.CANCELLED)
                 .build();
-        when(syncJobRepository.findById(20L)).thenReturn(Optional.of(job));
+        when(syncJobRepository.findById("20")).thenReturn(Optional.of(job));
 
         SyncEventMessage event = SyncEventMessage.builder()
-                .jobId(20L)
-                .mappingId(1L)
+                .jobId("20")
+                .mappingId("1")
                 .pairName("vscode")
                 .ref("refs/heads/main")
                 .build();
@@ -108,8 +108,8 @@ class QueueConsumerServiceSkipTest {
 
     @Test
     void missingJobIsSkippedWithoutThrowing() throws Exception {
-        when(syncJobRepository.findById(99L)).thenReturn(Optional.empty());
-        SyncEventMessage event = SyncEventMessage.builder().jobId(99L).pairName("gone").build();
+        when(syncJobRepository.findById("99")).thenReturn(Optional.empty());
+        SyncEventMessage event = SyncEventMessage.builder().jobId("99").pairName("gone").build();
         assertDoesNotThrow(() -> consumer.consumeSyncEvent(event));
         verify(gitSyncEngine, never()).executeSync(any());
     }
@@ -117,22 +117,22 @@ class QueueConsumerServiceSkipTest {
     @Test
     void incrementalBranchJobDoesNotRunPairMetadata() throws Exception {
         SyncJob job = SyncJob.builder()
-                .id(21L)
+                .id("21")
                 .pairName("pair")
                 .status(SyncStatus.QUEUED)
                 .attemptCount(0)
                 .build();
-        when(syncJobRepository.findById(21L)).thenReturn(Optional.of(job));
+        when(syncJobRepository.findById("21")).thenReturn(Optional.of(job));
         when(syncJobRepository.save(any(SyncJob.class))).thenAnswer(inv -> inv.getArgument(0));
         GitSyncEngine.SyncResult result = new GitSyncEngine.SyncResult();
         result.success = true;
         result.pipeline = SyncPipelineState.initial();
         when(gitSyncEngine.executeSync(any())).thenReturn(result);
-        when(mappingRepository.findById(1L)).thenReturn(Optional.empty());
+        when(mappingRepository.findById("1")).thenReturn(Optional.empty());
 
         SyncEventMessage event = SyncEventMessage.builder()
-                .jobId(21L)
-                .mappingId(1L)
+                .jobId("21")
+                .mappingId("1")
                 .pairName("pair")
                 .ref("refs/heads/main")
                 .branch("main")
@@ -151,27 +151,27 @@ class QueueConsumerServiceSkipTest {
     @Test
     void fullMirrorJobRunsPairMetadata() throws Exception {
         SyncJob job = SyncJob.builder()
-                .id(22L)
+                .id("22")
                 .pairName("pair")
                 .status(SyncStatus.QUEUED)
                 .attemptCount(0)
                 .build();
-        when(syncJobRepository.findById(22L)).thenReturn(Optional.of(job));
+        when(syncJobRepository.findById("22")).thenReturn(Optional.of(job));
         when(syncJobRepository.save(any(SyncJob.class))).thenAnswer(inv -> inv.getArgument(0));
         GitSyncEngine.SyncResult result = new GitSyncEngine.SyncResult();
         result.success = true;
         result.pipeline = SyncPipelineState.initial();
         when(gitSyncEngine.executeSync(any())).thenReturn(result);
-        when(mappingRepository.findById(1L)).thenReturn(Optional.empty());
-        when(pullRequestSyncService.syncOpenPullRequests(eq(1L), any(), any())).thenReturn(0);
+        when(mappingRepository.findById("1")).thenReturn(Optional.empty());
+        when(pullRequestSyncService.syncOpenPullRequests(eq("1"), any(), any())).thenReturn(0);
         when(releaseAndStatusSyncService.syncReleases(any(ReleaseAndStatusSyncService.ReleaseSyncRequest.class)))
                 .thenReturn(new ReleaseAndStatusSyncService.ReleaseSyncResult(0, 0, 0, 0, 0, 0, 0, 0, true, List.of()));
         when(releaseAndStatusSyncService.syncCiChecks(any(ReleaseAndStatusSyncService.CiCheckSyncRequest.class)))
                 .thenReturn(new ReleaseAndStatusSyncService.CiCheckSyncResult(0, 0, 0, 0, 0, true, List.of()));
 
         SyncEventMessage event = SyncEventMessage.builder()
-                .jobId(22L)
-                .mappingId(1L)
+                .jobId("22")
+                .mappingId("1")
                 .pairName("pair")
                 .ref(null)
                 .branch("*")
@@ -181,7 +181,7 @@ class QueueConsumerServiceSkipTest {
 
         consumer.consumeSyncEvent(event);
 
-        verify(pullRequestSyncService).syncOpenPullRequests(eq(1L), any(), any(), eq(22L), any());
+        verify(pullRequestSyncService).syncOpenPullRequests(eq("1"), any(), any(), eq("22"), any());
         verify(releaseAndStatusSyncService).syncReleases(any(ReleaseAndStatusSyncService.ReleaseSyncRequest.class));
         verify(releaseAndStatusSyncService).syncCiChecks(any(ReleaseAndStatusSyncService.CiCheckSyncRequest.class));
     }

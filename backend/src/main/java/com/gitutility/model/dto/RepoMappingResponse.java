@@ -17,7 +17,7 @@ import java.time.Instant;
 @AllArgsConstructor
 public class RepoMappingResponse {
 
-    private Long id;
+    private String id;
     private String name;
     private String repoAUrl;
     private String repoBUrl;
@@ -34,6 +34,11 @@ public class RepoMappingResponse {
 
     private SyncDirection syncDirection;
     private com.gitutility.model.enums.TrunkConflictPolicy trunkConflictPolicy;
+    private com.gitutility.model.enums.PairSide primarySide;
+    private Long replicaRulesetId;
+    private String replicaRulesetEnforcement;
+    /** Set when an org or enterprise ruleset, not the pair's repo lock, is what makes a side read-only. */
+    private String writeAuthorityNote;
     private com.gitutility.model.enums.StorageTier storageTier;
     private boolean active;
     private Instant lastSyncAt;
@@ -41,8 +46,8 @@ public class RepoMappingResponse {
     private Instant createdAt;
     private String sourceProvider;
     private String targetProvider;
-    private Long sourceCredentialId;
-    private Long targetCredentialId;
+    private String sourceCredentialId;
+    private String targetCredentialId;
     private String sourceInstallationId;
     private String targetInstallationId;
     private com.gitutility.model.enums.RepoVisibility sourceVisibility;
@@ -50,7 +55,7 @@ public class RepoMappingResponse {
     private Boolean sourcePublicRead;
     private boolean hasCheckpoint;
     private String syncCheckpointStage;
-    private Long lastMirrorJobId;
+    private String lastMirrorJobId;
     private Instant lastMirrorStatsAt;
     private Integer lastMirrorBranchesCount;
     private Integer lastMirrorTagsCount;
@@ -70,6 +75,8 @@ public class RepoMappingResponse {
     private Integer lfsPending;
     private Integer tagsSourceCount;
     private Integer tagsTargetCount;
+
+    private PeerStatusResponse peerStatus;
 
     public static RepoMappingResponse fromEntity(RepoMapping entity) {
         if (entity == null) return null;
@@ -131,6 +138,9 @@ public class RepoMappingResponse {
                 .trunkConflictPolicy(entity.getTrunkConflictPolicy() != null
                         ? entity.getTrunkConflictPolicy()
                         : com.gitutility.model.enums.TrunkConflictPolicy.ISOLATE)
+                .primarySide(entity.getPrimarySide())
+                .replicaRulesetId(entity.getReplicaRulesetId())
+                .replicaRulesetEnforcement(entity.getReplicaRulesetEnforcement())
                 .storageTier(entity.getStorageTier() != null ? entity.getStorageTier() : com.gitutility.model.enums.StorageTier.AUTO_LRU)
                 .active(entity.isActive())
                 .lastSyncAt(entity.getLastSyncAt())

@@ -2,6 +2,9 @@ package com.gitutility.model.entity;
 
 import com.gitutility.model.enums.SyncStatus;
 import com.gitutility.model.enums.TriggerType;
+import com.gitutility.persistence.Ids;
+import org.springframework.data.mongodb.core.mapping.Document;
+import com.gitutility.persistence.store.WritePreparer;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -12,17 +15,17 @@ import java.time.Instant;
 
 @Entity
 @Table(name = "sync_jobs")
+@Document(collection = "sync_jobs")
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class SyncJob {
+public class SyncJob implements WritePreparer {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
-    private Long mappingId;
+    private String mappingId;
 
     private String pairName;
 
@@ -140,7 +143,10 @@ public class SyncJob {
 
     @PrePersist
     @PreUpdate
-    protected void onPersist() {
+    public void prepareForWrite() {
+        if (Ids.isUnset(id)) {
+            id = Ids.newId();
+        }
         if (createdAt == null) {
             createdAt = Instant.now();
         }

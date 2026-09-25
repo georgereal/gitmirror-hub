@@ -12,6 +12,7 @@ gitUtility/
 ├── REPO_MAP.md                         # Codebase map and component index (this file)
 ├── INSTRUCTIONS.md                     # Operational guide, runbook, and failover instructions
 ├── INSTRUCTIONS-MULTI-POD.md           # Local multi-pod (2+ backend JVMs) runbook
+├── INSTRUCTIONS-KAFKA-WEBHOOK.md       # Confluent Cloud cluster, Kafka webhook worker, and Hub bus env
 ├── SCM_PROVIDER_SETUP.md               # Create/configure SCM identities (GitHub App first; more providers later)
 ├── README.md                           # Quickstart summary
 ├── SECURITY.md                         # Localhost-only threat model & secret handling
@@ -35,7 +36,8 @@ gitUtility/
 ├── webhook-worker/                     # Cloudflare Worker Serverless Webhook Gateway (Edge)
 │   ├── package.json                    # Wrangler CLI & TypeScript dependencies
 │   ├── tsconfig.json                   # TypeScript configuration
-│   ├── wrangler.toml                   # Cloudflare Worker deployment configuration & env vars
+│   ├── wrangler.toml                   # Worker name and entry. CloudAMQP values stay in gitignored .env
+│   ├── .env.example                    # Template for webhook-worker/.env (copy, then fill in)
 │   ├── README.md                       # Wrangler login, secret setup, and deployment runbook
 │   └── src/
 │       └── index.ts                    # Edge router: WebCrypto HMAC validation & RabbitMQ HTTP publish
@@ -58,17 +60,20 @@ gitUtility/
 │       │   │   │   ├── RabbitMQConfig.java      # Exchanges, Queues, DLX, DLQ (conditional: messaging.provider=rabbitmq)
 │       │   │   │   └── WebSocketConfig.java     # STOMP over WebSocket broker configuration
 │       │   │   ├── messaging/                   # Pluggable SyncEventBus (rabbitmq | kafka | none)
-│       │   │   │   ├── MessagingModule.java     # Descriptor for UI /api/v1/messaging
+│       │   │   │   ├── MessagingModule.java     # Descriptor for UI /api/v1/messaging (includes Rabbit laneMaxConcurrency)
 │       │   │   │   ├── SyncEventBus.java        # Publish/republish SPI
 │       │   │   │   ├── rabbit/                  # RabbitSyncEventBus + lane listeners
-│       │   │   │   └── none/                    # NoneSyncEventBus (no broker)
+│       │   │   │   ├── none/                    # NoneSyncEventBus (no broker)
+│       │   │   │   └── webhook/                 # GIT_WEBHOOK_BUS_PROVIDER incremental lane (kafka | rabbitmq | off)
 │       │   │   │   ├── GlobalExceptionHandler.java # Central REST error mapping
 │       │   │   │   ├── RootApiController.java   # Root info endpoint (/ and /api/v1)
 │       │   │   │   ├── GitHubAppController.java # Legacy god-row GitLab/Bitbucket/Origin config + GitHub shim
 │       │   │   │   ├── ScmCredentialController.java # GitHub/GHES credential list CRUD, picker search, webhook URLs
 │       │   │   │   ├── QueueController.java     # Queue stats, DLQ redrive, main/inbound/DLQ purge
 │       │   │   │   ├── RuntimeMetricsController.java # Micrometer snapshot + cluster heartbeats (/api/v1/runtime-metrics)
-│       │   │   │   ├── RepoMappingController.java# Repo mapping CRUD, manual sync, PRs/LFS/Releases sync & diff endpoints
+│       │   │   │   ├── RepoMappingController.java# Repo mapping CRUD, manual sync, bulk submit, PRs/LFS/Releases sync & diff endpoints
+│       │   │   │   ├── WriteAuthorityController.java # GET/POST /api/v1/write-authority: linked or individual write/read at repo, org, or enterprise scope
+│       │   │   │   ├── BulkMigrationController.java # Bulk submission query + cancel (`/api/v1/bulk`)
 │       │   │   │   ├── SimulationController.java# Fault injection & synthetic webhook emitter
 │       │   │   │   ├── StorageController.java   # Local & NAS mirror disk quota & LRU eviction API
 │       │   │   │   ├── SyncJobController.java   # Sync job querying, stats, retry, and cancel
@@ -102,6 +107,8 @@ gitUtility/
 │       │   │   │   │   ├── DiffInspectOptions.java
 │       │   │   │   │   ├── CiCheckPage.java         # One REST page of CI check runs for a commit
 │       │   │   │   │   ├── CommitStatusDetail.java  # Legacy commit status on a commit (context/state/url)
+│       │   │   │   │   ├── BulkMirrorRequest.java  # Multi-pair bulk migration submission
+│       │   │   │   │   ├── BulkMirrorResponse.java # Per-row CREATED_QUEUED / SKIPPED / FAILED_VALIDATION
 │       │   │   │   │   ├── CreateRepoRequest.java
 │       │   │   │   │   ├── GitHubAppConfigRequest.java
 │       │   │   │   │   ├── GitHubPushPayload.java
@@ -130,11 +137,12 @@ gitUtility/
 │       │   │   │   │   ├── SystemEngineConfigResponse.java
 │       │   │   │   │   └── TestConnectionRequest.java
 │       │   │   │   ├── entity/
+│       │   │   │   │   ├── BulkSubmission.java  # One bulk migration batch: counts, skipped-row JSON, cancelledAt
 │       │   │   │   │   ├── GitHubAppConfig.java # Legacy mixed SCM row (GitLab/Bitbucket/Origin; GitHub/GHES migrated)
 │       │   │   │   │   ├── ScmCredential.java   # GitHub/GHES App (multi-install ids) or PAT; bound on each pair side
 │       │   │   │   │   ├── PrMapping.java       # Cross-repository PR ID & branch state tracking
 │       │   │   │   │   ├── RefOrigin.java       # Branch head origination ledger (pair side, fork heads)
-│       │   │   │   │   ├── RepoMapping.java     # Pair: URLs, tokens, provider, visibility, per-side credential+installationId, trunkConflictPolicy, sync checkpoints
+│       │   │   │   │   ├── RepoMapping.java     # Pair: URLs, tokens, provider, visibility, per-side credential+installationId, trunkConflictPolicy, sync checkpoints, bulkSubmissionId, destinationAutoCreate
 │       │   │   │   │   ├── SyncAuditLog.java    # Line-by-line execution trace records
 │       │   │   │   │   ├── SyncConflict.java    # Persisted Git-ref / tag / PR-metadata conflicts
 │       │   │   │   │   ├── SyncJob.java         # Per-event sync execution record
@@ -151,23 +159,29 @@ gitUtility/
 │       │   │   │       ├── TrunkConflictPolicy.java # ISOLATE, FAIL_JOB, ORIGIN_WINS
 │       │   │   │       ├── SyncStatus.java      # QUEUED, IN_PROGRESS, SUCCESS, FAILED, DLQ, CONFLICT_ISOLATED, CANCELLED, INTERRUPTED, PAUSED
 │       │   │   │       └── TriggerType.java     # WEBHOOK, MANUAL, SYNTHETIC, DLQ_REDRIVE, INITIAL_BOOTSTRAP
-│       │   │   ├── repository/                  # Spring Data JPA Repositories
-│       │   │   │   ├── GitHubAppConfigRepository.java
-│       │   │   │   ├── PrMappingRepository.java
-│       │   │   │   ├── RefOriginRepository.java
-│       │   │   │   ├── RepoMappingRepository.java
-│       │   │   │   ├── SyncAuditLogRepository.java
-│       │   │   │   ├── SyncJobRepository.java
-│       │   │   │   ├── SyncConflictRepository.java
-│       │   │   │   ├── SystemEngineConfigRepository.java
-│       │   │   │   └── UnmappedWebhookEventRepository.java
+│       │   │   ├── persistence/                 # Pluggable persistence (h2 | mongo) — mirrors messaging/
+│       │   │   │   ├── PersistenceProvider.java # enum h2 (default) | mongo; from() + fail-fast unknown
+│       │   │   │   ├── PersistenceConditions.java # @OnH2 / @OnMongo bean conditions
+│       │   │   │   ├── PersistenceEnvironmentPostProcessor.java # symmetric autoconfig exclusion (single active store)
+│       │   │   │   ├── PersistenceModule.java   # Descriptor for UI /api/v1/persistence
+│       │   │   │   ├── Ids.java                 # Shared ObjectId-hex id generator (both stores)
+│       │   │   │   └── store/                   # MongoSchemaInitializer, lifecycle listener, WritePreparer, scanning configs
+│       │   │   ├── repository/                  # Store facades — one plain interface per aggregate; exactly one provider store active
+│       │   │   │   ├── BulkSubmissionRepository.java … WriteAuthorityRepository.java  # store facades, one H2 or Mongo implementation each
+│       │   │   │   ├── h2/                      # @OnH2: XJpaRepository (Spring Data JPA) + H2XStore delegating impls
+│       │   │   │   └── mongo/                   # @OnMongo: XMongoRepository + MongoXStore (MongoTemplate ports)
 │       │   │   ├── security/                    # Encryption & Secret Management
 │       │   │   │   ├── CryptoService.java       # AES-256-GCM encryption & key derivation
-│       │   │   │   └── EncryptedStringConverter.java # JPA column encryption converter
+│       │   │   │   ├── EncryptedStringConverter.java # JPA column encryption converter
+│       │   │   │   └── Encrypted.java           # Field marker shared by JPA converter + Mongo listener
 │       │   │   └── service/                     # Core Business Logic & Orchestration
 │       │   │       ├── BareRepoHousekeeping.java # Mirror directory prep before fetch/push
+│       │   │       ├── BulkMirrorService.java   # POST /api/v1/mappings/bulk: probes, skip rules, one mapping + bootstrap job per row
+│       │   │       ├── BulkSubmissionService.java # Submission lifecycle, bulk cancel, destination-create fail-fast
 │       │   │       ├── CircuitBreakerManagerService.java # Tri-state self-healing breaker & automated SCM prober
-│       │   │       ├── DedupLedgerService.java  # Echo loop prevention & commit tracking
+│       │   │       ├── DedupLedgerService.java  # Shared echo_ledger (SHA, ref delete, mirrored PR) plus App-sender skip
+│       │   │       ├── ReplicaRulesetService.java # Lock / unlock / swap gitmirror-replica-readonly on GitHub and GHES
+│       │   │       ├── WriteAuthorityService.java # Pair, org, and enterprise read-only rulesets; enterprise slug probe
 │       │   │       ├── DiffInspectionPipeline.java # Ephemeral async sync-diff inspection pipeline
 │       │   │       ├── DiffInspectionProgressService.java # Live diff inspection progress broadcasts
 │       │   │       ├── DlqRedriveService.java   # DLQ replay & queue depth inspection
@@ -244,9 +258,10 @@ gitUtility/
         │   ├── QueueManagerPage.tsx            # Job history, Ready vs Unacked consumer runtime, cancel, purge, DLQ redrive
         │   ├── SimulationPage.tsx              # Fault injection & chaos sandbox
         │   └── settings/                       # Dedicated Settings Subsystem
-        │       ├── SettingsLayout.tsx          # Settings sidebar & sub-navigation shell
+        │       ├── SettingsLayout.tsx          # Settings sidebar; shows active store from GET /api/v1/persistence
         │       ├── FeatureTogglesPage.tsx      # Public repos + optional provider capability switches
         │       ├── ProvidersAuthPage.tsx       # GitLab/Bitbucket/Origin/generic + GitHub/GHES credential lists
+        │       ├── WriteAuthorityPage.tsx      # Linked pair or individual write/read at repo, org, or enterprise scope
         │       ├── ScmCredentialsPanel.tsx     # Multi GitHub/GHES App+PAT cards, multi-install select, preview list, webhook URL
         │       ├── SystemEnginePage.tsx        # Circuit Breaker, Jittered Retries & Concurrency Limits
         │       ├── StorageSettingsPage.tsx     # Storage Tiers, NVMe Disk Quotas & NAS/NFS Mounts
@@ -262,6 +277,8 @@ gitUtility/
         └── components/
             ├── Header.tsx                      # Top navigation bar & global link routing
             ├── BannerHero.tsx                  # Top banner with KPI summaries and quick actions
+            ├── BulkMigrationTab.tsx            # Add-pair modal Bulk tab: multi-select sources, dest strategy, review + submit
+            ├── BulkSubmissionsPanel.tsx        # Queue Manager: submission outcomes and Cancel all
             ├── BranchComparisonTable.tsx       # Paginated branch ahead/behind table with search/filter
             ├── ConsumerRuntimePanel.tsx        # Per-lane Ready/Unacked consumer thread snapshot
             ├── DiffInspectionModal.tsx         # Async sync-diff inspection progress modal
@@ -277,17 +294,17 @@ gitUtility/
             ├── ClusterFleetStrip.tsx           # Live/known pods, thread chips, install API fleet table
             ├── JobExecutionSummary.tsx         # Run recap: stage timings, git/LFS bytes, artifact counts
             ├── ProviderSettingsView.tsx        # Legacy/alternate provider settings component
-            ├── QueueControlPanel.tsx           # Consumer pause/resume & 1-click DLQ Redrive panel
+            ├── QueueControlPanel.tsx           # Consumer pause/resume, DLQ redrive, and bulk submission panel
             ├── SimulationLab.tsx               # Chaos sandbox: outage toggles & synthetic webhook form
             ├── JobLogModal.tsx                 # Audit log drawer; live overlay, pipeline, provider API, rejected refs
-            ├── PairConfigModal.tsx             # Add/Edit mirror pair; Check Access with Auto/Public/Private and deferred credential prompt
+            ├── PairConfigModal.tsx             # Add/Edit mirror pair; Single pair | Bulk migration tabs; Check Access with Auto/Public/Private
             ├── CredentialPickModal.tsx         # Quick GitHub App/PAT picker opened when Check Access needs authentication
-            ├── RepoPickerModal.tsx             # Search-first multi-provider repo explorer (list accessible / page size; no full load on open)
+            ├── RepoPickerModal.tsx             # Search-first multi-provider repo explorer; optional multi-select that survives paging and search
             ├── InfoTooltip.tsx                 # Contextual parameter explanation tooltip component
             └── UnmappedWebhooksView.tsx        # Discarded & unmapped webhooks stream with 1-click configure action
 ```
 
-> **Tests:** `backend/src/test/java/com/gitutility/` contains ~40 test classes covering sync resume, GraphQL parsers, queue skip-ACK, checkpoints, LFS, conflicts, and controller integration. The tree above lists representative tests only.
+> **Tests:** `backend/src/test/java/com/gitutility/` contains ~40 test classes covering sync resume, GraphQL parsers, queue skip-ACK, checkpoints, LFS, conflicts, and controller integration. The tree above lists representative tests only. Persistence facades are additionally proven by the store contract suite in `persistence/contract/` (`H2StoreContractTest` runs on every build; `MongoStoreContractTest` runs against a real MongoDB supplied via `MONGO_CONTRACT_URI` and skips when unset — no Docker/Testcontainers; see `INSTRUCTIONS.md`).
 
 ---
 
@@ -302,15 +319,19 @@ gitUtility/
 | **Backend** | `DatabaseSchemaMigrator` | Automatically evolves persistent H2 database schemas on startup (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`) without manual database wipes. |
 | **Backend** | `RepoDirLockService` | Shared per-mapping `ReentrantLock` registry guarding the bare repo directory: sync jobs (`QueueConsumerService`) and `GitComparisonService` refresh-mode diffs serialize on the same lock so two JGit operations never race loose-ref writes (`LOCK_FAILURE`). |
 | **Backend** | `GitComparisonService` | Live JGit & SCM introspection calculating branch ahead/behind diffs, tag notes, LFS pointer trees, release assets, and CI/CD check runs. |
-| **Backend** | `GitSyncEngine` | Executes JGit bare repository operations with destination WRITE preflight, public-first source fetch, skip re-fetch when packs exist, destination credential refresh per push batch, resumable ref-batched push (`completed_push_refs` only for OK/UP_TO_DATE), abort remaining full-mirror batches on first `REJECTED_*`, dual-write audit, pack/LFS volume metrics, and conflict-isolated push (full-mirror and incremental). |
+| **Backend** | `GitSyncEngine` | Executes JGit bare repository operations with destination WRITE preflight, public-first source fetch, skip re-fetch when packs exist, destination credential refresh per push batch, resumable ref-batched push (`completed_push_refs` only for OK/UP_TO_DATE), abort remaining full-mirror batches on first `REJECTED_*`, dual-write audit, pack/LFS volume metrics, and conflict-isolated push (full-mirror and incremental). Option-1 bulk rows create the destination repo at job start when `destinationAutoCreate` is set. |
+| **Backend** | `BulkMirrorService` | `POST /api/v1/mappings/bulk`: skip and probe rules, then one mapping plus a bootstrap full-mirror job per surviving row, recorded on `bulk_submissions`. |
+| **Backend** | `BulkSubmissionService` | Lists a submission's outcomes, cancels its queued and in-progress jobs, and fail-fast-cancels sibling queued jobs when destination auto-create hits an access error. |
 | **Backend** | `SyncConflictService` | Persists split-brain / tag / PR-metadata conflicts and opens destination PRs from `sync-conflict/*` isolation branches. |
 | **Backend** | `LiveGitProgressMonitor` | Throttled JGit `ProgressMonitor` (~400ms). Phase changes are INFO audit rows; ticks are DEBUG-only and emit `JOB_PROGRESS` (ETA, source/destination labels, pipeline, provider traffic) over STOMP. |
 | **Backend** | `ProviderRateMeter` | ThreadLocal job-scoped REST vs GraphQL vs Git counters and a sampled call-volume series. WARN audit on REST 429 or remaining &lt; 20%. Remaining quota is installation-wide; job attribution uses call counts. |
 | **Backend** | `SyncPipelineState` | Outer mirror stages persisted on `sync_jobs.pipeline_json` and live on `JOB_PROGRESS`. |
 | **Backend** | `PublicReadProbe` | Shared anonymous HTTPS / `git ls-remote` probe used by all SCM adapters so public read is the primary Check Access path. |
-| **Backend** | `DedupLedgerService` | In-memory deduplication ledger tracking recent commits pushed by this utility to eliminate bidirectional webhook ping-pong loops. |
+| **Backend** | `DedupLedgerService` | Shared `echo_ledger` rows (repo + SHA, ref delete, or `pr:<number>`) so any pod drops mirror echoes. Falls back to an in-memory map only when the store is not wired. |
 | **Backend** | `QueueProducerService` | Builds `SyncEventMessage` and publishes via pluggable `SyncEventBus` (Rabbit or inline). |
 | **Backend** | `MessagingModule` / `SyncEventBus` | `GIT_MESSAGING_PROVIDER=rabbitmq\|kafka\|none`; descriptor at `GET /api/v1/messaging`. |
+| **Backend** | `WebhookIncrementalService` | `GIT_WEBHOOK_BUS_PROVIDER=kafka\|rabbitmq\|off`. One incremental lane. `GET /api/v1/webhook-bus`, `POST /api/v1/webhook-bus/redrive`. |
+| **Edge** | `webhook-worker-kafka/` | Optional Cloudflare script. HMAC then Confluent REST produce of a normalized git event. |
 | **Backend** | `SyncLaneRouter` | Shared full vs incremental routing rule used by producer, engine, DLQ redrive, and consumers. |
 | **Backend** | `QueueConsumerService` | Shared execution path; Rabbit lane listeners live in `messaging.rabbit.RabbitLaneConsumers` when provider=`rabbit`. |
 | **Backend** | `ConsumerRuntimeRegistry` | Tracks the AMQP thread currently holding an unacked message per lane (job, thread liveness, elapsed). |
@@ -340,12 +361,16 @@ gitUtility/
 * `/` or `/repos`: Active repository mirror pairs, creation modal, and instant synchronization.
 * `/repos/:id`: Deep-dive inspection matrix (`Branches & Commits`, `Pull Requests Mirror`, `Git Metadata, LFS & Releases`, `Storage & Settings`).
 * `/observability`: Live sync event stream, queue depth telemetries, and discarded/unmapped webhook inspector.
-* `/queues`: Queue Manager (`rabbitmq`) or Execution (`none`) — job history, pause/resume, cancel; broker ops when `messaging.provider=rabbitmq`.
+* `/queues`: Queue Manager (`rabbitmq`) or Execution (`none`) — job history, pause/resume, cancel, bulk submission outcomes; broker ops when `messaging.provider=rabbitmq`.
+* `/kafka`: Incremental Kafka consumer group (pending, committed, stored failures). Nav link only when `GIT_WEBHOOK_BUS_PROVIDER=kafka`.
 * `GET /api/v1/messaging`: Active messaging module descriptor for the operator UI.
 * `/simulation`: Outage simulation sandbox, consumer pausing, and synthetic push generator.
 * `/settings/providers`: SCM Provider configurations (GitHub App, GitLab, Bitbucket, Origin, Azure DevOps).
 * `/settings/providers`: SCM provider authentication (GitHub/GHES always; GitLab/Bitbucket/Origin/Generic when enabled).
+* `/settings/dr`: Disaster recovery by provider pair. Organizations and enterprises are the lock scopes; repositories are a detail list inside the lane.
+* `/settings/write-authority`: Replica rulesets. Linked pair or individual write/read, at repo, org, or enterprise scope.
 * `/settings/feature-toggles`: Product capability switches (public repos, optional providers). Saved in DB; env `FEATURE_*` seeds first row only.
+* `/settings/metadata`: Global metadata sync switches (pull requests, releases, CI checks, Git LFS). `GET`/`PUT /api/v1/metadata-sync-settings`. Off skips that stage, webhook, and pair-page action. Git ref push stays on.
 * `/settings/system-engine`: Self-healing circuit breaker, jittered retry strategy, and concurrency limits.
 * `/settings/storage`: Storage tier quotas (HOT, LRU, EPHEMERAL, NAS), manual LRU eviction, and mount tests.
 * `/settings/logging`: Enterprise multi-sink logging setup (Console, Splunk HEC, Logstash, Syslog, Rolling File).
@@ -357,6 +382,15 @@ gitUtility/
 * `GET /api/v1/mappings/:id/conflicts`: Open and historical Git-ref / tag / PR-metadata conflicts for a pair.
 * `POST /api/v1/mappings/:id/conflicts/:conflictId/resolve`: Acknowledge a conflict.
 * `POST /api/v1/mappings/:id/conflicts/:conflictId/open-pr`: Retry opening a destination PR from an isolated conflict branch.
+* `POST /api/v1/mappings/:id/replica-ruleset`: Lock, unlock, or swap the GitHub/GHES replica ruleset (`action`: `lock` | `unlock` | `swap`, optional `primarySide`: `A` | `B`). Bypass actor is the credential's GitHub App id.
+* `GET /api/v1/dr-lanes`, `POST /api/v1/dr-lanes/activate`, `POST …/fail-back`, `POST …/probe`: Provider-to-provider disaster recovery. Organizations and enterprises are the lock scopes; repositories are nested detail.
+* `GET /api/v1/mappings/:id/peer-status`, `POST …/peer-heartbeat`, `POST …/activate-dr`, `POST …/fail-back`: Per-pair reachability used by the lane. The Settings page is the operator control.
+* `GET /api/v1/write-authority`: Pairs, selected org installations, and enterprise rows, including which scope chips are enabled.
+* `POST /api/v1/write-authority`: Apply a linked or independent pair, or set one org or enterprise write/read. `confirmAllRepos` must be `ALL REPOS` when a read-only placement covers every repository.
+* `POST /api/v1/mappings/bulk`: Submit a bulk migration. One mapping and one bootstrap full-mirror job per source. Response rows are `CREATED_QUEUED`, `SKIPPED`, or `FAILED_VALIDATION`, plus `submissionId` and counts.
+* `GET /api/v1/bulk`: List bulk submissions (counts and skipped-row JSON).
+* `GET /api/v1/bulk/:id`: One submission, including rows that never became jobs.
+* `POST /api/v1/bulk/:id/cancel`: Cancel queued and in-progress jobs created by that submission.
 * `POST /api/v1/system-engine/circuit-breaker/probe-and-reset`: Admin force-reset and connectivity probe for tripped circuit breakers.
 * `GET /api/v1/storage/status`: Real-time disk usage, cache counts, and storage tier breakdown.
 * `POST /api/v1/storage/evict-now`: Triggers LRU eviction on stale bare Git caches.

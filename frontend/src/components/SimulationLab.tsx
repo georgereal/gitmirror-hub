@@ -15,7 +15,7 @@ export const SimulationLab: React.FC<SimulationLabProps> = ({
   onUpdateSimulationConfig,
   onEmitSyntheticWebhook,
 }) => {
-  const [selectedMappingId, setSelectedMappingId] = useState<number>(mappings[0]?.id || 0);
+  const [selectedMappingId, setSelectedMappingId] = useState<string>(mappings[0]?.id || "");
   const [branch, setBranch] = useState('main');
   const [commitSha, setCommitSha] = useState('a1b2c3d4e5f67890abcdef1234567890abcdef12');
   const [commitMessage, setCommitMessage] = useState('feat(core): synthetic commit for queue resilience verification');
@@ -175,7 +175,7 @@ export const SimulationLab: React.FC<SimulationLabProps> = ({
               <label className="block text-zinc-700 font-medium mb-1">Target Repository Pair</label>
               <select
                 value={selectedMappingId}
-                onChange={(e) => setSelectedMappingId(parseInt(e.target.value, 10))}
+                onChange={(e) => setSelectedMappingId(e.target.value)}
                 className="w-full bg-white border border-zinc-200 rounded-lg px-3 py-2 text-zinc-900 text-xs focus:outline-none focus:border-zinc-400"
               >
                 {mappings.map((m) => (

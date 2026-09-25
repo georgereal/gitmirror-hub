@@ -6,13 +6,13 @@ package com.gitutility.service;
  */
 public final class ScmCredentialContext {
 
-    private static final ThreadLocal<Long> CURRENT_ID = new ThreadLocal<>();
+    private static final ThreadLocal<String> CURRENT_ID = new ThreadLocal<>();
     private static final ThreadLocal<String> CURRENT_INSTALLATION = new ThreadLocal<>();
 
     private ScmCredentialContext() {
     }
 
-    public static void bind(Long credentialId) {
+    public static void bind(String credentialId) {
         CURRENT_ID.set(credentialId);
     }
 
@@ -21,7 +21,7 @@ public final class ScmCredentialContext {
         CURRENT_INSTALLATION.set(installationId);
     }
 
-    public static Long currentId() {
+    public static String currentId() {
         return CURRENT_ID.get();
     }
 
@@ -34,12 +34,12 @@ public final class ScmCredentialContext {
         CURRENT_INSTALLATION.remove();
     }
 
-    public static Scope open(Long credentialId) {
+    public static Scope open(String credentialId) {
         return open(credentialId, null);
     }
 
-    public static Scope open(Long credentialId, String installationId) {
-        Long previousId = CURRENT_ID.get();
+    public static Scope open(String credentialId, String installationId) {
+        String previousId = CURRENT_ID.get();
         String previousInstallation = CURRENT_INSTALLATION.get();
         CURRENT_ID.set(credentialId);
         if (installationId != null && !installationId.isBlank()) {
@@ -49,10 +49,10 @@ public final class ScmCredentialContext {
     }
 
     public static final class Scope implements AutoCloseable {
-        private final Long previousId;
+        private final String previousId;
         private final String previousInstallation;
 
-        private Scope(Long previousId, String previousInstallation) {
+        private Scope(String previousId, String previousInstallation) {
             this.previousId = previousId;
             this.previousInstallation = previousInstallation;
         }

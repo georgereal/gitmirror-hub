@@ -3,8 +3,8 @@ import {
   Search, X, Globe, GitFork, Layers, Lock,
   Loader2, ArrowRight, Filter, Server, Check
 } from 'lucide-react';
-import { GitHubRepoOption, RepoSearchResult, ScmCredential } from '../types';
-import { searchRemoteRepositories, listScmCredentials, searchCredentialRepositories } from '../services/api';
+import { GitHubRepoOption, RepoSearchResult, ScmCredential, ScmInstallationOption } from '../types';
+import { searchRemoteRepositories, listScmCredentials, searchCredentialRepositories, listScmInstallations } from '../services/api';
 import { isProviderUiEnabled, useFeatureFlags } from '../hooks/useFeatureFlags';
 
 interface RepoPickerModalProps {
@@ -54,7 +54,10 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
   const [query, setQuery] = useState('');
   const [provider, setProvider] = useState<string>(defaultProvider === 'ALL' ? 'GITHUB' : defaultProvider);
   const [credentials, setCredentials] = useState<ScmCredential[]>([]);
-  const [credentialId, setCredentialId] = useState<number | ''>('');
+  const [credentialId, setCredentialId] = useState<string | ''>('');
+  /** Blank = every selected App installation. Set = that owner only. */
+  const [ownerInstallationId, setOwnerInstallationId] = useState<string | ''>('');
+  const [installations, setInstallations] = useState<ScmInstallationOption[]>([]);
   const [pageSize, setPageSize] = useState<number>(15);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -104,9 +107,11 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
           // GitHub App credentials grant the richest permissions — prefer them over PATs.
           const enabled = rows
             .filter((r) => r.enabled)
-            .sort((a, b) => (a.authMode === 'GITHUB_APP' ? 0 : 1) - (b.authMode === 'GITHUB_APP' ? 0 : 1) || a.id - b.id);
+            .sort((a, b) => (a.authMode === 'GITHUB_APP' ? 0 : 1) - (b.authMode === 'GITHUB_APP' ? 0 : 1) || a.id.localeCompare(b.id));
           setCredentials(enabled);
           setCredentialId(enabled[0]?.id ?? '');
+          setOwnerInstallationId('');
+          setInstallations([]);
         })
         .catch(() => {
           setCredentials([]);
@@ -115,6 +120,8 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
     } else {
       setCredentials([]);
       setCredentialId('');
+      setOwnerInstallationId('');
+      setInstallations([]);
     }
   }, [isOpen, provider]);
 
@@ -129,8 +136,9 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
     activeProvider: string,
     pageNum: number,
     append = false,
-    cred?: number,
-    limit = pageSize
+    cred?: string,
+    limit = pageSize,
+    installId?: string
   ) => {
     if (pageNum === 1) setLoading(true);
     else setLoadingMore(true);
@@ -144,6 +152,7 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
           page: pageNum,
           limit,
           access,
+          installationId: installId || undefined,
         });
       } else {
         res = await searchRemoteRepositories({
@@ -166,9 +175,40 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
     }
   };
 
+  const selectedCredential = credentials.find((c) => c.id === credentialId);
+
+  useEffect(() => {
+    if (!isOpen || !credentialId || selectedCredential?.authMode !== 'GITHUB_APP') {
+      setInstallations([]);
+      setOwnerInstallationId('');
+      return;
+    }
+    let cancelled = false;
+    void listScmInstallations(credentialId)
+      .then((rows) => {
+        if (cancelled) return;
+        const selectedIds = selectedCredential.installationIds?.length
+          ? selectedCredential.installationIds
+          : selectedCredential.installationId
+            ? [selectedCredential.installationId]
+            : [];
+        const allowed = new Set(selectedIds);
+        const visible = (rows || []).filter((row) =>
+          allowed.size === 0 || (row.installationId != null && allowed.has(row.installationId))
+        );
+        setInstallations(visible);
+      })
+      .catch(() => {
+        if (!cancelled) setInstallations([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, credentialId, selectedCredential?.authMode, selectedCredential?.installationId, selectedCredential?.installationIds]);
+
   const canFetch = !needsCredential || credentialId !== '';
 
-  const runSearch = (searchQuery: string) => {
+  const runSearch = (searchQuery: string, installId = ownerInstallationId) => {
     if (!canFetch) return;
     setPage(1);
     fetchRepos(
@@ -176,8 +216,9 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
       provider,
       1,
       false,
-      credentialId === '' ? undefined : Number(credentialId),
-      pageSize
+      credentialId === '' ? undefined : credentialId,
+      pageSize,
+      installId
     );
   };
 
@@ -204,14 +245,29 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
     runSearch('');
   };
 
-  const handleCredentialChange = (next: number | '') => {
+  const handleCredentialChange = (next: string | '') => {
     setCredentialId(next);
+    setOwnerInstallationId('');
+    setInstallations([]);
     setRepos([]);
     setHasMore(false);
     setHasLoaded(false);
     setError(null);
     setQuery('');
     if (debounceTimeout.current) clearTimeout(debounceTimeout.current);
+  };
+
+  const handleOwnerChange = (next: string) => {
+    setOwnerInstallationId(next);
+    setRepos([]);
+    setHasMore(false);
+    setPage(1);
+    if (!hasLoaded && !query.trim()) {
+      setError(null);
+      return;
+    }
+    setHasLoaded(false);
+    runSearch(query.trim(), next);
   };
 
   const renderProviderIcon = (p?: string) => {
@@ -237,7 +293,7 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
       if (next.has(key)) {
         next.delete(key);
       } else {
-        next.set(key, { ...repo, credentialId: repo.credentialId || (credentialId === '' ? undefined : Number(credentialId)) });
+        next.set(key, { ...repo, credentialId: repo.credentialId || (credentialId === '' ? undefined : credentialId) });
       }
       return next;
     });
@@ -249,7 +305,7 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
       for (const repo of repos) {
         const key = repoKey(repo.cloneUrl);
         if (!next.has(key)) {
-          next.set(key, { ...repo, credentialId: repo.credentialId || (credentialId === '' ? undefined : Number(credentialId)) });
+          next.set(key, { ...repo, credentialId: repo.credentialId || (credentialId === '' ? undefined : credentialId) });
         }
       }
       return next;
@@ -299,13 +355,28 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
           {needsCredential && (
             <select
               value={credentialId}
-              onChange={(e) => handleCredentialChange(e.target.value ? Number(e.target.value) : '')}
+              onChange={(e) => handleCredentialChange(e.target.value)}
               className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs"
             >
               <option value="">{credentials.length ? 'Select a credential' : 'No GitHub/GHES credentials — add one in Settings'}</option>
               {credentials.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.label} {c.accountLogin ? `· ${c.accountLogin}` : ''} {c.authMode === 'GITHUB_APP' ? '(App)' : '(PAT)'}
+                </option>
+              ))}
+            </select>
+          )}
+          {needsCredential && installations.length > 0 && (
+            <select
+              value={ownerInstallationId}
+              onChange={(e) => handleOwnerChange(e.target.value)}
+              className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs"
+            >
+              <option value="">All owners</option>
+              {installations.map((install) => (
+                <option key={install.installationId} value={install.installationId}>
+                  @{install.accountLogin || install.installationId}
+                  {install.accountType ? ` · ${install.accountType}` : ''}
                 </option>
               ))}
             </select>
@@ -364,7 +435,7 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
           ) : repos.length === 0 ? (
             <p className="py-12 text-center text-zinc-500 text-xs px-6">
               {query.trim()
-                ? `No repositories matching “${query.trim()}” for this credential.`
+                ? `No repositories matching “${query.trim()}”${ownerInstallationId ? ' for this owner' : ''}.`
                 : 'No repositories for this credential. On GitHub, open the App installation and grant it the repositories you want to mirror.'}
             </p>
           ) : (
@@ -393,7 +464,7 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
                       toggleRepo(repo);
                       return;
                     }
-                    onSelectRepo({ ...repo, credentialId: repo.credentialId || (credentialId === '' ? undefined : Number(credentialId)) });
+                    onSelectRepo({ ...repo, credentialId: repo.credentialId || (credentialId === '' ? undefined : credentialId) });
                     onClose();
                   }}
                   className={`p-3 border rounded-xl cursor-pointer flex items-center justify-between ${
@@ -441,8 +512,9 @@ export const RepoPickerModal: React.FC<RepoPickerModalProps> = ({
                       provider,
                       page + 1,
                       true,
-                      credentialId === '' ? undefined : Number(credentialId),
-                      pageSize
+                      credentialId === '' ? undefined : credentialId,
+                      pageSize,
+                      ownerInstallationId
                     )
                   }
                   disabled={loadingMore}

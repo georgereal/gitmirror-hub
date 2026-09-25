@@ -19,5 +19,11 @@ public class TestConnectionRequest {
      */
     private Boolean knownPrivate;
     /** GitHub/GHES credential to authenticate with (no global fallback). */
-    private Long credentialId;
+    private String credentialId;
+    /**
+     * App installation that owns the repository. When set, the check mints that installation's
+     * token. When absent on a multi-install App, the backend resolves the owning installation
+     * from the repository and returns it on the report.
+     */
+    private String installationId;
 }

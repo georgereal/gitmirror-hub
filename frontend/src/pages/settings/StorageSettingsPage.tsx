@@ -14,8 +14,8 @@ import {
 
 export const StorageSettingsPage: React.FC = () => {
   const [storageStatus, setStorageStatus] = useState<StorageStatusResponse | null>(null);
-  const [localDir, setLocalDir] = useState('/tmp/git-utility-mirrors');
-  const [nasDir, setNasDir] = useState('/tmp/git-utility-nas-mirrors');
+  const [localDir, setLocalDir] = useState('');
+  const [nasDir, setNasDir] = useState('');
   const [maxDiskQuotaMb, setMaxDiskQuotaMb] = useState(51200);
   const [maxCachedRepos, setMaxCachedRepos] = useState(1000);
   const [retentionHours, setRetentionHours] = useState(72);
@@ -44,8 +44,8 @@ export const StorageSettingsPage: React.FC = () => {
       }
       if (sysEngine.status === 'fulfilled' && sysEngine.value) {
         const s = sysEngine.value;
-        setLocalDir(s.localDir || '/tmp/git-utility-mirrors');
-        setNasDir(s.nasDir || '/tmp/git-utility-nas-mirrors');
+        setLocalDir(s.localDir ?? '');
+        setNasDir(s.nasDir ?? '');
         setMaxDiskQuotaMb(s.maxDiskQuotaMb || 51200);
         setMaxCachedRepos(s.maxCachedRepos || 1000);
         setRetentionHours(s.retentionHours || 72);
@@ -153,10 +153,14 @@ export const StorageSettingsPage: React.FC = () => {
                   type="text"
                   value={localDir}
                   onChange={(e) => setLocalDir(e.target.value)}
-                  placeholder="/tmp/git-utility-mirrors"
-                  className="w-full bg-white border border-zinc-200 rounded-lg px-3 py-1.5 text-zinc-900 font-mono text-xs focus:outline-none focus:border-zinc-400"
-                  required
+                  placeholder="Not set"
+                  className="w-full bg-white border border-zinc-200 rounded-lg px-3 py-1.5 text-zinc-900 font-mono text-xs placeholder:text-zinc-400 focus:outline-none focus:border-zinc-400"
                 />
+                {!localDir && (
+                  <p className="mt-1 text-[10px] text-zinc-400">
+                    No directory saved. Set GIT_WORKSPACE_DIR or GIT_STORAGE_LOCAL_DIR and restart, or enter a path and save.
+                  </p>
+                )}
               </div>
 
               <div>
@@ -184,10 +188,14 @@ export const StorageSettingsPage: React.FC = () => {
                   type="text"
                   value={nasDir}
                   onChange={(e) => setNasDir(e.target.value)}
-                  placeholder="/mnt/nas/git-mirrors"
-                  className="w-full bg-white border border-zinc-200 rounded-lg px-3 py-1.5 text-zinc-900 font-mono text-xs focus:outline-none focus:border-zinc-400"
-                  required
+                  placeholder="Not set"
+                  className="w-full bg-white border border-zinc-200 rounded-lg px-3 py-1.5 text-zinc-900 font-mono text-xs placeholder:text-zinc-400 focus:outline-none focus:border-zinc-400"
                 />
+                {!nasDir && (
+                  <p className="mt-1 text-[10px] text-zinc-400">
+                    No mount saved. Set GIT_STORAGE_NAS_DIR and restart, or enter a path and save.
+                  </p>
+                )}
 
                 {nasTestResult && (
                   <div className={`mt-2 p-2 rounded-lg border text-[11px] flex items-center space-x-1.5 ${
@@ -329,7 +337,17 @@ export const StorageSettingsPage: React.FC = () => {
                     <span className="font-semibold text-zinc-800 text-sm font-mono">{storageStatus.totalCachedRepos}</span>
                   </div>
                   <div className="p-2.5 bg-zinc-50 rounded-lg border border-zinc-100">
-                    <span className="text-zinc-400 block">Auto LRU Repos</span>
+                    <span className="text-zinc-400 flex items-center gap-1">
+                      Auto LRU Repos
+                      <InfoTooltip
+                        title="Automatic Least Recently Used"
+                        badge="Auto LRU"
+                        whatIsIt="The default storage tier for a mirror pair. LRU means Least Recently Used."
+                        howItWorks="The bare repo stays in the local cache directory. When the disk quota, cached-repo limit, or retention window is exceeded, the least recently used Auto LRU repos are deleted. Hot Persistent repos in the same directory are kept."
+                        position="bottom"
+                        iconSize={11}
+                      />
+                    </span>
                     <span className="font-semibold text-zinc-800 text-sm font-mono">{storageStatus.autoLruReposCount}</span>
                   </div>
                   <div className="p-2.5 bg-zinc-50 rounded-lg border border-zinc-100">

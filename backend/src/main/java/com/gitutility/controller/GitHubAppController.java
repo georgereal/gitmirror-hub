@@ -67,10 +67,12 @@ public class GitHubAppController {
             @RequestParam(required = false) String provider,
             @RequestParam(required = false, defaultValue = "1") int page,
             @RequestParam(required = false, defaultValue = "15") int limit,
-            @RequestParam(required = false) Long credentialId,
-            @RequestParam(required = false) String access) {
+            @RequestParam(required = false) String credentialId,
+            @RequestParam(required = false) String access,
+            @RequestParam(required = false) String installationId) {
         if (credentialId != null) {
-            return ResponseEntity.ok(credentialService.searchRepositories(credentialId, query, page, limit, access));
+            return ResponseEntity.ok(credentialService.searchRepositories(
+                    credentialId, query, page, limit, access, installationId));
         }
         if (provider == null || provider.isBlank() || "ALL".equalsIgnoreCase(provider)) {
             throw new IllegalArgumentException("provider is required (do not search all providers)");
@@ -87,8 +89,17 @@ public class GitHubAppController {
     @GetMapping("/repo-has-commits")
     public ResponseEntity<Map<String, Object>> repoHasCommits(
             @RequestParam String url,
-            @RequestParam(required = false) Long credentialId) {
+            @RequestParam(required = false) String credentialId) {
         boolean hasCommits = scmProviderFacade.hasCommits(url, credentialId);
         return ResponseEntity.ok(Map.of("url", url, "hasCommits", hasCommits));
+    }
+
+    /** Name-availability probe for bulk destination creation. Creation itself waits until the job starts. */
+    @GetMapping("/repo-exists")
+    public ResponseEntity<Map<String, Object>> repoExists(
+            @RequestParam String url,
+            @RequestParam(required = false) String credentialId) {
+        boolean exists = scmProviderFacade.repositoryExists(url, credentialId);
+        return ResponseEntity.ok(Map.of("url", url, "exists", exists));
     }
 }

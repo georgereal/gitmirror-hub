@@ -1,5 +1,8 @@
 package com.gitutility.model.entity;
 
+import com.gitutility.persistence.Ids;
+import org.springframework.data.mongodb.core.mapping.Document;
+import com.gitutility.persistence.store.WritePreparer;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -13,15 +16,15 @@ import java.time.Instant;
  */
 @Entity
 @Table(name = "feature_flags")
+@Document(collection = "feature_flags")
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class FeatureFlagsConfig {
+public class FeatureFlagsConfig implements WritePreparer {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     /** Allow PUBLIC visibility / anonymous HTTPS source in pair UI and API. */
     @Column(nullable = false)
@@ -48,7 +51,10 @@ public class FeatureFlagsConfig {
 
     @PrePersist
     @PreUpdate
-    protected void onUpdate() {
+    public void prepareForWrite() {
+        if (Ids.isUnset(id)) {
+            id = Ids.newId();
+        }
         this.updatedAt = Instant.now();
     }
 }

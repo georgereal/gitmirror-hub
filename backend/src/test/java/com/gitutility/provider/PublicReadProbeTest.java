@@ -14,7 +14,7 @@ class PublicReadProbeTest {
                 .repoUrl("https://github.com/owner/public-repo.git")
                 .requiredAccess("READ")
                 .knownPrivate(false)
-                .credentialId(42L)
+                .credentialId("42")
                 .build();
         assertTrue(PublicReadProbe.skipAnonymousProbe(req));
     }

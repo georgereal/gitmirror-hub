@@ -80,4 +80,36 @@ public class JobStageProgress {
             return "{}";
         }
     }
+
+    /**
+     * Union of push refs and LFS cursors so a ref push and an overlapping LFS pass
+     * can persist without dropping the other side's progress.
+     */
+    public static JobStageProgress merge(JobStageProgress base, JobStageProgress incoming) {
+        if (incoming == null) {
+            return base == null ? empty() : base;
+        }
+        if (base == null) {
+            return incoming;
+        }
+        if (incoming.completedPushRefs != null) {
+            base.completedPushRefs.putAll(incoming.completedPushRefs);
+        }
+        if (incoming.completedLfsOids != null) {
+            base.completedLfsOids.addAll(incoming.completedLfsOids);
+        }
+        if (incoming.discoveredLfsBlob != null) {
+            base.discoveredLfsBlob = incoming.discoveredLfsBlob;
+        }
+        if (incoming.prListCursor != null) {
+            base.prListCursor = incoming.prListCursor;
+        }
+        if (incoming.prListComplete != null) {
+            base.prListComplete = incoming.prListComplete;
+        }
+        if (incoming.prSeenOpenSourceNumbers != null) {
+            base.prSeenOpenSourceNumbers.addAll(incoming.prSeenOpenSourceNumbers);
+        }
+        return base;
+    }
 }

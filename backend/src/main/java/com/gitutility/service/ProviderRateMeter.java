@@ -51,8 +51,8 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
     @Value("${git-utility.provider-limits.github.push-per-minute-guideline:6}")
     private int gitPushPerMinuteGuideline;
 
-    private static final ConcurrentHashMap<Long, JobMeter> METERS = new ConcurrentHashMap<>();
-    private static final ThreadLocal<Long> CURRENT_JOB_ID = new ThreadLocal<>();
+    private static final ConcurrentHashMap<String, JobMeter> METERS = new ConcurrentHashMap<>();
+    private static final ThreadLocal<String> CURRENT_JOB_ID = new ThreadLocal<>();
     private static final long ROLLING_WINDOW_MS = 60_000L;
     private static final long SAMPLE_INTERVAL_MS = 2_000L;
     private static final int MAX_SAMPLES = 180;
@@ -72,7 +72,7 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
         this.installationKeyResolver = installationKeyResolver;
     }
 
-    public void bindJob(Long jobId) {
+    public void bindJob(String jobId) {
         if (jobId == null) {
             return;
         }
@@ -84,7 +84,7 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
      * Attach this thread to an already-bound job (LFS/PR worker pools).
      * No-op if the job meter was never bound or already unbound.
      */
-    public void attachJob(Long jobId) {
+    public void attachJob(String jobId) {
         if (jobId == null || !METERS.containsKey(jobId)) {
             return;
         }
@@ -96,7 +96,7 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
     }
 
     public void unbindJob() {
-        Long id = CURRENT_JOB_ID.get();
+        String id = CURRENT_JOB_ID.get();
         CURRENT_JOB_ID.remove();
         if (id != null) {
             METERS.remove(id);
@@ -104,7 +104,7 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
     }
 
     private JobMeter current() {
-        Long id = CURRENT_JOB_ID.get();
+        String id = CURRENT_JOB_ID.get();
         return id != null ? METERS.get(id) : null;
     }
 
@@ -162,10 +162,10 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
         scmQuotaTracker.recordGitTraffic(provider, repo, fetch, push, throttled);
     }
 
-    public Long wallElapsedMs() {
+    public long wallElapsedMs() {
         JobMeter meter = current();
         if (meter == null) {
-            return null;
+            return 0L;
         }
         return Math.max(0, Duration.between(meter.startedAt, Instant.now()).toMillis());
     }
@@ -571,7 +571,7 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
         return null;
     }
 
-    private void persistWarnAudit(Long jobId, String message) {
+    private void persistWarnAudit(String jobId, String message) {
         if (jobId == null || auditLogRepository == null) {
             return;
         }
@@ -632,7 +632,7 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
     }
 
     private static final class JobMeter {
-        final Long jobId;
+        final String jobId;
         final Instant startedAt;
         final AtomicInteger restCallCount = new AtomicInteger();
         final AtomicInteger graphqlCallCount = new AtomicInteger();
@@ -657,7 +657,7 @@ public class ProviderRateMeter implements ClientHttpRequestInterceptor {
         volatile double gitFetchPerMinutePeak;
         volatile long lastSampleAtMs;
 
-        JobMeter(Long jobId, Instant startedAt) {
+        JobMeter(String jobId, Instant startedAt) {
             this.jobId = jobId;
             this.startedAt = startedAt;
         }

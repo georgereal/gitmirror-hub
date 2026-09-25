@@ -1,5 +1,8 @@
 package com.gitutility.model.entity;
 
+import com.gitutility.persistence.Ids;
+import org.springframework.data.mongodb.core.mapping.Document;
+import com.gitutility.persistence.store.WritePreparer;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -12,18 +15,18 @@ import java.time.Instant;
 @Table(name = "pr_mappings", indexes = {
     @Index(name = "idx_prmapping_pair_source", columnList = "mappingId, sourcePrNumber")
 })
+@Document(collection = "pr_mappings")
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class PrMapping {
+public class PrMapping implements WritePreparer {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     @Column(nullable = false)
-    private Long mappingId;
+    private String mappingId;
 
     @Column(nullable = false)
     private String sourceRepo;
@@ -80,7 +83,10 @@ public class PrMapping {
      */
     @PrePersist
     @PreUpdate
-    void clampColumnLimitsBeforeWrite() {
+    public void prepareForWrite() {
+        if (Ids.isUnset(id)) {
+            id = Ids.newId();
+        }
         title = clampToColumnLimit(title);
         lastPushedTitle = clampToColumnLimit(lastPushedTitle);
     }

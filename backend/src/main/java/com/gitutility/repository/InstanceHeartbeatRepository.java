@@ -1,16 +1,34 @@
 package com.gitutility.repository;
 
 import com.gitutility.model.entity.InstanceHeartbeat;
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Modifying;
-import org.springframework.data.jpa.repository.Query;
-import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
+import java.util.List;
+import java.util.Optional;
 
-public interface InstanceHeartbeatRepository extends JpaRepository<InstanceHeartbeat, String> {
+/**
+ * Store facade for fleet heartbeats (natural key: {@code instanceId}).
+ * Exactly one provider-backed implementation is active: H2 ({@code repository.h2}) or MongoDB ({@code repository.mongo}).
+ */
+public interface InstanceHeartbeatRepository {
 
-    @Modifying
-    @Query("DELETE FROM InstanceHeartbeat h WHERE h.updatedAt < :cutoff")
-    int deleteOlderThan(@Param("cutoff") Instant cutoff);
+    int deleteOlderThan(Instant cutoff);
+
+    InstanceHeartbeat save(InstanceHeartbeat entity);
+
+    List<InstanceHeartbeat> saveAll(Iterable<InstanceHeartbeat> entities);
+
+    Optional<InstanceHeartbeat> findById(String id);
+
+    boolean existsById(String id);
+
+    List<InstanceHeartbeat> findAll();
+
+    long count();
+
+    void delete(InstanceHeartbeat entity);
+
+    void deleteById(String id);
+
+    void deleteAll();
 }

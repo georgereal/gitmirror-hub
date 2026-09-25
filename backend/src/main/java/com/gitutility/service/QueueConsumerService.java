@@ -9,6 +9,7 @@ import com.gitutility.repository.SyncJobRepository;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
@@ -57,9 +58,50 @@ public class QueueConsumerService {
     @Value("${git-utility.messaging.provider:rabbitmq}")
     private String messagingProvider;
 
+    /** When the incremental webhook bus is on, full mirrors on {@code none} still take pair leases. */
+    @Value("${git-utility.webhook-bus.provider:off}")
+    private String webhookBusProvider;
+
     private final RepoDirLockService repoDirLockService;
 
+    private PushBatchConcurrencyService pushBatchConcurrencyService;
+
     private volatile Semaphore pushConcurrencyLimiter;
+
+    @Autowired(required = false)
+    public void setPushBatchConcurrencyService(PushBatchConcurrencyService pushBatchConcurrencyService) {
+        this.pushBatchConcurrencyService = pushBatchConcurrencyService;
+    }
+
+    private MetadataSyncSettingsService metadataSyncSettingsService;
+
+    @Autowired(required = false)
+    public void setMetadataSyncSettingsService(MetadataSyncSettingsService metadataSyncSettingsService) {
+        this.metadataSyncSettingsService = metadataSyncSettingsService;
+    }
+
+    private boolean pullRequestsOn() {
+        return metadataSyncSettingsService == null || metadataSyncSettingsService.isPullRequestsEnabled();
+    }
+
+    private boolean releasesOn() {
+        return metadataSyncSettingsService == null || metadataSyncSettingsService.isReleasesEnabled();
+    }
+
+    private boolean ciChecksOn() {
+        return metadataSyncSettingsService == null || metadataSyncSettingsService.isCiChecksEnabled();
+    }
+
+    private boolean lfsOn() {
+        return metadataSyncSettingsService == null || metadataSyncSettingsService.isLfsEnabled();
+    }
+
+    private static String metadataSkipReason(boolean enabled, boolean pairMetadata) {
+        if (!enabled) {
+            return MetadataSyncSettingsService.DISABLED;
+        }
+        return pairMetadata ? "Throttled" : "Branch-only job";
+    }
 
     @PostConstruct
     public void init() {
@@ -156,7 +198,9 @@ public class QueueConsumerService {
             jobCancellationService.registerRunning(job.getId());
         }
 
-        boolean shouldAcquireLease = pairLeaseService != null && !"none".equalsIgnoreCase(messagingProvider);
+        boolean webhookBus = webhookBusProvider != null && !"off".equalsIgnoreCase(webhookBusProvider.trim());
+        boolean shouldAcquireLease = pairLeaseService != null
+                && (!"none".equalsIgnoreCase(messagingProvider) || webhookBus);
         if (shouldAcquireLease) {
             try {
                 pairLeaseService.acquire(event.getMappingId(), job.getId());
@@ -185,6 +229,7 @@ public class QueueConsumerService {
         lock.lock();
 
         boolean acquiredPermit = false;
+        boolean pairCounted = false;
         boolean leaseHeld = shouldAcquireLease;
         GitSyncEngine.SyncResult result = null;
         try {
@@ -198,6 +243,10 @@ public class QueueConsumerService {
             if (pushConcurrencyLimiter != null) {
                 pushConcurrencyLimiter.acquire();
                 acquiredPermit = true;
+            }
+            if (pushBatchConcurrencyService != null) {
+                pushBatchConcurrencyService.pairBegin(job.getId());
+                pairCounted = true;
             }
 
             // 3. Run JGit Mirror Synchronization (Includes Fast-Path reachability check)
@@ -227,11 +276,40 @@ public class QueueConsumerService {
             int prsSynced = 0;
             SyncPipelineState pipeline = result.pipeline;
             boolean pairMetadata = SyncLaneRouter.includePairMetadata(event);
+            boolean resumingJob = !event.isForceSourceFetch() && jobExecutionStateService.shouldResume(job);
+            String resumeStageId = jobExecutionStateService.resolveResumeStageId(
+                    jobExecutionStateService.loadPipeline(job));
+            if (!result.fastPathShortCircuited && pairMetadata && lfsOn()
+                    && (pipeline == null || !pipeline.isStageSettled(SyncPipelineState.LFS))) {
+                gitSyncEngine.executeLfsSync(event, job.getId(), pipeline, result, resumingJob, resumeStageId);
+                if (pipeline != null) {
+                    broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
+                }
+            } else if (!result.fastPathShortCircuited && !pairMetadata && lfsOn() && result.success) {
+                gitSyncEngine.syncLfsForPushedRange(event, job.getId(), pipeline, result);
+                if (pipeline != null) {
+                    broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
+                }
+            } else if (pipeline != null && !result.fastPathShortCircuited && !pairMetadata) {
+                pipeline.markSkipped(SyncPipelineState.LFS, metadataSkipReason(lfsOn(), false));
+                broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
+            } else if (pipeline != null && !result.fastPathShortCircuited && pairMetadata && !lfsOn()) {
+                pipeline.markSkipped(SyncPipelineState.LFS, MetadataSyncSettingsService.DISABLED);
+                broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
+            }
+            if (!result.fastPathShortCircuited && pairMetadata && result.lfsObjectsCount > 0) {
+                if (pairDiffSnapshotService != null) {
+                    pairDiffSnapshotService.updateLfs(event.getMappingId(), result.lfsObjectsCount, result.lfsSyncedCount);
+                }
+                job.setLfsObjectsCount(result.lfsObjectsCount);
+                syncJobRepository.save(job);
+                webSocketNotificationService.notifyJobUpdated(job);
+            }
             var pairWatermarks = event.getMappingId() != null
                     ? mappingRepository.findById(event.getMappingId()).orElse(null)
                     : null;
             // Pair-wide PR/release REST sync only on full-mirror jobs (and dedicated UI actions).
-            if (!result.fastPathShortCircuited && pairMetadata
+            if (!result.fastPathShortCircuited && pairMetadata && pullRequestsOn()
                     && shouldSyncMetadata(pairCatchupLedger.lastPrListCompletedAt(pairWatermarks))
                     && (pipeline == null || !pipeline.isStageSettled(SyncPipelineState.PR_METADATA))) {
                 if (pipeline != null) {
@@ -269,6 +347,9 @@ public class QueueConsumerService {
                     syncJobRepository.save(job);
                     webSocketNotificationService.notifyJobUpdated(job);
                 } catch (Exception prEx) {
+                    if (pushBatchConcurrencyService != null) {
+                        pushBatchConcurrencyService.noteIfRateLimited(prEx);
+                    }
                     if (pipeline != null) {
                         pipeline.markDone(SyncPipelineState.PR_METADATA, "Completed with notice");
                         broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
@@ -279,12 +360,12 @@ public class QueueConsumerService {
                 }
             } else if (pipeline != null && !result.fastPathShortCircuited) {
                 pipeline.markSkipped(SyncPipelineState.PR_METADATA,
-                        pairMetadata ? "Throttled" : "Branch-only job");
+                        metadataSkipReason(pullRequestsOn(), pairMetadata));
                 broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
             }
 
             int releasesSynced = 0;
-            if (!result.fastPathShortCircuited && pairMetadata
+            if (!result.fastPathShortCircuited && pairMetadata && releasesOn()
                     && shouldSyncMetadata(pairCatchupLedger.lastReleaseSyncAt(pairWatermarks))
                     && (pipeline == null || !pipeline.isStageSettled(SyncPipelineState.RELEASES))) {
                 if (pipeline != null) {
@@ -337,18 +418,24 @@ public class QueueConsumerService {
                         }
                     }
                 } catch (ReleaseAndStatusSyncService.MetadataSyncException relEx) {
+                    if (pushBatchConcurrencyService != null) {
+                        pushBatchConcurrencyService.noteIfRateLimited(relEx);
+                    }
                     markMetadataStageFailed(job, event, pipeline, SyncPipelineState.RELEASES, "Release metadata sync FAILED: ", relEx);
                 } catch (Exception relEx) {
+                    if (pushBatchConcurrencyService != null) {
+                        pushBatchConcurrencyService.noteIfRateLimited(relEx);
+                    }
                     markMetadataStageFailed(job, event, pipeline, SyncPipelineState.RELEASES, "Release metadata sync FAILED: ", relEx);
                 }
             } else if (pipeline != null && !result.fastPathShortCircuited) {
                 pipeline.markSkipped(SyncPipelineState.RELEASES,
-                        pairMetadata ? "Throttled" : "Branch-only job");
+                        metadataSkipReason(releasesOn(), pairMetadata));
                 broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
             }
 
             // CI checks backfill for mirrored tip commits (check runs on GitHub/GHES; build statuses elsewhere).
-            if (!result.fastPathShortCircuited && pairMetadata
+            if (!result.fastPathShortCircuited && pairMetadata && ciChecksOn()
                     && (pipeline == null || !pipeline.isStageSettled(SyncPipelineState.CI_CHECKS))) {
                 if (pipeline != null) {
                     pipeline.markCurrent(SyncPipelineState.CI_CHECKS);
@@ -400,28 +487,7 @@ public class QueueConsumerService {
                 }
             } else if (pipeline != null && !result.fastPathShortCircuited) {
                 pipeline.markSkipped(SyncPipelineState.CI_CHECKS,
-                        pairMetadata ? "Throttled" : "Branch-only job");
-                broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
-            }
-
-            boolean resumingJob = !event.isForceSourceFetch() && jobExecutionStateService.shouldResume(job);
-            String resumeStageId = jobExecutionStateService.resolveResumeStageId(
-                    jobExecutionStateService.loadPipeline(job));
-            if (!result.fastPathShortCircuited && pairMetadata
-                    && (pipeline == null || !pipeline.isStageSettled(SyncPipelineState.LFS))) {
-                    gitSyncEngine.executeLfsSync(event, job.getId(), pipeline, result, resumingJob, resumeStageId);
-                if (pipeline != null) {
-                    broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
-                }
-                if (pairDiffSnapshotService != null && result.lfsObjectsCount > 0) {
-                    pairDiffSnapshotService.updateLfs(event.getMappingId(), result.lfsObjectsCount, result.lfsSyncedCount);
-                }
-                job.setLfsObjectsCount(result.lfsObjectsCount);
-                syncJobRepository.save(job);
-                webSocketNotificationService.notifyJobUpdated(job);
-            } else if (pipeline != null && !result.fastPathShortCircuited) {
-                pipeline.markSkipped(SyncPipelineState.LFS,
-                        pairMetadata ? "Already complete" : "Branch-only job");
+                        metadataSkipReason(ciChecksOn(), pairMetadata));
                 broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
             }
 
@@ -598,6 +664,9 @@ public class QueueConsumerService {
             if (syncJobService != null) {
                 syncJobService.clearDurationPersist(job.getId());
             }
+            if (pairCounted && pushBatchConcurrencyService != null) {
+                pushBatchConcurrencyService.pairEnd(job.getId());
+            }
             if (acquiredPermit && pushConcurrencyLimiter != null) {
                 pushConcurrencyLimiter.release();
             }
@@ -702,7 +771,7 @@ public class QueueConsumerService {
         return Duration.between(last, Instant.now()).getSeconds() >= metadataSyncIntervalSeconds;
     }
 
-    private void broadcastPipeline(Long jobId, Long mappingId, SyncPipelineState pipeline) {
+    private void broadcastPipeline(String jobId, String mappingId, SyncPipelineState pipeline) {
         if (webSocketNotificationService == null || jobId == null || pipeline == null) {
             return;
         }

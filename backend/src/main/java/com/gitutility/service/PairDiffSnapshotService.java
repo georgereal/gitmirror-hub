@@ -70,7 +70,7 @@ public class PairDiffSnapshotService {
         }
     }
 
-    public void persistFromReport(Long mappingId, SyncDiffReport report, String source) {
+    public void persistFromReport(String mappingId, SyncDiffReport report, String source) {
         if (mappingId == null || report == null) {
             return;
         }
@@ -87,7 +87,7 @@ public class PairDiffSnapshotService {
         }
     }
 
-    public void updateFromGitResult(Long mappingId, GitSyncEngine.SyncResult result) {
+    public void updateFromGitResult(String mappingId, GitSyncEngine.SyncResult result) {
         if (mappingId == null || result == null || !result.success) {
             return;
         }
@@ -164,11 +164,11 @@ public class PairDiffSnapshotService {
         }
     }
 
-    public void refreshPrCounts(Long mappingId) {
+    public void refreshPrCounts(String mappingId) {
         refreshPrCounts(mappingId, -1);
     }
 
-    public void refreshPrCounts(Long mappingId, int sourceOpenCount) {
+    public void refreshPrCounts(String mappingId, int sourceOpenCount) {
         if (mappingId == null) {
             return;
         }
@@ -180,11 +180,11 @@ public class PairDiffSnapshotService {
         updatePrs(mappingId, total, synced, synced);
     }
 
-    public void updatePrs(Long mappingId, int total, int synced) {
+    public void updatePrs(String mappingId, int total, int synced) {
         updatePrs(mappingId, total, synced, synced);
     }
 
-    public void updatePrs(Long mappingId, int total, int synced, int destCount) {
+    public void updatePrs(String mappingId, int total, int synced, int destCount) {
         if (mappingId == null) {
             return;
         }
@@ -206,7 +206,7 @@ public class PairDiffSnapshotService {
         }
     }
 
-    public void updateLfs(Long mappingId, int discovered, int synced) {
+    public void updateLfs(String mappingId, int discovered, int synced) {
         if (mappingId == null) {
             return;
         }
@@ -229,7 +229,7 @@ public class PairDiffSnapshotService {
         }
     }
 
-    public void updateReleases(Long mappingId, int sourceCount, int targetCount) {
+    public void updateReleases(String mappingId, int sourceCount, int targetCount) {
         if (mappingId == null) {
             return;
         }
@@ -250,7 +250,7 @@ public class PairDiffSnapshotService {
         }
     }
 
-    public void clear(Long mappingId) {
+    public void clear(String mappingId) {
         if (mappingId == null) {
             return;
         }

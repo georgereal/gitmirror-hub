@@ -41,15 +41,15 @@ interface SyncRunsHistoryModalProps {
   isOpen: boolean;
   onClose: () => void;
   pairName: string;
-  mappingId: number;
+  mappingId: string;
   jobs: SyncJob[];
   progressByJobId?: Record<number, JobProgress>;
   onTriggerSync: (branch?: string, startFresh?: boolean) => Promise<void>;
   hasCheckpoint?: boolean;
   syncCheckpointStage?: string;
   onRefresh: () => void;
-  onCancelJob?: (id: number) => Promise<void>;
-  onPauseJob?: (id: number) => Promise<void>;
+  onCancelJob?: (id: string) => Promise<void>;
+  onPauseJob?: (id: string) => Promise<void>;
 }
 
 export const SyncRunsHistoryModal: React.FC<SyncRunsHistoryModalProps> = ({
@@ -67,12 +67,12 @@ export const SyncRunsHistoryModal: React.FC<SyncRunsHistoryModalProps> = ({
   syncCheckpointStage,
 }) => {
   const [filter, setFilter] = useState<RunFilter>('ACTIVE');
-  const [expandedJobId, setExpandedJobId] = useState<number | null>(null);
+  const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const [fullSyncChoiceOpen, setFullSyncChoiceOpen] = useState(false);
   const [jobLogs, setJobLogs] = useState<Record<number, SyncAuditLog[]>>({});
   const [loadingLogs, setLoadingLogs] = useState<Record<number, boolean>>({});
-  const [retryingJobId, setRetryingJobId] = useState<number | null>(null);
-  const [resumingJobId, setResumingJobId] = useState<number | null>(null);
+  const [retryingJobId, setRetryingJobId] = useState<string | null>(null);
+  const [resumingJobId, setResumingJobId] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   const [historyJobs, setHistoryJobs] = useState<SyncJob[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -100,14 +100,14 @@ export const SyncRunsHistoryModal: React.FC<SyncRunsHistoryModalProps> = ({
   }, [isOpen, mappingId]);
 
   const pairJobs = useMemo(() => {
-    const map = new Map<number, SyncJob>();
+    const map = new Map<string, SyncJob>();
     (historyJobs || []).forEach((j) => {
       if (j.mappingId === mappingId) map.set(j.id, j);
     });
     (jobs || []).forEach((j) => {
       if (j.mappingId === mappingId) map.set(j.id, j);
     });
-    return Array.from(map.values()).sort((a, b) => b.id - a.id);
+    return Array.from(map.values()).sort((a, b) => b.id.localeCompare(a.id));
   }, [historyJobs, jobs, mappingId]);
 
   const filteredJobs = pairJobs.filter((job) => matchesRunFilter(job, filter));
@@ -127,7 +127,7 @@ export const SyncRunsHistoryModal: React.FC<SyncRunsHistoryModalProps> = ({
     onRefresh();
   };
 
-  const loadLogsForJob = async (jobId: number) => {
+  const loadLogsForJob = async (jobId: string) => {
     if (jobLogs[jobId]) return;
     setLoadingLogs((prev) => ({ ...prev, [jobId]: true }));
     try {
@@ -140,7 +140,7 @@ export const SyncRunsHistoryModal: React.FC<SyncRunsHistoryModalProps> = ({
     }
   };
 
-  const toggleExpand = (jobId: number) => {
+  const toggleExpand = (jobId: string) => {
     if (expandedJobId === jobId) {
       setExpandedJobId(null);
     } else {
@@ -170,7 +170,7 @@ export const SyncRunsHistoryModal: React.FC<SyncRunsHistoryModalProps> = ({
     return () => window.clearInterval(timer);
   }, [isOpen, pairJobs]);
 
-  const handleRetry = async (branch?: string, jobId?: number, startFresh = false) => {
+  const handleRetry = async (branch?: string, jobId?: string, startFresh = false) => {
     if (jobId) setRetryingJobId(jobId);
     try {
       await onTriggerSync(branch || '*', startFresh);
@@ -181,7 +181,7 @@ export const SyncRunsHistoryModal: React.FC<SyncRunsHistoryModalProps> = ({
     }
   };
 
-  const handleResume = async (jobId: number) => {
+  const handleResume = async (jobId: string) => {
     setResumingJobId(jobId);
     try {
       await resumeJob(jobId);

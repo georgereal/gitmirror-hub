@@ -60,22 +60,22 @@ class RefOriginServiceTest {
 
     @Test
     void recordIfAbsentSkipsForkPrHeads() {
-        when(prMappingRepository.findByMappingId(4L)).thenReturn(List.of(
+        when(prMappingRepository.findByMappingId("4")).thenReturn(List.of(
                 PrMapping.builder().headBranch("add-repocloud-deploy-button").forkPrHead(true).build()
         ));
 
-        service.recordIfAbsent(4L, "refs/heads/add-repocloud-deploy-button", PairSide.B);
+        service.recordIfAbsent("4", "refs/heads/add-repocloud-deploy-button", PairSide.B);
 
         verify(refOriginRepository, never()).save(any());
     }
 
     @Test
     void shouldOmitHeadPushTowardAForForkPrHead() {
-        RepoMapping mapping = RepoMapping.builder().id(4L).build();
-        when(prMappingRepository.findByMappingId(4L)).thenReturn(List.of(
+        RepoMapping mapping = RepoMapping.builder().id("4").build();
+        when(prMappingRepository.findByMappingId("4")).thenReturn(List.of(
                 PrMapping.builder().headBranch("add-repocloud-deploy-button").forkPrHead(true).build()
         ));
-        when(refOriginRepository.findByMappingIdAndRefName(4L, "refs/heads/add-repocloud-deploy-button"))
+        when(refOriginRepository.findByMappingIdAndRefName("4", "refs/heads/add-repocloud-deploy-button"))
                 .thenReturn(Optional.empty());
 
         assertTrue(service.shouldOmitHeadPush(mapping, PairSide.B, PairSide.A, "add-repocloud-deploy-button"));
@@ -84,15 +84,15 @@ class RefOriginServiceTest {
 
     @Test
     void observeDestinationHeadsBackfillsForkFlagAndSeedsDestOrigin() {
-        RepoMapping mapping = RepoMapping.builder().id(4L).build();
+        RepoMapping mapping = RepoMapping.builder().id("4").build();
         PrMapping pr = PrMapping.builder()
-                .id(10L)
-                .mappingId(4L)
+                .id("10")
+                .mappingId("4")
                 .sourcePrNumber(1287L)
                 .headBranch("add-repocloud-deploy-button")
                 .forkPrHead(false)
                 .build();
-        when(prMappingRepository.findByMappingId(4L)).thenReturn(List.of(pr));
+        when(prMappingRepository.findByMappingId("4")).thenReturn(List.of(pr));
         when(prMappingRepository.save(any(PrMapping.class))).thenAnswer(i -> i.getArgument(0));
         when(refOriginRepository.findByMappingIdAndRefName(any(), any())).thenReturn(Optional.empty());
 
@@ -115,14 +115,14 @@ class RefOriginServiceTest {
 
     @Test
     void replicaEventAndDeletePolicy() {
-        when(refOriginRepository.findByMappingIdAndRefName(4L, "refs/heads/feat"))
+        when(refOriginRepository.findByMappingIdAndRefName("4", "refs/heads/feat"))
                 .thenReturn(Optional.of(RefOrigin.builder().originSide("A").refName("refs/heads/feat").build()));
-        when(prMappingRepository.findByMappingId(4L)).thenReturn(List.of());
+        when(prMappingRepository.findByMappingId("4")).thenReturn(List.of());
 
-        assertTrue(service.isReplicaEvent(4L, "feat", PairSide.B));
-        assertFalse(service.isReplicaEvent(4L, "feat", PairSide.A));
+        assertTrue(service.isReplicaEvent("4", "feat", PairSide.B));
+        assertFalse(service.isReplicaEvent("4", "feat", PairSide.A));
 
-        RepoMapping mapping = RepoMapping.builder().id(4L).build();
+        RepoMapping mapping = RepoMapping.builder().id("4").build();
         assertTrue(service.shouldPropagateDelete(mapping, PairSide.A, "feat"));
         assertFalse(service.shouldPropagateDelete(mapping, PairSide.B, "feat"));
         assertFalse(service.shouldPropagateDelete(mapping, PairSide.A, "main"));
@@ -131,7 +131,7 @@ class RefOriginServiceTest {
 
     @Test
     void omitsSyncConflictHeadsTowardRepoA() {
-        RepoMapping mapping = RepoMapping.builder().id(4L).build();
+        RepoMapping mapping = RepoMapping.builder().id("4").build();
         assertTrue(service.shouldOmitHeadPush(mapping, PairSide.B, PairSide.A, "sync-conflict/main-1"));
         assertFalse(service.shouldOmitHeadPush(mapping, PairSide.A, PairSide.B, "sync-conflict/main-1"));
     }
@@ -146,11 +146,11 @@ class RefOriginServiceTest {
     @Test
     void publicPrivateBackupBlocksUnknownReplicaOrigin() {
         RepoMapping mapping = RepoMapping.builder()
-                .id(4L)
+                .id("4")
                 .sourceVisibility(com.gitutility.model.enums.RepoVisibility.PUBLIC)
                 .targetVisibility(com.gitutility.model.enums.RepoVisibility.PRIVATE)
                 .build();
-        when(refOriginRepository.findByMappingIdAndRefName(4L, "refs/heads/local-only")).thenReturn(Optional.empty());
+        when(refOriginRepository.findByMappingIdAndRefName("4", "refs/heads/local-only")).thenReturn(Optional.empty());
 
         assertTrue(service.shouldBlockReplicaInboundWebhook(mapping, "local-only", PairSide.B));
         assertFalse(service.shouldBlockReplicaInboundWebhook(mapping, "local-only", PairSide.A));
@@ -159,11 +159,11 @@ class RefOriginServiceTest {
     @Test
     void publicPrivateBackupBlocksMirrorOriginatedRef() {
         RepoMapping mapping = RepoMapping.builder()
-                .id(4L)
+                .id("4")
                 .sourceVisibility(com.gitutility.model.enums.RepoVisibility.PUBLIC)
                 .targetVisibility(com.gitutility.model.enums.RepoVisibility.PRIVATE)
                 .build();
-        when(refOriginRepository.findByMappingIdAndRefName(4L, "refs/heads/mirror-work"))
+        when(refOriginRepository.findByMappingIdAndRefName("4", "refs/heads/mirror-work"))
                 .thenReturn(Optional.of(RefOrigin.builder().originSide(PairSide.B.name()).build()));
 
         assertTrue(service.shouldBlockReplicaInboundWebhook(mapping, "mirror-work", PairSide.B));

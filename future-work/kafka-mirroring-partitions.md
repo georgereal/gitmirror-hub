@@ -1,7 +1,8 @@
 # Kafka partitions & consumer groups for GitMirror Hub mirroring
 
-> **Status:** Authoritative design (backlog). Not a live broker cutover.  
+> **Status:** Authoritative design (backlog) for a **later** full + incremental Kafka cutover. Not a live broker cutover.  
 > **Folder:** [`future-work/`](README.md)  
+> **Current slice to build:** [`kafka-incremental-upstream-sync.md`](kafka-incremental-upstream-sync.md) — one incremental lane on Kafka or Rabbit, names from env; full mirrors stay on `GIT_MESSAGING_PROVIDER`.  
 > **Live system today:** RabbitMQ competing consumers + DB `pair_leases`. Product scale, UI Sync Repo, and “one job / one pod” live in [`ARCHITECTURE.md`](../ARCHITECTURE.md) **§3.6.1**. This file is only a **future broker** sketch.
 
 This document is the **chosen Kafka shape** for GitMirror Hub’s mirroring pipeline (`SyncJob` / `RepoMapping`, webhook ingest, full vs incremental Git, pair exclusivity, bare-repo cache). Alternatives appear only at the end as rejected options.

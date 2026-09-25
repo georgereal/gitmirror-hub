@@ -58,7 +58,7 @@ public class SyncCheckpointService {
         return allTransferred ? SyncCheckpointStage.GIT_SYNC_DONE : stage;
     }
 
-    public void persistStage(Long mappingId, SyncCheckpointStage stage) {
+    public void persistStage(String mappingId, SyncCheckpointStage stage) {
         if (mappingId == null || stage == null) {
             return;
         }
@@ -72,7 +72,7 @@ public class SyncCheckpointService {
         }
     }
 
-    public void clearCheckpoint(Long mappingId) {
+    public void clearCheckpoint(String mappingId) {
         if (mappingId == null) {
             return;
         }
@@ -91,7 +91,7 @@ public class SyncCheckpointService {
     /**
      * Clears in-flight push resume ledger without wiping pair-durable LFS/PR watermarks.
      */
-    public void clearResumeCheckpoint(Long mappingId) {
+    public void clearResumeCheckpoint(String mappingId) {
         if (mappingId == null) {
             return;
         }
@@ -110,7 +110,7 @@ public class SyncCheckpointService {
     /**
      * Job finished successfully: drop in-flight push resume ledger, keep LFS/PR catch-up watermarks.
      */
-    public void markCaughtUp(Long mappingId) {
+    public void markCaughtUp(String mappingId) {
         if (mappingId == null) {
             return;
         }
@@ -125,7 +125,7 @@ public class SyncCheckpointService {
         }
     }
 
-    public void persistLfsScannedTips(Long mappingId, Set<String> tipOids) {
+    public void persistLfsScannedTips(String mappingId, Set<String> tipOids) {
         if (mappingId == null || tipOids == null) {
             return;
         }
@@ -143,7 +143,7 @@ public class SyncCheckpointService {
         return parseOidLines(mapping != null ? mapping.getLfsScannedTipOids() : null);
     }
 
-    public void mergeDiscoveredLfs(Long mappingId, List<GitLfsSyncService.LfsObject> additional) {
+    public void mergeDiscoveredLfs(String mappingId, List<GitLfsSyncService.LfsObject> additional) {
         if (mappingId == null || additional == null || additional.isEmpty()) {
             return;
         }
@@ -170,7 +170,7 @@ public class SyncCheckpointService {
     /**
      * Clears all pair-level resume state and mirror display stats so the next full sync starts from scratch.
      */
-    public void resetPairProgress(Long mappingId) {
+    public void resetPairProgress(String mappingId) {
         if (mappingId == null) {
             return;
         }
@@ -202,7 +202,7 @@ public class SyncCheckpointService {
         }
     }
 
-    public void persistDiscoveredLfs(Long mappingId, List<GitLfsSyncService.LfsObject> objects) {
+    public void persistDiscoveredLfs(String mappingId, List<GitLfsSyncService.LfsObject> objects) {
         if (mappingId == null || objects == null || objects.isEmpty()) {
             return;
         }
@@ -217,14 +217,14 @@ public class SyncCheckpointService {
         }
     }
 
-    public void appendCompletedLfsOid(Long mappingId, String oid) {
+    public void appendCompletedLfsOid(String mappingId, String oid) {
         if (mappingId == null || oid == null || oid.isBlank()) {
             return;
         }
         appendCompletedLfsOids(mappingId, Set.of(oid.trim()));
     }
 
-    public void appendCompletedLfsOids(Long mappingId, java.util.Collection<String> oids) {
+    public void appendCompletedLfsOids(String mappingId, java.util.Collection<String> oids) {
         if (mappingId == null || oids == null || oids.isEmpty()) {
             return;
         }

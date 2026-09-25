@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import {
   AlertTriangle,
@@ -13,7 +13,8 @@ import {
   Trash2,
   XCircle,
 } from 'lucide-react';
-import { JobProgress, QueueStatus, RepoMapping, SyncJob, SyncStatus } from '../types';
+import { JobProgress, QueueStatus, RepoMapping, SyncJob, SyncStatus, UnmappedWebhookEvent } from '../types';
+import { KafkaStoredFailure } from '../services/api';
 import { mergeProviderTraffic } from '../components/ProviderTrafficStrip';
 import {
   cancelJob,
@@ -23,6 +24,9 @@ import {
   getJobs,
   getMappings,
   getQueueStatus,
+  getUnmappedWebhooks,
+  getWebhookBus,
+  redriveWebhookBus,
   pauseConsumer,
   pauseJob,
   purgeDlq,
@@ -37,8 +41,47 @@ import { JobLogModal } from '../components/JobLogModal';
 import { JobProgressBar } from '../components/JobProgressBar';
 import { isLiveSyncStatus, pipelineFromJobAndProgress, SyncPipelineStepper } from '../components/SyncPipelineStepper';
 import { ConsumerRuntimePanel } from '../components/ConsumerRuntimePanel';
+import { WebhookBusStrip } from '../components/WebhookBusStrip';
 
 const HISTORY_PAGE_SIZE = 25;
+const POISON_REASONS = new Set(['KAFKA_POISON', 'KAFKA_POISON_REPLAYED']);
+const JOB_STATUSES = [
+  'QUEUED',
+  'IN_PROGRESS',
+  'SUCCESS',
+  'FAILED',
+  'INTERRUPTED',
+  'PAUSED',
+  'CANCELLED',
+  'SKIPPED',
+  'DEAD_LETTERED',
+  'CONFLICT_ISOLATED',
+] as const;
+const SKIP_REASONS = [
+  'UNMAPPED_REPOSITORY',
+  'INACTIVE_MAPPING',
+  'DIRECTION_IGNORED',
+  'LOOP_DETECTED_SYSTEM_ECHO',
+  'PROTECTED_TRUNK_DELETE',
+  'PULL_REQUEST_PAYLOAD',
+] as const;
+type HistoryTab = 'full' | 'events' | 'dlq';
+type TabFilters = { pair: string; outcome: string };
+
+const matchesSelectedPair = (
+  row: { repoUrl?: string; repoFullName?: string },
+  pairId: string,
+  mappings: RepoMapping[],
+) => {
+  if (pairId === 'ALL') return true;
+  const mapping = mappings.find((item) => String(item.id) === pairId);
+  if (!mapping) return false;
+  const hay = `${row.repoUrl ?? ''} ${row.repoFullName ?? ''}`.toLowerCase();
+  const needles = [mapping.repoAUrl, mapping.repoBUrl, mapping.name]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.toLowerCase().replace(/\.git$/, ''));
+  return needles.some((needle) => needle.length > 0 && (hay.includes(needle) || needle.includes(hay)));
+};
 
 const isFullLane = (job: SyncJob) => !job.ref || job.ref.trim() === '' || job.branch === '*';
 
@@ -57,10 +100,20 @@ export const QueueManagerPage: React.FC = () => {
   const [interruptedCount, setInterruptedCount] = useState(0);
   const [runningJobs, setRunningJobs] = useState<SyncJob[]>([]);
   const [progressByJobId, setProgressByJobId] = useState<Record<number, JobProgress>>({});
-  const [pairFilter, setPairFilter] = useState<string>('ALL');
-  const [statusFilter, setStatusFilter] = useState<string>('ALL');
-  const [laneFilter, setLaneFilter] = useState<string>('ALL');
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [filters, setFilters] = useState<Record<HistoryTab, TabFilters>>({
+    full: { pair: 'ALL', outcome: 'ALL' },
+    events: { pair: 'ALL', outcome: 'ALL' },
+    dlq: { pair: 'ALL', outcome: 'ALL' },
+  });
+  const [historyTab, setHistoryTab] = useState<HistoryTab>('full');
+  const [fullTotal, setFullTotal] = useState(0);
+  const [eventJobTotal, setEventJobTotal] = useState(0);
+  const [skippedEvents, setSkippedEvents] = useState<UnmappedWebhookEvent[]>([]);
+  const [poisonRows, setPoisonRows] = useState<KafkaStoredFailure[]>([]);
+  const [poisonCount, setPoisonCount] = useState(0);
+  const [replayNote, setReplayNote] = useState<string | null>(null);
+  const openedEventsTab = useRef(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [confirmPurge, setConfirmPurge] = useState(false);
@@ -68,22 +121,52 @@ export const QueueManagerPage: React.FC = () => {
 
   const loadData = async () => {
     try {
-      const mappingId = pairFilter === 'ALL' ? undefined : Number(pairFilter);
-      const status = statusFilter === 'ALL' ? undefined : statusFilter;
-      const lane = laneFilter === 'ALL' ? undefined : laneFilter;
-      const [q, m, history, running, stats] = await Promise.allSettled([
+      const fullFilters = filters.full;
+      const eventFilters = filters.events;
+      const fullMappingId = fullFilters.pair === 'ALL' ? undefined : fullFilters.pair;
+      const fullStatus = fullFilters.outcome === 'ALL' ? undefined : fullFilters.outcome;
+      const eventOutcomeIsJob = (JOB_STATUSES as readonly string[]).includes(eventFilters.outcome);
+      const eventMappingId = eventFilters.pair === 'ALL' ? undefined : eventFilters.pair;
+      const eventStatus = eventOutcomeIsJob ? eventFilters.outcome : undefined;
+      const fullPageIndex = historyTab === 'full' ? historyPage : 0;
+      const fullPageSize = historyTab === 'full' ? HISTORY_PAGE_SIZE : 1;
+      const eventPageIndex = historyTab === 'events' ? historyPage : 0;
+      const eventPageSize = historyTab === 'events' ? HISTORY_PAGE_SIZE : 1;
+      const [q, m, fullHistory, eventHistory, running, stats, unmapped, bus] = await Promise.allSettled([
         getQueueStatus(),
         getMappings(),
-        getJobs(historyPage, HISTORY_PAGE_SIZE, status, mappingId, undefined, lane),
+        getJobs(fullPageIndex, fullPageSize, fullStatus, fullMappingId, undefined, 'FULL'),
+        getJobs(eventPageIndex, eventPageSize, eventStatus, eventMappingId, undefined, 'INCREMENTAL'),
         getJobs(0, 20, 'IN_PROGRESS'),
         getDashboardStats(),
+        getUnmappedWebhooks(),
+        getWebhookBus(),
       ]);
       if (q.status === 'fulfilled') setQueueStatus(q.value);
       if (m.status === 'fulfilled') setMappings(m.value);
-      if (history.status === 'fulfilled') {
-        setHistoryJobs(history.value.content);
-        setHistoryTotal(history.value.totalElements);
-        setHistoryPages(history.value.totalPages);
+      if (fullHistory.status === 'fulfilled') setFullTotal(fullHistory.value.totalElements);
+      const eventOutcomeIsSkip = eventFilters.outcome !== 'ALL' && !eventOutcomeIsJob;
+      if (eventOutcomeIsSkip) {
+        setEventJobTotal(0);
+      } else if (eventHistory.status === 'fulfilled') {
+        setEventJobTotal(eventHistory.value.totalElements);
+      }
+      const activeHistory = historyTab === 'events' ? eventHistory : fullHistory;
+      if (historyTab === 'events' && eventOutcomeIsSkip) {
+        setHistoryJobs([]);
+        setHistoryTotal(0);
+        setHistoryPages(0);
+      } else if (activeHistory.status === 'fulfilled') {
+        setHistoryJobs(activeHistory.value.content);
+        setHistoryTotal(activeHistory.value.totalElements);
+        setHistoryPages(activeHistory.value.totalPages);
+      }
+      if (unmapped.status === 'fulfilled') {
+        setSkippedEvents(unmapped.value.filter((row) => !POISON_REASONS.has(row.discardReason)));
+      }
+      if (bus.status === 'fulfilled' && bus.value.provider === 'kafka') {
+        setPoisonRows(bus.value.storedFailures ?? []);
+        setPoisonCount(bus.value.storedFailureCount ?? (bus.value.storedFailures?.length ?? 0));
       }
       if (running.status === 'fulfilled') setRunningJobs(running.value.content);
       if (stats.status === 'fulfilled') {
@@ -97,10 +180,16 @@ export const QueueManagerPage: React.FC = () => {
   };
 
   useEffect(() => {
+    if (openedEventsTab.current || fullTotal > 0 || skippedEvents.length === 0) return;
+    openedEventsTab.current = true;
+    setHistoryTab('events');
+  }, [fullTotal, skippedEvents.length]);
+
+  useEffect(() => {
     loadData();
     const timer = setInterval(loadData, 4000);
     return () => clearInterval(timer);
-  }, [historyPage, pairFilter, statusFilter, laneFilter]);
+  }, [historyPage, filters, historyTab]);
 
   useEffect(() => {
     const cleanup = initWebSocket((data) => {
@@ -169,7 +258,7 @@ export const QueueManagerPage: React.FC = () => {
     }
   };
 
-  const toggleSelected = (id: number) => {
+  const toggleSelected = (id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -210,6 +299,29 @@ export const QueueManagerPage: React.FC = () => {
   const supportsDlq = brokerBacked && queueStatus?.supportsDlq !== false;
   const supportsPurge = brokerBacked && queueStatus?.supportsPurge !== false;
   const supportsInbound = brokerBacked && queueStatus?.supportsInboundBrokerQueue !== false;
+  const activeFilters = filters[historyTab];
+  const visibleSkips = useMemo(() => {
+    const outcome = filters.events.outcome;
+    const jobStatus = (JOB_STATUSES as readonly string[]).includes(outcome);
+    return skippedEvents.filter((row) => {
+      if (!matchesSelectedPair(row, filters.events.pair, mappings)) return false;
+      if (outcome === 'ALL' || outcome === 'SKIPPED') return true;
+      if (jobStatus) return false;
+      return row.discardReason === outcome;
+    });
+  }, [skippedEvents, filters.events, mappings]);
+  const showSkipList = historyTab === 'events' && (
+    filters.events.outcome === 'ALL'
+    || filters.events.outcome === 'SKIPPED'
+    || !(JOB_STATUSES as readonly string[]).includes(filters.events.outcome)
+  );
+  const visiblePoison = useMemo(() => {
+    return poisonRows.filter((row) => {
+      if (!matchesSelectedPair(row, filters.dlq.pair, mappings)) return false;
+      if (filters.dlq.outcome === 'ALL') return true;
+      return filters.dlq.outcome === 'KAFKA_POISON';
+    });
+  }, [poisonRows, filters.dlq, mappings]);
   const pageTitle = brokerBacked ? 'Queue Manager' : 'Execution';
   const pageBlurb = brokerBacked
     ? 'Job history is the source of truth. RabbitMQ depths are live broker health, not the job list. Webhook syncs and full mirrors run on separate consumers so one clone cannot block other pairs.'
@@ -235,6 +347,8 @@ export const QueueManagerPage: React.FC = () => {
           Open activity stream
         </Link>
       </div>
+
+      <WebhookBusStrip />
 
       {isPaused && (
         <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4 flex items-start justify-between gap-3 text-xs">
@@ -438,19 +552,45 @@ export const QueueManagerPage: React.FC = () => {
         <div className="p-5 border-b border-zinc-100 space-y-3">
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
             <div>
-              <h3 className="text-sm font-semibold text-zinc-900">Job history ({historyTotal})</h3>
-              <p className="text-[11px] text-zinc-500 mt-0.5">
-                Database ledger of every sync, including cancelled.
+              <h3 className="text-sm font-semibold text-zinc-900">Job history</h3>
+              <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                {([
+                  ['full', `Full syncs (${fullTotal})`],
+                  ['events', `Incremental events (${eventJobTotal + visibleSkips.length})`],
+                  ['dlq', `Dead letter (${visiblePoison.length})`],
+                ] as const).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => {
+                      setHistoryTab(id);
+                      setHistoryPage(0);
+                    }}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-medium ${
+                      historyTab === id
+                        ? 'bg-zinc-900 text-white'
+                        : 'text-zinc-600 hover:bg-zinc-100'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-zinc-500 mt-2">
+                {historyTab === 'full' && 'Full mirror jobs. '}
+                {historyTab === 'events' && 'Webhook mirrors plus topic records that were finished without starting a job, including skips. '}
+                {historyTab === 'dlq' && 'Incremental records Hub could not apply. Stored in the database and kept past the 7-day discard cleanup. '}
                 {brokerBacked
-                  ? ` AMQP Ready (pending): ${waitingCount}. Cancel marks jobs skipped; the worker ACKs those messages on pickup.`
-                  : ` Deferred (paused): ${waitingCount}. Cancel marks jobs skipped in the database.`}
+                  ? `AMQP Ready (pending): ${waitingCount}. Cancel marks jobs skipped; the worker ACKs those messages on pickup.`
+                  : `Deferred (paused): ${waitingCount}. Cancel marks jobs skipped in the database.`}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <select
-                value={pairFilter}
+                value={activeFilters.pair}
                 onChange={(e) => {
-                  setPairFilter(e.target.value);
+                  const pair = e.target.value;
+                  setFilters((prev) => ({ ...prev, [historyTab]: { ...prev[historyTab], pair } }));
                   setHistoryPage(0);
                 }}
                 className="bg-white border border-zinc-200 rounded-lg px-2.5 py-1.5 text-xs text-zinc-700"
@@ -463,37 +603,27 @@ export const QueueManagerPage: React.FC = () => {
                 ))}
               </select>
               <select
-                value={statusFilter}
+                value={activeFilters.outcome}
                 onChange={(e) => {
-                  setStatusFilter(e.target.value);
+                  const outcome = e.target.value;
+                  setFilters((prev) => ({ ...prev, [historyTab]: { ...prev[historyTab], outcome } }));
                   setHistoryPage(0);
                 }}
                 className="bg-white border border-zinc-200 rounded-lg px-2.5 py-1.5 text-xs text-zinc-700"
               >
-                <option value="ALL">All statuses</option>
-                <option value="QUEUED">Queued</option>
-                <option value="IN_PROGRESS">In progress</option>
-                <option value="SUCCESS">Success</option>
-                <option value="FAILED">Failed</option>
-                <option value="INTERRUPTED">Interrupted</option>
-                <option value="PAUSED">Paused</option>
-                <option value="CANCELLED">Cancelled</option>
-                <option value="SKIPPED">Skipped</option>
-                <option value="DEAD_LETTERED">Dead-lettered</option>
-                <option value="CONFLICT_ISOLATED">Conflict isolated</option>
+                <option value="ALL">{historyTab === 'dlq' ? 'All dead-letter rows' : 'All statuses'}</option>
+                {historyTab !== 'dlq' && JOB_STATUSES.map((status) => (
+                  <option key={status} value={status}>
+                    {status.charAt(0) + status.slice(1).toLowerCase().replaceAll('_', ' ')}
+                  </option>
+                ))}
+                {historyTab === 'events' && SKIP_REASONS.map((reason) => (
+                  <option key={reason} value={reason}>{reason}</option>
+                ))}
+                {historyTab === 'dlq' && <option value="KAFKA_POISON">Dead letter</option>}
               </select>
-              <select
-                value={laneFilter}
-                onChange={(e) => {
-                  setLaneFilter(e.target.value);
-                  setHistoryPage(0);
-                }}
-                className="bg-white border border-zinc-200 rounded-lg px-2.5 py-1.5 text-xs text-zinc-700"
-              >
-                <option value="ALL">All lanes</option>
-                <option value="INCREMENTAL">Webhook syncs</option>
-                <option value="FULL">Full mirrors</option>
-              </select>
+              {historyTab !== 'dlq' && (
+              <>
               <button
                 onClick={() =>
                   runAction('dispatch-selected', async () => {
@@ -525,11 +655,11 @@ export const QueueManagerPage: React.FC = () => {
                 <XCircle className="w-3.5 h-3.5" />
                 <span>Cancel selected ({selectedIds.size})</span>
               </button>
-              {pairFilter !== 'ALL' && (
+              {historyTab !== 'dlq' && activeFilters.pair !== 'ALL' && (
                 <button
                   onClick={() =>
                     runAction('cancel-pair', async () => {
-                      const res = await cancelQueuedJobs(Number(pairFilter));
+                      const res = await cancelQueuedJobs(activeFilters.pair);
                       return res.message;
                     })
                   }
@@ -553,12 +683,84 @@ export const QueueManagerPage: React.FC = () => {
                 <Ban className="w-3.5 h-3.5" />
                 <span>Cancel all queued</span>
               </button>
+              </>
+              )}
             </div>
           </div>
         </div>
 
-        {historyJobs.length === 0 ? (
-          <div className="py-12 text-center text-xs text-zinc-400">No jobs match these filters</div>
+        {showSkipList && (
+          visibleSkips.length === 0 ? (
+            <p className="px-5 py-3 text-xs text-zinc-400 border-b border-zinc-100">No skipped incremental records match this filter.</p>
+          ) : (
+            <ul className="divide-y divide-zinc-100 border-b border-zinc-100">
+              {visibleSkips.map((row) => (
+                <li key={row.id} className="px-5 py-3 text-xs">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium text-zinc-900">
+                      {row.repoFullName || row.repoUrl || 'Unknown repo'}
+                      {row.branch ? ` · ${row.branch}` : ''}
+                    </span>
+                    <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-50 text-amber-800 border border-amber-200">
+                      {row.discardReason}
+                    </span>
+                  </div>
+                  <p className="text-zinc-600 mt-0.5">{row.details || row.eventType}</p>
+                  <p className="text-[11px] text-zinc-400 mt-0.5 font-mono">
+                    {row.commitSha ? `${row.commitSha.slice(0, 10)} · ` : ''}
+                    {row.receivedAt ? new Date(row.receivedAt).toLocaleString() : ''}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )
+        )}
+
+        {historyTab === 'dlq' ? (
+          <div>
+            <div className="px-5 py-3 border-b border-zinc-100 flex justify-end">
+              <button
+                type="button"
+                disabled={poisonCount === 0 || busy === 'replay-poison'}
+                onClick={() =>
+                  runAction('replay-poison', async () => {
+                    const result = await redriveWebhookBus(10);
+                    setReplayNote(`Replayed ${result.redriven}.`);
+                    return `Replayed ${result.redriven} stored failure${result.redriven === 1 ? '' : 's'}`;
+                  })
+                }
+                className="px-3 py-1.5 rounded-lg border border-zinc-200 text-xs font-medium hover:bg-zinc-50 disabled:opacity-50"
+              >
+                {busy === 'replay-poison' ? 'Replaying…' : 'Replay stored failures'}
+              </button>
+            </div>
+            {visiblePoison.length === 0 ? (
+              <div className="py-12 text-center text-xs text-zinc-400">No dead-letter rows match this filter</div>
+            ) : (
+              <ul className="divide-y divide-zinc-100">
+                {visiblePoison.map((row) => (
+                  <li key={row.id} className="px-5 py-3 text-xs">
+                    <div className="font-medium text-zinc-900">
+                      {row.repoFullName || row.repoUrl || 'Unknown repo'}
+                      {row.branch ? ` · ${row.branch}` : ''}
+                    </div>
+                    <p className="text-zinc-600 mt-0.5">{row.details || row.eventType || 'Failure'}</p>
+                    <p className="text-[11px] text-zinc-400 mt-0.5 font-mono">
+                      {row.commitSha ? `${row.commitSha.slice(0, 10)} · ` : ''}
+                      {row.receivedAt ? new Date(row.receivedAt).toLocaleString() : ''}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {replayNote && <p className="px-5 pb-3 text-[11px] text-zinc-500">{replayNote}</p>}
+          </div>
+        ) : historyJobs.length === 0 ? (
+          historyTab === 'events' && visibleSkips.length > 0 ? null : (
+            <div className="py-12 text-center text-xs text-zinc-400">
+              {historyTab === 'full' ? 'No full sync jobs' : 'No incremental mirror jobs'}
+            </div>
+          )
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
@@ -651,6 +853,7 @@ export const QueueManagerPage: React.FC = () => {
           </div>
         )}
 
+        {historyTab !== 'dlq' && (
         <div className="p-4 border-t border-zinc-100 bg-zinc-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <p className="text-[11px] text-zinc-500">
             Showing {historyJobs.length} of {historyTotal} jobs.
@@ -711,6 +914,7 @@ export const QueueManagerPage: React.FC = () => {
             )}
           </div>
         </div>
+        )}
       </div>
 
       {(supportsDlq || supportsInbound) && (

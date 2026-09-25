@@ -19,7 +19,7 @@ import java.time.Instant;
 @AllArgsConstructor
 public class ProviderConfigResponse {
 
-    private Long id;
+    private String id;
     private String authType;
     private String appId;
     private String clientId;

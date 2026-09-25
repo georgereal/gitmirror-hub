@@ -21,8 +21,8 @@ interface BulkSubmissionsPanelProps {
 export const BulkSubmissionsPanel: React.FC<BulkSubmissionsPanelProps> = ({ refreshKey }) => {
   const [submissions, setSubmissions] = useState<BulkSubmissionRecord[]>([]);
   const [loading, setLoading] = useState(true);
-  const [expandedId, setExpandedId] = useState<number | null>(null);
-  const [cancellingId, setCancellingId] = useState<number | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
 
   const load = async () => {
@@ -45,7 +45,7 @@ export const BulkSubmissionsPanel: React.FC<BulkSubmissionsPanelProps> = ({ refr
     return null;
   }
 
-  const handleCancel = async (id: number) => {
+  const handleCancel = async (id: string) => {
     if (!window.confirm(`Cancel every queued and in-progress job of bulk submission #${id}?`)) {
       return;
     }

@@ -93,7 +93,7 @@ public class QueueStatusResponse {
     @NoArgsConstructor
     @AllArgsConstructor
     public static class CurrentWork {
-        private Long jobId;
+        private String jobId;
         private String pairName;
         private String ref;
         private String threadName;

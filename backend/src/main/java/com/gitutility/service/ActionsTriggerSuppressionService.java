@@ -37,7 +37,7 @@ public class ActionsTriggerSuppressionService {
     private final GitHubEnterpriseProviderService gitHubEnterpriseProviderService;
     private final ScmCredentialService scmCredentialService;
 
-    private final Map<Long, Instant> jobStartedAt = new ConcurrentHashMap<>();
+    private final Map<String, Instant> jobStartedAt = new ConcurrentHashMap<>();
 
     public ActionsTriggerSuppressionService(
             @Lazy SystemEngineConfigService systemEngineConfigService,
@@ -59,7 +59,7 @@ public class ActionsTriggerSuppressionService {
         return systemEngineConfigService.getOrCreateConfig().isSuppressMirrorActionsTriggers();
     }
 
-    public void beginJob(Long jobId) {
+    public void beginJob(String jobId) {
         if (jobId == null || !isEnabled()) {
             return;
         }
@@ -67,7 +67,7 @@ public class ActionsTriggerSuppressionService {
         jobStartedAt.put(jobId, Instant.now().minusSeconds(5));
     }
 
-    public void endJob(Long jobId) {
+    public void endJob(String jobId) {
         if (jobId != null) {
             jobStartedAt.remove(jobId);
         }
@@ -137,7 +137,7 @@ public class ActionsTriggerSuppressionService {
     /**
      * Cancels Actions runs on {@code targetRepoUrl} attributed to the mirror App since this job began.
      */
-    public int suppressAfterWrite(String targetRepoUrl, Long jobId) {
+    public int suppressAfterWrite(String targetRepoUrl, String jobId) {
         if (!isEnabled() || !supportsRepo(targetRepoUrl)) {
             return 0;
         }
@@ -171,7 +171,7 @@ public class ActionsTriggerSuppressionService {
         if (!supportsRepo(repoUrl)) {
             return null;
         }
-        Long credId = ScmCredentialContext.currentId();
+        String credId = ScmCredentialContext.currentId();
         if (credId != null && scmCredentialService != null) {
             try {
                 var cred = scmCredentialService.requireEnabled(credId);

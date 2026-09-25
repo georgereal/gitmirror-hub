@@ -15,8 +15,8 @@ class RepoDirLockServiceTest {
     void lockForReturnsSameLockPerMapping() {
         RepoDirLockService service = new RepoDirLockService();
 
-        ReentrantLock first = service.lockFor(97L);
-        ReentrantLock second = service.lockFor(97L);
+        ReentrantLock first = service.lockFor("97");
+        ReentrantLock second = service.lockFor("97");
 
         assertNotNull(first);
         assertSame(first, second, "lockFor must return the same lock instance for the same mapping");
@@ -26,8 +26,8 @@ class RepoDirLockServiceTest {
     void lockForReturnsDistinctLocksPerMapping() {
         RepoDirLockService service = new RepoDirLockService();
 
-        ReentrantLock a = service.lockFor(97L);
-        ReentrantLock b = service.lockFor(129L);
+        ReentrantLock a = service.lockFor("97");
+        ReentrantLock b = service.lockFor("129");
 
         assertNotSame(a, b, "different mappings must not share a lock");
     }
@@ -44,7 +44,7 @@ class RepoDirLockServiceTest {
     @Test
     void lockActuallyExcludesConcurrentHolders() throws Exception {
         RepoDirLockService service = new RepoDirLockService();
-        ReentrantLock lock = service.lockFor(1L);
+        ReentrantLock lock = service.lockFor("1");
 
         lock.lock();
         try {

@@ -14,6 +14,7 @@ import {
   Layers,
   AlertTriangle,
   ShieldAlert,
+  CloudOff,
 } from 'lucide-react';
 import { RepoMapping } from '../types';
 import {
@@ -29,8 +30,8 @@ interface RepoListViewProps {
   onSelectRepo: (repo: RepoMapping) => void;
   onNewPair: () => void;
   onSyncFromGitHub: () => void;
-  onDeletePair: (id: number) => void;
-  onTriggerSync: (id: number) => void;
+  onDeletePair: (id: string) => void;
+  onTriggerSync: (id: string) => void;
 }
 
 const CHIP_ICON: Record<HealthIcon, React.ComponentType<{ className?: string }>> = {
@@ -77,7 +78,7 @@ export const RepoListView: React.FC<RepoListViewProps> = ({
   onTriggerSync,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
-  const [activeMenuId, setActiveMenuId] = useState<number | null>(null);
+  const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
 
   const filteredMappings = mappings.filter((m) =>
     m.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -119,13 +120,13 @@ export const RepoListView: React.FC<RepoListViewProps> = ({
             />
           </div>
 
-          <button
+          {/*<button
             onClick={onNewPair}
             className="flex items-center space-x-1.5 bg-white hover:bg-zinc-50 border border-zinc-200 text-zinc-800 text-xs px-3 py-1.5 rounded-lg font-medium transition-colors shadow-sm"
           >
             <Plus className="w-3.5 h-3.5" />
             <span>New</span>
-          </button>
+          </button> */}
 
           <button
             onClick={onSyncFromGitHub}
@@ -196,14 +197,27 @@ export const RepoListView: React.FC<RepoListViewProps> = ({
                           </span>
                           {sourceProvider && targetProvider && (
                             <>
-                              <span className="px-1.5 py-0.5 rounded border border-zinc-200 text-[10px] text-zinc-600">
+                              <span className={`px-1.5 py-0.5 rounded border text-[10px] inline-flex items-center gap-1 ${mapping.peerStatus?.sides?.find((s) => s.id === 'A')?.reachable === 'DOWN' ? 'border-rose-200 text-rose-700' : 'border-zinc-200 text-zinc-600'}`}>
+                                {mapping.peerStatus?.sides?.find((s) => s.id === 'A')?.reachable === 'DOWN' && <CloudOff className="w-3 h-3" />}
                                 {sourceProvider}
                               </span>
-                              <span className="text-zinc-300">→</span>
-                              <span className="px-1.5 py-0.5 rounded border border-zinc-200 text-[10px] text-zinc-600">
+                              <span className={mapping.peerStatus?.link === 'broken' ? 'text-rose-400' : 'text-zinc-300'}>
+                                {mapping.peerStatus?.link === 'broken' ? '╌' : '→'}
+                              </span>
+                              <span className={`px-1.5 py-0.5 rounded border text-[10px] inline-flex items-center gap-1 ${mapping.peerStatus?.sides?.find((s) => s.id === 'B')?.reachable === 'DOWN' ? 'border-rose-200 text-rose-700' : 'border-zinc-200 text-zinc-600'}`}>
+                                {mapping.peerStatus?.sides?.find((s) => s.id === 'B')?.reachable === 'DOWN' && <CloudOff className="w-3 h-3" />}
                                 {targetProvider}
                               </span>
                             </>
+                          )}
+                          {mapping.peerStatus?.phase === 'FAILOVER' && (
+                            <span className="px-1.5 py-0.5 rounded border border-amber-200 bg-amber-50 text-amber-800 text-[10px]">DR</span>
+                          )}
+                          {mapping.peerStatus?.processing === 'PAUSED' && (
+                            <span className="px-1.5 py-0.5 rounded border border-amber-200 text-amber-800 text-[10px]">Paused</span>
+                          )}
+                          {mapping.peerStatus?.sides?.some((s) => s.lock === 'pending') && (
+                            <span className="px-1.5 py-0.5 rounded border border-amber-200 text-amber-800 text-[10px]">Lock pending</span>
                           )}
                           <span className="text-zinc-500">
                             {mapping.syncDirection === 'BIDIRECTIONAL' ? 'Bidirectional' : 'Unidirectional'}

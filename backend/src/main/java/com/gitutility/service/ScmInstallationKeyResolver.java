@@ -16,7 +16,7 @@ public class ScmInstallationKeyResolver {
     private final com.gitutility.repository.ScmCredentialRepository credentialRepository;
 
     public String resolve(String provider) {
-        Long credId = ScmCredentialContext.currentId();
+        String credId = ScmCredentialContext.currentId();
         if (credId != null && credentialRepository != null) {
             return credentialRepository.findById(credId)
                     .map(c -> {

@@ -14,7 +14,7 @@ import java.util.Map;
 @AllArgsConstructor
 public class DlqMessageDto {
     private String messageId;
-    private Long jobId;
+    private String jobId;
     private String pairName;
     private String sourceRepo;
     private String targetRepo;

@@ -49,7 +49,7 @@ class RepoMappingCollisionTest {
     @Test
     void validateNoRepositoryCollisionsThrowsWhenDestinationIsSharedWithActivePair() {
         RepoMapping existingPair = RepoMapping.builder()
-                .id(1L)
+                .id("1")
                 .name("OpenMAIC")
                 .repoAUrl("https://github.com/THU-MAIC/OpenMAIC")
                 .repoBUrl("https://github.com/acme/mirror-dest.git")
@@ -59,7 +59,7 @@ class RepoMappingCollisionTest {
         when(mappingRepository.findAll()).thenReturn(List.of(existingPair));
 
         RepoMapping newPair = RepoMapping.builder()
-                .id(2L)
+                .id("2")
                 .name("vscode")
                 .repoAUrl("https://github.com/microsoft/vscode")
                 .repoBUrl("https://github.com/acme/mirror-dest")
@@ -75,7 +75,7 @@ class RepoMappingCollisionTest {
     @Test
     void validateNoRepositoryCollisionsPermitsUpdateOnSameMapping() {
         RepoMapping existingPair = RepoMapping.builder()
-                .id(1L)
+                .id("1")
                 .name("vscode")
                 .repoAUrl("https://github.com/microsoft/vscode")
                 .repoBUrl("https://github.com/acme/mirror-dest")
@@ -85,13 +85,13 @@ class RepoMappingCollisionTest {
         when(mappingRepository.findAll()).thenReturn(List.of(existingPair));
 
         // Updating mapping 1 with same URLs should succeed
-        assertDoesNotThrow(() -> repoMappingService.validateNoRepositoryCollisions(1L, existingPair));
+        assertDoesNotThrow(() -> repoMappingService.validateNoRepositoryCollisions("1", existingPair));
     }
 
     @Test
     void validateNoRepositoryCollisionsAllowsInactivePairSharingUrl() {
         RepoMapping inactivePair = RepoMapping.builder()
-                .id(1L)
+                .id("1")
                 .name("Old Pair")
                 .repoAUrl("https://github.com/THU-MAIC/OpenMAIC")
                 .repoBUrl("https://github.com/acme/mirror-dest.git")
@@ -101,7 +101,7 @@ class RepoMappingCollisionTest {
         when(mappingRepository.findAll()).thenReturn(List.of(inactivePair));
 
         RepoMapping newPair = RepoMapping.builder()
-                .id(2L)
+                .id("2")
                 .name("vscode")
                 .repoAUrl("https://github.com/microsoft/vscode")
                 .repoBUrl("https://github.com/acme/mirror-dest")

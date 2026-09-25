@@ -56,7 +56,7 @@ class BulkMirrorServiceTest {
     @BeforeEach
     void setUp() {
         ScmCredential destCredential = ScmCredential.builder()
-                .id(7L)
+                .id("7")
                 .label("dest")
                 .accountLogin("acme-org")
                 .build();
@@ -74,24 +74,24 @@ class BulkMirrorServiceTest {
 
         lenient().when(bulkSubmissionRepository.save(any(BulkSubmission.class))).thenAnswer(inv -> {
             BulkSubmission sub = inv.getArgument(0);
-            sub.setId(42L);
+            sub.setId("42");
             return sub;
         });
         lenient().when(mappingRepository.save(any(RepoMapping.class))).thenAnswer(inv -> {
             RepoMapping m = inv.getArgument(0);
-            m.setId(100L);
+            m.setId("100");
             return m;
         });
         lenient().when(mappingRepository.findByName(anyString())).thenReturn(Optional.empty());
         lenient().when(mappingRepository.findAll()).thenReturn(List.of());
         lenient().when(repoMappingService.triggerInitialBootstrapSync(any(RepoMapping.class))).thenAnswer(inv -> {
             SyncJob job = new SyncJob();
-            job.setId(555L);
+            job.setId("555");
             return job;
         });
-        lenient().when(scmCredentialService.require(7L)).thenReturn(destCredential);
-        lenient().when(scmProviderFacade.repositoryExists(anyString(), eq(7L))).thenReturn(false);
-        lenient().when(scmProviderFacade.hasCommits(anyString(), anyLong())).thenReturn(false);
+        lenient().when(scmCredentialService.require("7")).thenReturn(destCredential);
+        lenient().when(scmProviderFacade.repositoryExists(anyString(), eq("7"))).thenReturn(false);
+        lenient().when(scmProviderFacade.hasCommits(anyString(), anyString())).thenReturn(false);
         lenient().when(scmProviderFacade.testConnection(isNull(), any()))
                 .thenReturn(PermissionCheckReport.builder().valid(true).build());
     }
@@ -100,7 +100,7 @@ class BulkMirrorServiceTest {
         return BulkMirrorRequest.BulkItem.builder()
                 .sourceUrl(url)
                 .sourceProvider("GITHUB")
-                .sourceCredentialId(3L)
+                .sourceCredentialId("3")
                 .build();
     }
 
@@ -108,7 +108,7 @@ class BulkMirrorServiceTest {
         return BulkMirrorRequest.builder()
                 .mode("CREATE_DEST")
                 .items(List.of(items))
-                .destCredentialId(7L)
+                .destCredentialId("7")
                 .destPrivate(true)
                 .build();
     }
@@ -118,20 +118,20 @@ class BulkMirrorServiceTest {
         BulkMirrorResponse res = service.submit(createDestRequest(source("https://github.com/acme/repo1.git")));
 
         assertEquals(1, res.getCreatedQueuedCount());
-        assertEquals(42L, res.getSubmissionId());
+        assertEquals("42", res.getSubmissionId());
         BulkMirrorResponse.Row row = res.getRows().get(0);
         assertEquals(BulkMirrorResponse.Outcome.CREATED_QUEUED, row.getOutcome());
-        assertEquals(555L, row.getJobId());
+        assertEquals("555", row.getJobId());
         assertEquals("https://github.com/acme-org/repo1.git", row.getDestUrl());
         verify(mappingRepository).save(org.mockito.ArgumentMatchers.argThat((RepoMapping m) ->
                 Boolean.TRUE.equals(m.getDestinationAutoCreate())
-                        && m.getBulkSubmissionId() == 42L
+                        && m.getBulkSubmissionId().equals("42")
                         && m.getTargetVisibility() == RepoVisibility.PRIVATE));
     }
 
     @Test
     void createDestExistingDestinationIsSkippedNotMapped() {
-        when(scmProviderFacade.repositoryExists(eq("https://github.com/acme-org/repo1.git"), eq(7L))).thenReturn(true);
+        when(scmProviderFacade.repositoryExists(eq("https://github.com/acme-org/repo1.git"), eq("7"))).thenReturn(true);
 
         BulkMirrorResponse res = service.submit(createDestRequest(source("https://github.com/acme/repo1.git")));
 
@@ -159,7 +159,7 @@ class BulkMirrorServiceTest {
                 source("https://github.com/acme/alpha.git"),
                 BulkMirrorRequest.BulkItem.builder()
                         .sourceUrl("https://github.com/acme/beta.git")
-                        .sourceCredentialId(3L)
+                        .sourceCredentialId("3")
                         .destName("alpha") // forces the same destination owner/name as row 1
                         .build()));
 
@@ -173,7 +173,7 @@ class BulkMirrorServiceTest {
         BulkMirrorResponse res = service.submit(createDestRequest(
                 BulkMirrorRequest.BulkItem.builder()
                         .sourceUrl("https://github.com/acme-org/same.git")
-                        .sourceCredentialId(3L)
+                        .sourceCredentialId("3")
                         .destName("same")
                         .build()));
 
@@ -184,7 +184,7 @@ class BulkMirrorServiceTest {
     @Test
     void collisionWithActivePairIsSkippedWithWarning() {
         RepoMapping existing = RepoMapping.builder()
-                .id(9L)
+                .id("9")
                 .name("OpenMAIC")
                 .repoAUrl("https://github.com/other/source.git")
                 .repoBUrl("https://github.com/acme/repo1.git")
@@ -201,19 +201,19 @@ class BulkMirrorServiceTest {
 
     @Test
     void useExistingHasCommitsExcludedUnlessOperatorIncludes() {
-        when(scmProviderFacade.hasCommits(eq("https://github.com/target/one.git"), eq(5L))).thenReturn(true);
+        when(scmProviderFacade.hasCommits(eq("https://github.com/target/one.git"), eq("5"))).thenReturn(true);
         BulkMirrorRequest.BulkItem excluded = BulkMirrorRequest.BulkItem.builder()
                 .sourceUrl("https://github.com/acme/one.git")
-                .sourceCredentialId(3L)
+                .sourceCredentialId("3")
                 .destUrl("https://github.com/target/one.git")
-                .destCredentialId(5L)
+                .destCredentialId("5")
                 .includeNonEmptyDest(false)
                 .build();
         BulkMirrorRequest.BulkItem included = BulkMirrorRequest.BulkItem.builder()
                 .sourceUrl("https://github.com/acme/two.git")
-                .sourceCredentialId(3L)
+                .sourceCredentialId("3")
                 .destUrl("https://github.com/target/two.git")
-                .destCredentialId(5L)
+                .destCredentialId("5")
                 .includeNonEmptyDest(true)
                 .build();
 
@@ -236,9 +236,9 @@ class BulkMirrorServiceTest {
                 .mode("USE_EXISTING")
                 .items(List.of(BulkMirrorRequest.BulkItem.builder()
                         .sourceUrl("https://github.com/acme/one.git")
-                        .sourceCredentialId(3L)
+                        .sourceCredentialId("3")
                         .destUrl("https://github.com/target/one.git")
-                        .destCredentialId(5L)
+                        .destCredentialId("5")
                         .build()))
                 .build());
 

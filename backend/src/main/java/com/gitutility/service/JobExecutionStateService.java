@@ -72,7 +72,7 @@ public class JobExecutionStateService {
         return JobStageProgress.fromJson(job.getStageProgressJson());
     }
 
-    public JobStageProgress loadStageProgressByJobId(Long jobId) {
+    public JobStageProgress loadStageProgressByJobId(String jobId) {
         if (jobId == null) {
             return JobStageProgress.empty();
         }
@@ -101,7 +101,7 @@ public class JobExecutionStateService {
         return SyncPipelineState.isAtOrAfter(resumeStageId, SyncPipelineState.PR_METADATA);
     }
 
-    public void persistProgress(Long jobId, SyncPipelineState pipeline, JobStageProgress stageProgress) {
+    public void persistProgress(String jobId, SyncPipelineState pipeline, JobStageProgress stageProgress) {
         if (jobId == null) {
             return;
         }
@@ -134,7 +134,7 @@ public class JobExecutionStateService {
         }
     }
 
-    public void clearProgress(Long jobId) {
+    public void clearProgress(String jobId) {
         if (jobId == null) {
             return;
         }

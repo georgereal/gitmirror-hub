@@ -6,13 +6,17 @@ import { RepoDetailPage } from './pages/RepoDetailPage';
 import { ObservabilityPage } from './pages/ObservabilityPage';
 import { InternalsPage } from './pages/InternalsPage';
 import { QueueManagerPage } from './pages/QueueManagerPage';
+import { KafkaWebhookPage } from './pages/KafkaWebhookPage';
 import { SimulationPage } from './pages/SimulationPage';
 import { SettingsLayout } from './pages/settings/SettingsLayout';
 import { ProvidersAuthPage } from './pages/settings/ProvidersAuthPage';
 import { FeatureTogglesPage } from './pages/settings/FeatureTogglesPage';
+import { MetadataSyncPage } from './pages/settings/MetadataSyncPage';
 import { SystemEnginePage } from './pages/settings/SystemEnginePage';
 import { StorageSettingsPage } from './pages/settings/StorageSettingsPage';
 import { EnterpriseLoggingPage } from './pages/settings/EnterpriseLoggingPage';
+import { WriteAuthorityPage } from './pages/settings/WriteAuthorityPage';
+import { DisasterRecoveryPage } from './pages/settings/DisasterRecoveryPage';
 import { FeatureFlagsProvider } from './hooks/useFeatureFlags';
 
 export const App: React.FC = () => {
@@ -32,13 +36,17 @@ export const App: React.FC = () => {
               <Route path="/observability" element={<ObservabilityPage />} />
               <Route path="/observability/internals" element={<InternalsPage />} />
               <Route path="/queues" element={<QueueManagerPage />} />
+              <Route path="/kafka" element={<KafkaWebhookPage />} />
 
               <Route path="/simulation" element={<SimulationPage />} />
 
               <Route path="/settings" element={<SettingsLayout />}>
                 <Route index element={<Navigate to="/settings/providers" replace />} />
                 <Route path="providers" element={<ProvidersAuthPage />} />
+                <Route path="dr" element={<DisasterRecoveryPage />} />
+                <Route path="write-authority" element={<WriteAuthorityPage />} />
                 <Route path="feature-toggles" element={<FeatureTogglesPage />} />
+                <Route path="metadata" element={<MetadataSyncPage />} />
                 <Route path="system-engine" element={<SystemEnginePage />} />
                 <Route path="storage" element={<StorageSettingsPage />} />
                 <Route path="logging" element={<EnterpriseLoggingPage />} />

@@ -1,6 +1,10 @@
 package com.gitutility.model.entity;
 
+import com.gitutility.persistence.Ids;
+import com.gitutility.security.Encrypted;
 import com.gitutility.security.EncryptedStringConverter;
+import org.springframework.data.mongodb.core.mapping.Document;
+import com.gitutility.persistence.store.WritePreparer;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -11,15 +15,15 @@ import java.time.Instant;
 
 @Entity
 @Table(name = "scm_provider_configs")
+@Document(collection = "scm_provider_configs")
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class GitHubAppConfig {
+public class GitHubAppConfig implements WritePreparer {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     // --- GitHub Settings ---
     @Column(nullable = false)
@@ -30,10 +34,12 @@ public class GitHubAppConfig {
     private String clientId;
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 2000)
     private String clientSecret;
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 10000)
     private String privateKeyPem;
 
@@ -46,10 +52,12 @@ public class GitHubAppConfig {
     private String botLogin;
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 2000)
     private String webhookSecret;
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 2000)
     private String defaultPatToken;
 
@@ -60,6 +68,7 @@ public class GitHubAppConfig {
     private String ghesAuthType = "PERSONAL_ACCESS_TOKEN"; // "GITHUB_APP" or "PERSONAL_ACCESS_TOKEN"
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 2000)
     private String ghesPatToken;
 
@@ -67,10 +76,12 @@ public class GitHubAppConfig {
     private String ghesClientId;
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 2000)
     private String ghesClientSecret;
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 10000)
     private String ghesPrivateKeyPem;
 
@@ -83,6 +94,7 @@ public class GitHubAppConfig {
     private String ghesBotLogin;
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 2000)
     private String ghesWebhookSecret;
 
@@ -91,10 +103,12 @@ public class GitHubAppConfig {
     private String gitlabHostUrl = "https://gitlab.com";
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 2000)
     private String gitlabAccessToken;
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 2000)
     private String gitlabWebhookSecret;
 
@@ -108,10 +122,12 @@ public class GitHubAppConfig {
     private String bitbucketUsername = "x-token-auth";
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 2000)
     private String bitbucketAccessToken;
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 2000)
     private String bitbucketWebhookSecret;
 
@@ -120,10 +136,12 @@ public class GitHubAppConfig {
     private String originHostUrl = "https://origin.cursor.com";
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 2000)
     private String originAccessToken;
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 2000)
     private String originWebhookSecret;
 
@@ -131,6 +149,7 @@ public class GitHubAppConfig {
     private String genericUsername;
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 2000)
     private String genericAccessToken;
 
@@ -142,7 +161,10 @@ public class GitHubAppConfig {
 
     @PrePersist
     @PreUpdate
-    protected void onUpdate() {
+    public void prepareForWrite() {
+        if (Ids.isUnset(id)) {
+            id = Ids.newId();
+        }
         this.updatedAt = Instant.now();
     }
 }

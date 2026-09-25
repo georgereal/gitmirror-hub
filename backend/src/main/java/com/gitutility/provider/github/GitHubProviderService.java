@@ -6,10 +6,14 @@ import tools.jackson.databind.json.JsonMapper;
 import com.gitutility.model.dto.*;
 import com.gitutility.model.entity.GitHubAppConfig;
 import com.gitutility.model.enums.ScmProviderType;
+import com.gitutility.provider.GitHubRulesetClient;
+import com.gitutility.provider.ReadonlyRulesetSpec;
+import com.gitutility.provider.RulesetPresence;
 import com.gitutility.provider.GithubPullRequestJson;
 import com.gitutility.provider.GithubRestPagination;
 import com.gitutility.provider.PublicReadProbe;
 import com.gitutility.provider.ScmProviderAdapter;
+import com.gitutility.provider.ScmVisibility;
 import com.gitutility.repository.GitHubAppConfigRepository;
 import com.gitutility.service.ScmCredentialContext;
 import com.gitutility.service.ScmCredentialService;
@@ -122,7 +126,7 @@ public class GitHubProviderService implements ScmProviderAdapter {
      * from truly empty Provider Settings.
      */
     private PermissionCheckReport missingCredentialsReport(String repoFullName) {
-        Long boundId = ScmCredentialContext.currentId();
+        String boundId = ScmCredentialContext.currentId();
         boolean providersConfigured = scmCredentialService != null
                 && scmCredentialService.hasEnabled(ScmCredentialService.PROVIDER_GITHUB);
 
@@ -166,7 +170,7 @@ public class GitHubProviderService implements ScmProviderAdapter {
         if (scmCredentialService == null) {
             return null;
         }
-        Long id = com.gitutility.service.ScmCredentialContext.currentId();
+        String id = com.gitutility.service.ScmCredentialContext.currentId();
         if (id == null) {
             return null;
         }
@@ -261,6 +265,7 @@ public class GitHubProviderService implements ScmProviderAdapter {
                     .repoFullName(repoFullName)
                     .defaultBranch("main")
                     .isPrivate(true)
+                    .visibility("PRIVATE")
                     .accessMode("AUTHENTICATED")
                     .message("All repository permissions verified successfully! (Simulation Mode)")
                     .permissions(PermissionCheckReport.PermissionsDetail.builder()
@@ -322,7 +327,7 @@ public class GitHubProviderService implements ScmProviderAdapter {
             }
 
             String defaultBranch = "main";
-            boolean isPrivate = true;
+            String visibility = "PRIVATE";
             boolean canPull = true;
             boolean canPush = false;
             boolean isAdmin = false;
@@ -333,7 +338,7 @@ public class GitHubProviderService implements ScmProviderAdapter {
                 ResponseEntity<String> repoResp = restTemplate.exchange(URI.create(repoUrl), HttpMethod.GET, new HttpEntity<>(headers), String.class);
                 JsonNode repoNode = objectMapper.readTree(repoResp.getBody());
                 defaultBranch = repoNode.path("default_branch").asText("main");
-                isPrivate = repoNode.path("private").asBoolean(true);
+                visibility = ScmVisibility.fromRepoNode(repoNode);
 
                 boolean isAppToken = token != null && (token.startsWith("ghs_") || token.equals(this.cachedInstallationToken));
 
@@ -358,9 +363,9 @@ public class GitHubProviderService implements ScmProviderAdapter {
                     }
                 }
 
-                passed.add("Repository Metadata Verified: " + repoFullName + " (" + (isPrivate ? "Private" : "Public") + ", default branch: " + defaultBranch + ")");
+                passed.add("Repository Metadata Verified: " + repoFullName + " (" + ScmVisibility.label(visibility) + ", default branch: " + defaultBranch + ")");
 
-                if (publicRead || !isPrivate) {
+                if (publicRead || "PUBLIC".equals(visibility)) {
                     canPull = true;
                 }
 
@@ -407,7 +412,8 @@ public class GitHubProviderService implements ScmProviderAdapter {
                     .httpStatusCode(200)
                     .repoFullName(repoFullName)
                     .defaultBranch(defaultBranch)
-                    .isPrivate(isPrivate)
+                    .isPrivate(ScmVisibility.isPrivateFlag(visibility))
+                    .visibility(visibility)
                     .emptyDestination(emptyDestination)
                     .accessMode("AUTHENTICATED")
                     .message(isValid ? "All repository permissions verified successfully!" : "Repository access has permission restrictions.")
@@ -505,7 +511,7 @@ public class GitHubProviderService implements ScmProviderAdapter {
     public RepoSearchResult searchRepositories(String query, int page, int perPage) {
         String token = getEffectiveGitHubToken(null);
         List<GitHubRepoOption> items = new ArrayList<>();
-        Long credId = com.gitutility.service.ScmCredentialContext.currentId();
+        String credId = com.gitutility.service.ScmCredentialContext.currentId();
         boolean isGitHubApp = false;
         if (credId != null && scmCredentialService != null) {
             try {
@@ -615,13 +621,68 @@ public class GitHubProviderService implements ScmProviderAdapter {
     }
 
     @Override
+    public long ensureReplicaReadonlyRuleset(String repoFullName, long appId, String enforcement) {
+        return GitHubRulesetClient.ensure(
+                restTemplate, objectMapper, "https://api.github.com",
+                getEffectiveGitHubToken(null), repoFullName, appId, enforcement);
+    }
+
+    @Override
+    public long ensureReadonlyRuleset(ReadonlyRulesetSpec spec) {
+        String collection = "https://api.github.com" + GitHubRulesetClient.collectionPath(spec);
+        return GitHubRulesetClient.ensureNamed(
+                restTemplate, objectMapper, collection, getEffectiveGitHubToken(null), spec, rulesetLabel(spec));
+    }
+
+    @Override
+    public RulesetPresence lookupReadonlyRuleset(ReadonlyRulesetSpec spec) {
+        String collection = "https://api.github.com" + GitHubRulesetClient.collectionPath(spec);
+        return GitHubRulesetClient.lookup(
+                restTemplate, objectMapper, collection, getEffectiveGitHubToken(null), spec.rulesetName());
+    }
+
+    @Override
+    public java.util.List<GitHubRulesetClient.ListedRuleset> listRepositoryRulesets(String repoFullName) {
+        String collection = "https://api.github.com/repos/" + repoFullName + "/rulesets";
+        return GitHubRulesetClient.listAll(restTemplate, objectMapper, collection, getEffectiveGitHubToken(null));
+    }
+
+    @Override
+    public void setRepositoryRulesetEnforcement(String repoFullName, long rulesetId, String enforcement) {
+        String collection = "https://api.github.com/repos/" + repoFullName + "/rulesets";
+        GitHubRulesetClient.setEnforcement(
+                restTemplate, objectMapper, collection, getEffectiveGitHubToken(null), rulesetId, enforcement);
+    }
+
+    @Override
+    public String probeEnterpriseRulesets(String enterpriseSlug) {
+        if (enterpriseSlug == null || enterpriseSlug.isBlank()) {
+            return "No enterprise slug is saved on this App.";
+        }
+        return GitHubRulesetClient.probe(
+                restTemplate,
+                "https://api.github.com/enterprises/" + enterpriseSlug.trim() + "/rulesets",
+                getEffectiveGitHubToken(null));
+    }
+
+    private static String rulesetLabel(ReadonlyRulesetSpec spec) {
+        if (ReadonlyRulesetSpec.KIND_ENTERPRISE.equals(spec.kind())) {
+            return spec.enterpriseSlug();
+        }
+        if (ReadonlyRulesetSpec.KIND_ORG.equals(spec.kind())) {
+            return spec.orgLogin();
+        }
+        return spec.repoFullName();
+    }
+
+    @Override
     public boolean createRemoteRepository(CreateRepoRequest req) {
         String token = getEffectiveGitHubToken(null);
         if (token == null) return false;
 
         String owner = req.getOrg() != null ? req.getOrg().trim() : null;
         // Preflight: fail fast with actionable guidance when the App installation lacks Administration (write).
-        Long preflightCredId = com.gitutility.service.ScmCredentialContext.currentId();
+        String preflightCredId = com.gitutility.service.ScmCredentialContext.currentId();
         if (preflightCredId != null) {
             scmCredentialService.assertCanCreateRepository(preflightCredId, owner);
         }
@@ -631,9 +692,11 @@ public class GitHubProviderService implements ScmProviderAdapter {
             headers.setContentType(MediaType.APPLICATION_JSON);
 
             Map<String, Object> body = new HashMap<>();
+            String visibility = req.resolvedVisibility();
             body.put("name", req.getName());
             body.put("description", req.getDescription() != null ? req.getDescription() : "Mirrored by GitMirror Hub");
-            body.put("private", req.isPrivateRepo());
+            body.put("private", !"public".equals(visibility));
+            body.put("visibility", visibility);
             body.put("auto_init", false);
 
             boolean useOrgEndpoint = shouldCreateUnderOrg(owner, req.getAccountType());
@@ -684,7 +747,7 @@ public class GitHubProviderService implements ScmProviderAdapter {
         if (isUserAccountType(requestAccountType)) {
             return false;
         }
-        Long credId = ScmCredentialContext.currentId();
+        String credId = ScmCredentialContext.currentId();
         if (credId != null && scmCredentialService != null) {
             try {
                 String accountType = scmCredentialService.require(credId).getAccountType();

@@ -36,6 +36,7 @@ import org.eclipse.jgit.transport.CredentialsProvider;
 import org.eclipse.jgit.transport.PushResult;
 import org.eclipse.jgit.transport.RefSpec;
 import org.eclipse.jgit.transport.RemoteRefUpdate;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
@@ -59,7 +60,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -110,6 +114,8 @@ public class GitSyncEngine {
     private final BulkSubmissionService bulkSubmissionService;
 
     private final ThreadLocal<JobStageProgress> activeStageProgress = new ThreadLocal<>();
+    /** Serializes pipeline and stage-progress writes while LFS overlaps the ref push. */
+    private final Object stagePersistLock = new Object();
 
     private final PushBatchConcurrencyService pushBatchConcurrencyService;
     private final ExecutorService gitPushBatchExecutor;
@@ -157,6 +163,13 @@ public class GitSyncEngine {
         this.bulkSubmissionService = bulkSubmissionService;
         this.pushBatchConcurrencyService = pushBatchConcurrencyService;
         this.gitPushBatchExecutor = gitPushBatchExecutor;
+    }
+
+    private MetadataSyncSettingsService metadataSyncSettingsService;
+
+    @Autowired(required = false)
+    public void setMetadataSyncSettingsService(MetadataSyncSettingsService metadataSyncSettingsService) {
+        this.metadataSyncSettingsService = metadataSyncSettingsService;
     }
 
     public static class SyncResult {
@@ -214,7 +227,7 @@ public class GitSyncEngine {
      * </ul>
      */
     private DestinationCreateOutcome ensureDestinationRepository(
-            RepoMapping mapping, SyncEventMessage event, Long jobId) {
+            RepoMapping mapping, SyncEventMessage event, String jobId) {
         String targetUrl = event.getTargetRepoUrl() != null ? event.getTargetRepoUrl() : mapping.getRepoBUrl();
         try (ScmCredentialContext.Scope ignored =
                      ScmCredentialContext.open(event.getTargetCredentialId(), event.getTargetInstallationId())) {
@@ -231,6 +244,9 @@ public class GitSyncEngine {
             CreateRepoRequest createReq = CreateRepoRequest.builder()
                     .repoUrl(targetUrl)
                     .isPrivate(mapping.getTargetVisibility() != RepoVisibility.PUBLIC)
+                    .visibility(mapping.getTargetVisibility() == null
+                            ? "private"
+                            : mapping.getTargetVisibility().name().toLowerCase(java.util.Locale.ROOT))
                     .credentialId(event.getTargetCredentialId())
                     .build();
             GitHubRepoOption created = scmProviderFacade.createRemoteRepository(createReq);
@@ -261,7 +277,7 @@ public class GitSyncEngine {
     }
 
     /** Marks a job permanently FAILED at the destination-creation stage (no retry). */
-    private void failJobPermanently(Long jobId, String errorMessage) {
+    private void failJobPermanently(String jobId, String errorMessage) {
         if (jobId == null) {
             return;
         }
@@ -288,7 +304,7 @@ public class GitSyncEngine {
      */
     public SyncResult executeSync(SyncEventMessage event) throws Exception {
         long startTime = System.currentTimeMillis();
-        Long jobId = event.getJobId();
+        String jobId = event.getJobId();
         SyncResult result = new SyncResult();
 
         logAudit(jobId, LogLevel.INFO, "Starting Git mirror sync for pair: " + event.getPairName() +
@@ -833,16 +849,16 @@ public class GitSyncEngine {
                         logAudit(jobId, LogLevel.INFO, "Source ref '" + localRefName + "' is absent on source and target; nothing to push.");
                         result.updatedRefs.add("Ref " + (localRefName != null ? localRefName : "refs/heads/" + branchName) + " -> UP_TO_DATE (Absent)");
                     }
-                } else if (targetReachable && isTrunkBranch && remoteTargetRef != null) {
-                    RefSpec trunkSpec = resolveTrunkPushSpec(git, localRefName, branchName,
-                            localRef.getObjectId(), remoteTargetRef.getObjectId(), event, mapping, result, jobId);
-                    if (trunkSpec != null) {
-                        pushRefSpecs.add(trunkSpec);
-                    }
                 } else if (targetReachable && remoteTargetRef != null
                         && localRef.getObjectId().equals(remoteTargetRef.getObjectId())) {
                     logAudit(jobId, LogLevel.INFO, "Branch '" + branchName + "' is already up to date on target.");
                     result.updatedRefs.add("Ref " + localRefName + " -> UP_TO_DATE");
+                } else if (targetReachable && remoteTargetRef != null) {
+                    RefSpec branchSpec = resolveTrunkPushSpec(git, localRefName, branchName,
+                            localRef.getObjectId(), remoteTargetRef.getObjectId(), event, mapping, result, jobId);
+                    if (branchSpec != null) {
+                        pushRefSpecs.add(branchSpec);
+                    }
                 } else {
                     pushRefSpecs.add(new RefSpec("+" + localRefName + ":" + localRefName));
                 }
@@ -852,7 +868,12 @@ public class GitSyncEngine {
                 logAudit(jobId, LogLevel.INFO, "Skipping conflict check and push — already completed for this job.");
             }
 
-            // 4. Push to Target (default branch first, then remaining refs in batches)
+            // 4. Push to Target (default branch first, then remaining refs in batches).
+            // LFS discovery and blob transfer read the local mirror and talk to the LFS
+            // endpoints, so they run beside this push. Both finish before pull-request metadata.
+            Future<?> lfsOverlap = startLfsAlongsidePush(
+                    event, jobId, pipeline, result, resumingJob, resumeStageId);
+            try {
             if (runPush) {
             pipeline.markCurrent(SyncPipelineState.PUSH_DEST);
             broadcastPipeline(jobId, event.getMappingId(), pipeline);
@@ -918,7 +939,8 @@ public class GitSyncEngine {
                         persistCompletedPushRefs(event.getMappingId(), newlyPushed, stageProgress);
                         if (okCount > 0 && actionsTriggerSuppressionService != null) {
                             int cancelled;
-                            try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(event.getTargetCredentialId())) {
+                            try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(
+                                    event.getTargetCredentialId(), event.getTargetInstallationId())) {
                                 cancelled = actionsTriggerSuppressionService.suppressAfterWrite(
                                         event.getTargetRepoUrl(), jobId);
                             }
@@ -984,6 +1006,9 @@ public class GitSyncEngine {
                     throw (e instanceof RuntimeException ? (RuntimeException) e : new RuntimeException(cleanErr, e));
                 }
             }
+            }
+            } finally {
+                joinLfsAlongsidePush(lfsOverlap, jobId);
             }
 
             persistPipeline(jobId, pipeline, result.rejectedPushRefs);
@@ -1061,7 +1086,8 @@ public class GitSyncEngine {
             if (actionsTriggerSuppressionService != null) {
                 try {
                     int cancelled;
-                    try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(event.getTargetCredentialId())) {
+                    try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(
+                            event.getTargetCredentialId(), event.getTargetInstallationId())) {
                         cancelled = actionsTriggerSuppressionService.suppressAfterWrite(event.getTargetRepoUrl(), jobId);
                     }
                     if (cancelled > 0) {
@@ -1088,11 +1114,155 @@ public class GitSyncEngine {
     }
 
     /**
-     * Runs Git LFS discovery and blob transfer after PR/release metadata on full-mirror jobs.
+     * Starts LFS on a side thread so discovery and blob transfer overlap the destination ref push.
+     * Returns null when this job should not run LFS.
      */
-    public void executeLfsSync(SyncEventMessage event, Long jobId, SyncPipelineState pipeline,
+    private Future<?> startLfsAlongsidePush(SyncEventMessage event, String jobId, SyncPipelineState pipeline,
+                                            SyncResult result, boolean resumingJob, String resumeStageId) {
+        if (event == null || pipeline == null || result == null || result.fastPathShortCircuited) {
+            return null;
+        }
+        if (!SyncLaneRouter.includePairMetadata(event) || pipeline.isStageSettled(SyncPipelineState.LFS)) {
+            return null;
+        }
+        if (metadataSyncSettingsService != null && !metadataSyncSettingsService.isLfsEnabled()) {
+            return null;
+        }
+        logAudit(jobId, LogLevel.INFO, "Git LFS discovery and transfer starting alongside destination ref push.");
+        Executor overlap = command -> {
+            Thread thread = new Thread(command, "lfs-overlap");
+            thread.setDaemon(true);
+            thread.start();
+        };
+        return CompletableFuture.runAsync(
+                () -> executeLfsSync(event, jobId, pipeline, result, resumingJob, resumeStageId, true),
+                overlap);
+    }
+
+    private void joinLfsAlongsidePush(Future<?> lfsOverlap, String jobId) {
+        if (lfsOverlap == null) {
+            return;
+        }
+        try {
+            lfsOverlap.get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            lfsOverlap.cancel(true);
+            logAudit(jobId, LogLevel.WARN, "Interrupted while waiting for Git LFS alongside the ref push.");
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            logAudit(jobId, LogLevel.WARN, "Git LFS alongside the ref push failed: " + cause.getMessage());
+        }
+    }
+
+    private void showLfsStage(SyncPipelineState pipeline, String detail, boolean alongsidePush) {
+        if (pipeline == null) {
+            return;
+        }
+        if (alongsidePush) {
+            pipeline.markAlongside(SyncPipelineState.LFS, detail);
+        } else if (detail == null) {
+            pipeline.markCurrent(SyncPipelineState.LFS);
+        } else {
+            pipeline.markCurrent(SyncPipelineState.LFS, detail);
+        }
+    }
+
+    /**
+     * Runs Git LFS discovery and blob transfer. Full-mirror jobs start this beside the destination
+     * ref push; a later call is a no-op once the stage has settled.
+     */
+    /**
+     * After an incremental ref push, transfer LFS pointers that appear between {@code beforeSha} and {@code afterSha}.
+     * A deleted ref transfers nothing. The full-mirror walk stays in {@link #executeLfsSync}.
+     */
+    public void syncLfsForPushedRange(SyncEventMessage event, String jobId, SyncPipelineState pipeline, SyncResult result) {
+        if (gitLfsSyncService == null || event == null || result == null || !result.success) {
+            return;
+        }
+        if (metadataSyncSettingsService != null && !metadataSyncSettingsService.isLfsEnabled()) {
+            return;
+        }
+        String afterSha = event.getAfterSha();
+        if (afterSha == null || afterSha.isBlank() || RefOriginService.isDeletedSha(afterSha)) {
+            if (pipeline != null && !pipeline.isStageSettled(SyncPipelineState.LFS)) {
+                pipeline.markSkipped(SyncPipelineState.LFS,
+                        RefOriginService.isDeletedSha(afterSha) ? "Deleted ref" : "No commit range");
+            }
+            return;
+        }
+        RepoMapping mapping = event.getMappingId() != null
+                ? repoMappingRepository.findById(event.getMappingId()).orElse(null)
+                : null;
+        StorageTier storageTier = StorageTier.AUTO_LRU;
+        if (mapping != null && mapping.getStorageTier() != null) {
+            storageTier = mapping.getStorageTier();
+        }
+        File repoDir = null;
+        if (storageTieringService != null) {
+            repoDir = storageTieringService.resolveRepoDirectory(event.getMappingId(), storageTier);
+        }
+        try {
+            if (repoDir == null) {
+                repoDir = getOrCreateBareRepoDir(event.getMappingId());
+            }
+        } catch (IOException e) {
+            logAudit(jobId, LogLevel.WARN, "Could not open mirror for push-range LFS: " + e.getMessage());
+            return;
+        }
+        try (Git git = initOrOpenBareGit(repoDir, event.getSourceRepoUrl(), event.getTargetRepoUrl())) {
+            List<GitLfsSyncService.LfsObject> found = gitLfsSyncService.discoverPointersBetween(
+                    git.getRepository(), event.getBeforeSha(), afterSha);
+            if (found.isEmpty()) {
+                if (pipeline != null && !pipeline.isStageSettled(SyncPipelineState.LFS)) {
+                    pipeline.markDone(SyncPipelineState.LFS, "No LFS pointers in pushed commits");
+                }
+                logAudit(jobId, LogLevel.INFO, "Push-range LFS scan found no pointers.");
+                return;
+            }
+            if (pipeline != null) {
+                pipeline.markCurrent(SyncPipelineState.LFS, "transferring " + found.size() + " pointer(s)");
+            }
+            logAudit(jobId, LogLevel.INFO, "Push-range LFS scan found " + found.size() + " pointer(s).");
+            var stats = gitLfsSyncService.syncLfsObjects(
+                    event.getSourceRepoUrl(), event.getTargetRepoUrl(), found,
+                    null, () -> isStopRequested(jobId), jobId,
+                    resolveSideToken(event.getTokenA(), event.getSourceCredentialId(),
+                            event.getSourceInstallationId(), event.getSourceRepoUrl()),
+                    resolveSideToken(event.getTokenB(), event.getTargetCredentialId(),
+                            event.getTargetInstallationId(), event.getTargetRepoUrl()),
+                    null);
+            result.lfsObjectsCount = found.size();
+            result.lfsSyncedCount = stats.count();
+            result.lfsBytes = stats.bytes();
+            if (pipeline != null) {
+                if (stats.failed() > 0) {
+                    pipeline.markFailed(SyncPipelineState.LFS,
+                            stats.count() + " transferred, " + stats.failed() + " failed");
+                } else {
+                    pipeline.markDone(SyncPipelineState.LFS, stats.count() + " object(s) from pushed commits");
+                }
+            }
+        } catch (Exception e) {
+            logAudit(jobId, LogLevel.WARN, "Push-range LFS sync failed: " + e.getMessage());
+            if (pipeline != null && !pipeline.isStageSettled(SyncPipelineState.LFS)) {
+                pipeline.markFailed(SyncPipelineState.LFS, e.getMessage());
+            }
+        }
+    }
+
+    public void executeLfsSync(SyncEventMessage event, String jobId, SyncPipelineState pipeline,
                                SyncResult result, boolean resumingJob, String resumeStageId) {
-        if (pipeline == null || result == null || !result.success || result.fastPathShortCircuited) {
+        executeLfsSync(event, jobId, pipeline, result, resumingJob, resumeStageId, false);
+    }
+
+    public void executeLfsSync(SyncEventMessage event, String jobId, SyncPipelineState pipeline,
+                               SyncResult result, boolean resumingJob, String resumeStageId,
+                               boolean alongsidePush) {
+        if (pipeline == null || result == null || result.fastPathShortCircuited) {
+            return;
+        }
+        if (!alongsidePush && !result.success) {
             return;
         }
         if (!shouldRunGitStage(resumingJob, pipeline, resumeStageId, SyncPipelineState.LFS)) {
@@ -1129,7 +1299,10 @@ public class GitSyncEngine {
                 ? syncCheckpointService.getStage(mapping)
                 : SyncCheckpointStage.NONE;
 
-        pipeline.markCurrent(SyncPipelineState.LFS, "discovering pointers");
+        if (alongsidePush && providerRateMeter != null) {
+            providerRateMeter.attachJob(jobId);
+        }
+        showLfsStage(pipeline, "discovering pointers", alongsidePush);
         broadcastPipeline(jobId, event.getMappingId(), pipeline);
         try (Git git = initOrOpenBareGit(repoDir, event.getSourceRepoUrl(), event.getTargetRepoUrl())) {
             if (gitLfsSyncService == null) {
@@ -1138,7 +1311,7 @@ public class GitSyncEngine {
                 GitLfsSyncService.LfsProgressListener lfsProgress = (phase, detail) -> {
                     throwIfStopRequested(jobId);
                     String label = "discover".equals(phase) ? "discovering pointers" : "transferring blobs";
-                    pipeline.markCurrent(SyncPipelineState.LFS, label + " · " + detail);
+                    showLfsStage(pipeline, label + " · " + detail, alongsidePush);
                     broadcastPipeline(jobId, event.getMappingId(), pipeline);
                     if ("discover".equals(phase)
                             && (detail.startsWith("scanning ") || detail.startsWith("discovered "))) {
@@ -1158,8 +1331,7 @@ public class GitSyncEngine {
                         : java.util.Set.of();
                 if (hasJobDiscovery) {
                     lfsObjects = SyncCheckpointService.parseLfsObjects(stageProgress.getDiscoveredLfsBlob());
-                    pipeline.markCurrent(SyncPipelineState.LFS,
-                            "cached discovery · " + lfsObjects.size() + " pointer(s)");
+                    showLfsStage(pipeline, "cached discovery · " + lfsObjects.size() + " pointer(s)", alongsidePush);
                     broadcastPipeline(jobId, event.getMappingId(), pipeline);
                     logAudit(jobId, LogLevel.INFO, "Using job-cached LFS discovery: " + lfsObjects.size() + " pointer(s).");
                     result.lfsScannedTipOids = previousTips;
@@ -1169,8 +1341,7 @@ public class GitSyncEngine {
                         && gitLfsSyncService.currentTipsMatch(git.getRepository(), previousTips)) {
                     lfsObjects = syncCheckpointService.loadDiscoveredLfs(mapping);
                     catchUpRemirror = true;
-                    pipeline.markCurrent(SyncPipelineState.LFS,
-                            "cached discovery · " + lfsObjects.size() + " pointer(s)");
+                    showLfsStage(pipeline, "cached discovery · " + lfsObjects.size() + " pointer(s)", alongsidePush);
                     broadcastPipeline(jobId, event.getMappingId(), pipeline);
                     logAudit(jobId, LogLevel.INFO, "LFS tips unchanged since last scan — skipping object walk ("
                             + lfsObjects.size() + " pointer(s) cached).");
@@ -1214,8 +1385,7 @@ public class GitSyncEngine {
                     // Remirror safety net: completed-OID ledger may be empty after older runs /
                     // Start fresh history, while destination already holds the blobs.
                     if (!pending.isEmpty() && catchUpRemirror) {
-                        pipeline.markCurrent(SyncPipelineState.LFS,
-                                "verifying " + pending.size() + " on destination");
+                        showLfsStage(pipeline, "verifying " + pending.size() + " on destination", alongsidePush);
                         broadcastPipeline(jobId, event.getMappingId(), pipeline);
                         GitLfsSyncService.BatchVerifyResult verify = gitLfsSyncService.verifyObjectsPresentOnTarget(
                                 event.getTargetRepoUrl(),
@@ -1326,7 +1496,10 @@ public class GitSyncEngine {
             result.pipelineJson = pipeline.toJson();
         } finally {
             activeStageProgress.remove();
-            if (storageTier == StorageTier.EPHEMERAL_STREAM && storageTieringService != null) {
+            if (alongsidePush && providerRateMeter != null) {
+                providerRateMeter.detachJob();
+            }
+            if (!alongsidePush && storageTier == StorageTier.EPHEMERAL_STREAM && storageTieringService != null) {
                 storageTieringService.cleanupEphemeralRepo(repoDir);
             }
         }
@@ -1414,7 +1587,7 @@ public class GitSyncEngine {
         return RefOriginService.isSyncConflictBranch(branchOrRef);
     }
 
-    private File getOrCreateBareRepoDir(Long mappingId) throws IOException {
+    private File getOrCreateBareRepoDir(String mappingId) throws IOException {
         Path base = Paths.get(workspaceDir);
         if (!Files.exists(base)) {
             Files.createDirectories(base);
@@ -1444,13 +1617,13 @@ public class GitSyncEngine {
     }
 
     private CredentialsProvider createCredentialsProvider(SyncEventMessage event, String repoUrl, String explicitToken) {
-        Long credId = credentialIdFor(event, repoUrl);
+        String credId = credentialIdFor(event, repoUrl);
         String installId = installationIdFor(event, repoUrl);
         String token = explicitToken;
         if ((token == null || token.isBlank()) && credId != null && scmCredentialService != null) {
             token = scmCredentialService.resolveAccessToken(credId, installId, repoUrl);
         }
-        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(credId)) {
+        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(credId, installId)) {
             if (scmProviderFacade != null) {
                 return scmProviderFacade.getGitCredentials(repoUrl, token);
             }
@@ -1458,7 +1631,7 @@ public class GitSyncEngine {
         }
     }
 
-    private static Long credentialIdFor(SyncEventMessage event, String repoUrl) {
+    private static String credentialIdFor(SyncEventMessage event, String repoUrl) {
         if (event == null || repoUrl == null) {
             return null;
         }
@@ -1484,7 +1657,7 @@ public class GitSyncEngine {
         return event.getSourceInstallationId();
     }
 
-    private String resolveSideToken(String explicit, Long credentialId, String installationId, String repoUrl) {
+    private String resolveSideToken(String explicit, String credentialId, String installationId, String repoUrl) {
         if (explicit != null && !explicit.isBlank()) {
             return explicit.trim();
         }
@@ -1494,7 +1667,7 @@ public class GitSyncEngine {
         return scmCredentialService.resolveAccessToken(credentialId, installationId, repoUrl);
     }
 
-    private void assertCredentialCanAccess(Long credentialId, String installationId, String repoUrl) {
+    private void assertCredentialCanAccess(String credentialId, String installationId, String repoUrl) {
         if (credentialId == null || repoUrl == null || scmCredentialService == null) {
             return;
         }
@@ -1510,7 +1683,7 @@ public class GitSyncEngine {
      */
     private boolean fetchSourcePublicFirst(Git git, CredentialsProvider sourceCreds, Boolean cachedPublicRead,
                                           LiveGitProgressMonitor monitor, SyncEventMessage event,
-                                          boolean includePullHeads, Long jobId,
+                                          boolean includePullHeads, String jobId,
                                           List<String> failedFetchRefsOut) throws Exception {
         boolean knownPrivate = Boolean.FALSE.equals(cachedPublicRead);
         if (!knownPrivate) {
@@ -1532,7 +1705,7 @@ public class GitSyncEngine {
     }
 
     private void doSourceFetch(Git git, CredentialsProvider creds, LiveGitProgressMonitor monitor,
-                               SyncEventMessage event, boolean includePullHeads, Long jobId,
+                               SyncEventMessage event, boolean includePullHeads, String jobId,
                                List<String> failedFetchRefsOut) throws Exception {
         RefSpec[] refSpecs = sourceFetchRefSpecs(event, includePullHeads);
         org.eclipse.jgit.transport.FetchResult fetchResult = git.fetch()
@@ -1581,7 +1754,7 @@ public class GitSyncEngine {
         };
     }
 
-    private boolean runSourceFetchWithHeartbeat(Long jobId, LiveGitProgressMonitor monitor,
+    private boolean runSourceFetchWithHeartbeat(String jobId, LiveGitProgressMonitor monitor,
                                                 Callable<Boolean> fetchTask) throws Exception {
         return runGitOpWithHeartbeat(jobId,
                 () -> {
@@ -1594,7 +1767,7 @@ public class GitSyncEngine {
                 fetchTask);
     }
 
-    private <T> T runGitOpWithHeartbeat(Long jobId, java.util.function.Supplier<String> heartbeatMessage,
+    private <T> T runGitOpWithHeartbeat(String jobId, java.util.function.Supplier<String> heartbeatMessage,
                                         Callable<T> task) throws Exception {
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "git-heartbeat-" + jobId);
@@ -1805,11 +1978,11 @@ public class GitSyncEngine {
             if (shouldSkipRef(name, sha, destSha, alreadyPushed, targetReachable)) {
                 return;
             }
-            if (isTrunkBranch(branch) && destId != null && event != null) {
-                RefSpec trunkSpec = resolveTrunkPushSpec(git, name, branch, ref.getObjectId(), destId, event, mapping, result,
+            if (destId != null && event != null) {
+                RefSpec branchSpec = resolveTrunkPushSpec(git, name, branch, ref.getObjectId(), destId, event, mapping, result,
                         event.getJobId());
-                if (trunkSpec != null) {
-                    specs.add(trunkSpec);
+                if (branchSpec != null) {
+                    specs.add(branchSpec);
                 }
                 return;
             }
@@ -1875,7 +2048,7 @@ public class GitSyncEngine {
 
     private RefSpec resolveTrunkPushSpec(Git git, String localRefName, String branchName,
                                          ObjectId localId, ObjectId destId, SyncEventMessage event,
-                                         RepoMapping mapping, SyncResult result, Long jobId) {
+                                         RepoMapping mapping, SyncResult result, String jobId) {
         if (localId.equals(destId)) {
             logAudit(jobId, LogLevel.INFO, "Branch '" + branchName + "' is already up to date on target.");
             return null;
@@ -1954,8 +2127,8 @@ public class GitSyncEngine {
         if (result == null || result.isolatedRefs == null || result.isolatedRefs.isEmpty() || syncConflictService == null) {
             return;
         }
-        Long mappingId = mapping != null ? mapping.getId() : (event != null ? event.getMappingId() : null);
-        Long jobId = event != null ? event.getJobId() : null;
+        String mappingId = mapping != null ? mapping.getId() : (event != null ? event.getMappingId() : null);
+        String jobId = event != null ? event.getJobId() : null;
         String destUrl = event != null ? event.getTargetRepoUrl() : null;
         for (IsolatedRef iso : result.isolatedRefs) {
             if (iso.action == TrunkPushAction.FORCE) {
@@ -2041,7 +2214,7 @@ public class GitSyncEngine {
      * Cheap advertisement-only check: ls-remote heads/tags/notes and compare to local tips.
      */
     private TipProbeResult probeSourceTips(Git git, CredentialsProvider sourceCreds,
-                                           Boolean cachedPublicRead, Long jobId) throws Exception {
+                                           Boolean cachedPublicRead, String jobId) throws Exception {
         Map<String, String> remoteTips = lsRemoteSourceTipsPublicFirst(git, sourceCreds, cachedPublicRead);
         Map<String, String> localTips = collectLocalProbeTips(git);
         TipProbeResult result = TipProbeResult.compare(localTips, remoteTips);
@@ -2342,7 +2515,7 @@ public class GitSyncEngine {
      * or auth-failed batch aborts the remaining ones exactly like the sequential path.
      */
     private void pushBatchesInParallel(List<List<RefSpec>> batches, int wave, Git git, SyncEventMessage event,
-                                       GitWireByteMeter wireMeter, LiveGitProgressMonitor pushMonitor, Long jobId,
+                                       GitWireByteMeter wireMeter, LiveGitProgressMonitor pushMonitor, String jobId,
                                        SyncResult result, Map<String, String> newlyPushed, RepoMapping mapping,
                                        SyncPipelineState pipeline, JobStageProgress stageProgress,
                                        String destLabel, boolean isFullMirror) throws Exception {
@@ -2388,7 +2561,7 @@ public class GitSyncEngine {
     /** Worker body: wave + host permit acquisition, per-thread Git facade, shared wire-byte metering. */
     private BatchOutcome pushOneBatchInParallel(int batchIndex, int totalBatches, List<RefSpec> batch,
                                                 Git git, SyncEventMessage event, GitWireByteMeter wireMeter,
-                                                Long jobId, Semaphore wavePermits, Semaphore hostPermits,
+                                                String jobId, Semaphore wavePermits, Semaphore hostPermits,
                                                 AtomicBoolean abortRemaining, SyncPipelineState pipeline,
                                                 String destLabel) {
         if (abortRemaining.get()) {
@@ -2438,7 +2611,7 @@ public class GitSyncEngine {
 
     /** Coordinator-side fan-in: applies each finished batch in submission order; first failure aborts the rest. */
     private void collectParallelBatchOutcomes(List<CompletableFuture<BatchOutcome>> futures, int totalBatches,
-                                              Git git, SyncEventMessage event, Long jobId, SyncResult result,
+                                              Git git, SyncEventMessage event, String jobId, SyncResult result,
                                               Map<String, String> newlyPushed, RepoMapping mapping,
                                               SyncPipelineState pipeline, JobStageProgress stageProgress,
                                               AtomicBoolean abortRemaining, boolean isFullMirror) {
@@ -2466,7 +2639,7 @@ public class GitSyncEngine {
 
     /** Sequential push of ref batches — the original path (fan-out disabled, or a single batch remains). */
     private void pushBatchesSequentially(List<List<RefSpec>> batches, Git git, SyncEventMessage event,
-                                         LiveGitProgressMonitor pushMonitor, Long jobId, SyncResult result,
+                                         LiveGitProgressMonitor pushMonitor, String jobId, SyncResult result,
                                          Map<String, String> newlyPushed, RepoMapping mapping,
                                          SyncPipelineState pipeline, JobStageProgress stageProgress,
                                          boolean isFullMirror) throws Exception {
@@ -2501,7 +2674,7 @@ public class GitSyncEngine {
      * reason when the batch was rejected (caller aborts remaining batches), else {@code null}.
      */
     private String applyPushBatchResult(int batchIndex, int totalBatches, PushBatchResult batchResult,
-                                        Git git, SyncEventMessage event, Long jobId, SyncResult result,
+                                        Git git, SyncEventMessage event, String jobId, SyncResult result,
                                         Map<String, String> newlyPushed, RepoMapping mapping,
                                         SyncPipelineState pipeline, JobStageProgress stageProgress) {
         int okCount = batchResult.successfulRefNames.size() + batchResult.deletedRemoteNames.size();
@@ -2521,7 +2694,8 @@ public class GitSyncEngine {
         persistCompletedPushRefs(event.getMappingId(), newlyPushed, stageProgress);
         if (okCount > 0 && actionsTriggerSuppressionService != null) {
             int cancelled;
-            try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(event.getTargetCredentialId())) {
+            try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(
+                    event.getTargetCredentialId(), event.getTargetInstallationId())) {
                 cancelled = actionsTriggerSuppressionService.suppressAfterWrite(
                         event.getTargetRepoUrl(), jobId);
             }
@@ -2545,7 +2719,7 @@ public class GitSyncEngine {
 
     /** Fresh progress monitor per parallel push batch — the outer monitor is owned by the job thread. */
     private LiveGitProgressMonitor newPushBatchMonitor(SyncEventMessage event, String destLabel,
-                                                       SyncPipelineState pipeline, Long jobId) {
+                                                       SyncPipelineState pipeline, String jobId) {
         LiveGitProgressMonitor monitor = new LiveGitProgressMonitor(
                 jobId, event.getMappingId(), "push", "destination", destLabel,
                 webSocketNotificationService,
@@ -2560,7 +2734,8 @@ public class GitSyncEngine {
     }
 
     private PushBatchResult pushBatchWithRetries(Git git, SyncEventMessage event, List<RefSpec> batch,
-                                                 LiveGitProgressMonitor monitor, Long jobId) throws Exception {
+                                                 LiveGitProgressMonitor monitor, String jobId) throws Exception {
+        recordEchoForRefSpecs(git, event, batch);
         int attempts = Math.max(1, pushBatchRetries);
         Exception last = null;
         boolean refreshedAuth = false;
@@ -2593,7 +2768,8 @@ public class GitSyncEngine {
                 if (providerRateMeter != null && ProviderRateMeter.looksLikeGitThrottle(cleanErr)) {
                     providerRateMeter.recordGitHttpThrottle(cleanErr);
                 }
-                if (pushBatchConcurrencyService != null) {
+                if (pushBatchConcurrencyService != null
+                        && ProviderRateMeter.looksLikeGitThrottle(cleanErr)) {
                     pushBatchConcurrencyService.recordThrottle(cleanErr);
                 }
                 if (isAuthFailure(e) && !refreshedAuth) {
@@ -2628,7 +2804,39 @@ public class GitSyncEngine {
         throw last != null ? last : new IllegalStateException("Push batch failed with no exception");
     }
 
-    private PushBatchResult parsePushResults(Long jobId, Iterable<PushResult> pushResults) {
+    /**
+     * Writes destination tip SHAs and deletes before {@code git push} so a webhook that
+     * lands on another pod is already in the shared echo table.
+     */
+    private void recordEchoForRefSpecs(Git git, SyncEventMessage event, List<RefSpec> specs) {
+        if (dedupLedgerService == null || event == null || event.getTargetRepoUrl() == null || specs == null) {
+            return;
+        }
+        String target = event.getTargetRepoUrl();
+        for (RefSpec spec : specs) {
+            if (spec == null) {
+                continue;
+            }
+            String source = spec.getSource();
+            if (source == null || source.isBlank() || source.contains("*")) {
+                String dest = spec.getDestination();
+                if (dest != null && !dest.isBlank() && !dest.contains("*")) {
+                    dedupLedgerService.recordSystemRefDelete(target, dest);
+                }
+                continue;
+            }
+            try {
+                Ref ref = git.getRepository().exactRef(source);
+                if (ref != null && ref.getObjectId() != null) {
+                    dedupLedgerService.recordSystemPush(target, ObjectId.toString(ref.getObjectId()));
+                }
+            } catch (Exception e) {
+                log.debug("Could not record echo SHA for {}: {}", source, e.getMessage());
+            }
+        }
+    }
+
+    private PushBatchResult parsePushResults(String jobId, Iterable<PushResult> pushResults) {
         PushBatchResult result = new PushBatchResult();
         if (pushResults == null) {
             return result;
@@ -2762,7 +2970,7 @@ public class GitSyncEngine {
         }
     }
 
-    private void persistCompletedPushRefs(Long mappingId, Map<String, String> refs, JobStageProgress stageProgress) {
+    private void persistCompletedPushRefs(String mappingId, Map<String, String> refs, JobStageProgress stageProgress) {
         if (stageProgress != null) {
             stageProgress.setCompletedPushRefs(refs == null || refs.isEmpty()
                     ? new LinkedHashMap<>() : new LinkedHashMap<>(refs));
@@ -2780,7 +2988,7 @@ public class GitSyncEngine {
         }
     }
 
-    private void persistTargetVisibility(Long mappingId, com.gitutility.model.enums.RepoVisibility visibility) {
+    private void persistTargetVisibility(String mappingId, com.gitutility.model.enums.RepoVisibility visibility) {
         if (mappingId == null || visibility == null) return;
         try {
             repoMappingRepository.findById(mappingId).ifPresent(mapping -> {
@@ -2792,14 +3000,19 @@ public class GitSyncEngine {
         }
     }
 
-    private void persistSourcePublicRead(Long mappingId, boolean publicRead) {
+    private void persistSourcePublicRead(String mappingId, boolean publicRead) {
         if (mappingId == null) return;
         try {
             repoMappingRepository.findById(mappingId).ifPresent(mapping -> {
                 mapping.setSourcePublicRead(publicRead);
-                mapping.setSourceVisibility(publicRead
-                        ? com.gitutility.model.enums.RepoVisibility.PUBLIC
-                        : com.gitutility.model.enums.RepoVisibility.PRIVATE);
+                if (publicRead) {
+                    if (mapping.getSourceVisibility() != com.gitutility.model.enums.RepoVisibility.INTERNAL) {
+                        mapping.setSourceVisibility(com.gitutility.model.enums.RepoVisibility.PUBLIC);
+                    }
+                } else if (mapping.getSourceVisibility() == null
+                        || mapping.getSourceVisibility() == com.gitutility.model.enums.RepoVisibility.UNKNOWN) {
+                    mapping.setSourceVisibility(com.gitutility.model.enums.RepoVisibility.PRIVATE);
+                }
                 repoMappingRepository.save(mapping);
             });
         } catch (Exception e) {
@@ -2964,7 +3177,7 @@ public class GitSyncEngine {
                 lower.contains("dummy") || lower.contains("localhost");
     }
 
-    private void verifyDestinationWritable(SyncEventMessage event, RepoMapping mapping, Long jobId, SyncPipelineState pipeline) {
+    private void verifyDestinationWritable(SyncEventMessage event, RepoMapping mapping, String jobId, SyncPipelineState pipeline) {
         if (isSimulationOrTestUrl(event.getTargetRepoUrl())) {
             pipeline.markSkipped(SyncPipelineState.VERIFY_DEST, "Simulated target");
             return;
@@ -2974,13 +3187,14 @@ public class GitSyncEngine {
             return;
         }
         try {
-            Long targetCredId = event.getTargetCredentialId();
+            String targetCredId = event.getTargetCredentialId();
             String destToken = resolveSideToken(event.getTokenB(), targetCredId,
                     event.getTargetInstallationId(), event.getTargetRepoUrl());
             PermissionCheckReport report = scmProviderFacade.testConnection(null, TestConnectionRequest.builder()
                     .repoUrl(event.getTargetRepoUrl())
                     .token(destToken)
                     .credentialId(targetCredId)
+                    .installationId(event.getTargetInstallationId())
                     .requiredAccess("WRITE")
                     .knownPrivate(mapping != null
                             && mapping.getTargetVisibility() == com.gitutility.model.enums.RepoVisibility.PRIVATE)
@@ -3005,7 +3219,8 @@ public class GitSyncEngine {
             logAudit(jobId, LogLevel.INFO, "Destination write preflight passed for " + hostPathLabel(event.getTargetRepoUrl()) + ".");
             if (actionsTriggerSuppressionService != null) {
                 try (com.gitutility.service.ScmCredentialContext.Scope ignored =
-                             com.gitutility.service.ScmCredentialContext.open(targetCredId)) {
+                             com.gitutility.service.ScmCredentialContext.open(
+                                     targetCredId, event.getTargetInstallationId())) {
                     actionsTriggerSuppressionService.validateWriteAuthOrThrow(
                             event.getTargetRepoUrl(), destToken);
                 }
@@ -3039,11 +3254,11 @@ public class GitSyncEngine {
         return "destination Contents write is not granted";
     }
 
-    void logJobAudit(Long jobId, LogLevel level, String message) {
+    void logJobAudit(String jobId, LogLevel level, String message) {
         logAudit(jobId, level, message);
     }
 
-    private void broadcastPipeline(Long jobId, Long mappingId, SyncPipelineState pipeline) {
+    private void broadcastPipeline(String jobId, String mappingId, SyncPipelineState pipeline) {
         if (webSocketNotificationService == null || jobId == null || pipeline == null) {
             return;
         }
@@ -3057,10 +3272,11 @@ public class GitSyncEngine {
         );
     }
 
-    private void persistPipeline(Long jobId, SyncPipelineState pipeline, String rejectedPushRefs) {
+    private void persistPipeline(String jobId, SyncPipelineState pipeline, String rejectedPushRefs) {
         if (jobId == null || syncJobRepository == null) {
             return;
         }
+        synchronized (stagePersistLock) {
         try {
             JobStageProgress stageProgress = activeStageProgress.get();
             syncJobRepository.findById(jobId).ifPresent(job -> {
@@ -3069,7 +3285,9 @@ public class GitSyncEngine {
                     job.setResumeStageId(jobExecutionStateService.resolveResumeStageId(pipeline));
                 }
                 if (stageProgress != null) {
-                    job.setStageProgressJson(stageProgress.toJson());
+                    JobStageProgress merged = JobStageProgress.merge(
+                            JobStageProgress.fromJson(job.getStageProgressJson()), stageProgress);
+                    job.setStageProgressJson(merged.toJson());
                 }
                 if (rejectedPushRefs != null) {
                     job.setRejectedPushRefs(rejectedPushRefs);
@@ -3087,6 +3305,7 @@ public class GitSyncEngine {
         } catch (Exception e) {
             log.debug("Could not persist pipeline telemetry: {}", e.getMessage());
         }
+        }
     }
 
     private Map<String, Object> trafficSnapshot() {
@@ -3097,7 +3316,7 @@ public class GitSyncEngine {
         return providerRateMeter != null ? providerRateMeter.snapshotMap() : null;
     }
 
-    private void touchRunningDuration(Long jobId) {
+    private void touchRunningDuration(String jobId) {
         if (syncJobService != null && jobId != null) {
             syncJobService.touchRunningDuration(jobId);
         }
@@ -3189,7 +3408,7 @@ public class GitSyncEngine {
         }
     }
 
-    private void logAudit(Long jobId, LogLevel level, String message) {
+    private void logAudit(String jobId, LogLevel level, String message) {
         if (jobId == null) return;
         if (level == null) {
             level = LogLevel.INFO;
@@ -3237,7 +3456,7 @@ public class GitSyncEngine {
         }
     }
 
-    private void throwIfStopRequested(Long jobId) {
+    private void throwIfStopRequested(String jobId) {
         if (isPauseRequested(jobId)) {
             logAudit(jobId, LogLevel.INFO, "Sync paused by operator — checkpoint preserved.");
             throw new JobPausedException(jobId);
@@ -3248,7 +3467,7 @@ public class GitSyncEngine {
         }
     }
 
-    private boolean isStopRequested(Long jobId) {
+    private boolean isStopRequested(String jobId) {
         if (isPauseRequested(jobId)) {
             logAudit(jobId, LogLevel.INFO, "Sync paused by operator — checkpoint preserved.");
             throw new JobPausedException(jobId);
@@ -3256,15 +3475,15 @@ public class GitSyncEngine {
         return isCancelRequested(jobId);
     }
 
-    private boolean isCancelRequested(Long jobId) {
+    private boolean isCancelRequested(String jobId) {
         return jobId != null && jobCancellationService != null && jobCancellationService.isCancelRequested(jobId);
     }
 
-    private boolean isPauseRequested(Long jobId) {
+    private boolean isPauseRequested(String jobId) {
         return jobId != null && jobCancellationService != null && jobCancellationService.isPauseRequested(jobId);
     }
 
-    private void rethrowIfStopRequested(Long jobId, Exception e) {
+    private void rethrowIfStopRequested(String jobId, Exception e) {
         if (e instanceof JobPausedException jpe) {
             throw jpe;
         }

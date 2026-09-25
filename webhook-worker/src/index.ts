@@ -1,4 +1,6 @@
 export interface Env {
+  /** "false" keeps the Worker deployed but refuses webhook publishes. */
+  ENABLED?: string;
   RABBITMQ_HTTP_URL: string;
   RABBITMQ_VHOST: string;
   RABBITMQ_USER?: string;
@@ -32,15 +34,26 @@ export default {
     if (method === "GET" && (pathname === "/" || pathname === "/health")) {
       return new Response(
         JSON.stringify({
-          status: "healthy",
+          status: (env.ENABLED || "true").trim().toLowerCase() === "false" ? "stopped" : "healthy",
           service: "gitmirror-webhook-worker",
           timestamp: new Date().toISOString(),
+          enabled: (env.ENABLED || "true").trim().toLowerCase() !== "false",
           rabbitmqConfigured: !!(env.RABBITMQ_HTTP_URL && env.RABBITMQ_USER),
         }),
         {
           status: 200,
           headers: { "Content-Type": "application/json" },
         }
+      );
+    }
+
+    if (method === "POST" && (env.ENABLED || "true").trim().toLowerCase() === "false") {
+      return new Response(
+        JSON.stringify({
+          status: "stopped",
+          message: "Webhook worker is disabled. Set ENABLED=true in .env and deploy to start.",
+        }),
+        { status: 503, headers: { "Content-Type": "application/json" } }
       );
     }
 
@@ -93,8 +106,16 @@ async function handleGitHubWebhook(request: Request, env: Env, pathname: string)
     );
   }
 
-  // Only push events trigger mirror synchronization
-  if (eventType !== "push") {
+  const accepted = new Set([
+    "push",
+    "create",
+    "delete",
+    "pull_request",
+    "release",
+    "status",
+    "check_run",
+  ]);
+  if (!accepted.has(eventType)) {
     return new Response(
       JSON.stringify({ status: "ignored", reason: `Event type '${eventType}' is not processed` }),
       { status: 200, headers: { "Content-Type": "application/json" } }

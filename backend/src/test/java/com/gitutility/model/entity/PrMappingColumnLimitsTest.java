@@ -30,7 +30,7 @@ class PrMappingColumnLimitsTest {
                 .lastPushedTitle("w".repeat(1001))
                 .build();
 
-        pm.clampColumnLimitsBeforeWrite();
+        pm.prepareForWrite();
 
         assertEquals(1000, pm.getTitle().length());
         assertEquals(1000, pm.getLastPushedTitle().length());

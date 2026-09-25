@@ -29,8 +29,8 @@ class PairDiffSnapshotServiceTest {
     @Test
     void persistFromReportStoresJsonOnMapping() {
         RepoMapping mapping = new RepoMapping();
-        mapping.setId(7L);
-        when(repoMappingRepository.findById(7L)).thenReturn(Optional.of(mapping));
+        mapping.setId("7");
+        when(repoMappingRepository.findById("7")).thenReturn(Optional.of(mapping));
 
         SyncDiffReport report = SyncDiffReport.builder()
                 .overallStatus("IN_SYNC")
@@ -42,7 +42,7 @@ class PairDiffSnapshotServiceTest {
                 .pullRequests(List.of())
                 .build();
 
-        service.persistFromReport(7L, report, "FULL_REFRESH");
+        service.persistFromReport("7", report, "FULL_REFRESH");
 
         ArgumentCaptor<RepoMapping> captor = ArgumentCaptor.forClass(RepoMapping.class);
         verify(repoMappingRepository).save(captor.capture());
@@ -75,8 +75,8 @@ class PairDiffSnapshotServiceTest {
     @Test
     void updateFromGitResultKeepsSourceAndDestBranchCounts() {
         RepoMapping mapping = new RepoMapping();
-        mapping.setId(7L);
-        when(repoMappingRepository.findById(7L)).thenReturn(Optional.of(mapping));
+        mapping.setId("7");
+        when(repoMappingRepository.findById("7")).thenReturn(Optional.of(mapping));
 
         GitSyncEngine.SyncResult result = new GitSyncEngine.SyncResult();
         result.success = true;
@@ -91,7 +91,7 @@ class PairDiffSnapshotServiceTest {
         result.lfsObjectsCount = 98;
         result.lfsSyncedCount = 98;
 
-        service.updateFromGitResult(7L, result);
+        service.updateFromGitResult("7", result);
 
         PairDiffSnapshot snapshot = service.load(mapping);
         assertEquals(4973, snapshot.getSourceBranchesCount());
@@ -107,7 +107,7 @@ class PairDiffSnapshotServiceTest {
     @Test
     void updateFromGitResultDoesNotClobberDestTagsWithZeroFill() throws Exception {
         RepoMapping mapping = new RepoMapping();
-        mapping.setId(8L);
+        mapping.setId("8");
         PairDiffSnapshot prior = PairDiffSnapshot.builder()
                 .tagsSourceCount(388)
                 .tagsTargetCount(388)
@@ -116,7 +116,7 @@ class PairDiffSnapshotServiceTest {
                 .inSyncBranchesCount(5119)
                 .build();
         mapping.setDiffSnapshotJson(JsonMapper.builder().build().writeValueAsString(prior));
-        when(repoMappingRepository.findById(8L)).thenReturn(Optional.of(mapping));
+        when(repoMappingRepository.findById("8")).thenReturn(Optional.of(mapping));
 
         GitSyncEngine.SyncResult result = new GitSyncEngine.SyncResult();
         result.success = true;
@@ -127,7 +127,7 @@ class PairDiffSnapshotServiceTest {
         result.sourceTagsCount = 0;
         result.destTagsCount = 0;
 
-        service.updateFromGitResult(8L, result);
+        service.updateFromGitResult("8", result);
 
         PairDiffSnapshot snapshot = service.load(mapping);
         assertEquals(388, snapshot.getTagsSourceCount());
@@ -138,8 +138,8 @@ class PairDiffSnapshotServiceTest {
     @Test
     void updateFromGitResultSeedsDestTagsFromSourceWhenFillEmptyAndNoPrior() {
         RepoMapping mapping = new RepoMapping();
-        mapping.setId(9L);
-        when(repoMappingRepository.findById(9L)).thenReturn(Optional.of(mapping));
+        mapping.setId("9");
+        when(repoMappingRepository.findById("9")).thenReturn(Optional.of(mapping));
 
         GitSyncEngine.SyncResult result = new GitSyncEngine.SyncResult();
         result.success = true;
@@ -147,7 +147,7 @@ class PairDiffSnapshotServiceTest {
         result.sourceTagsCount = 388;
         result.destTagsCount = 0;
 
-        service.updateFromGitResult(9L, result);
+        service.updateFromGitResult("9", result);
 
         PairDiffSnapshot snapshot = service.load(mapping);
         assertEquals(388, snapshot.getTagsSourceCount());

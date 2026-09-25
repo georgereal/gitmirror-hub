@@ -32,7 +32,7 @@ public class RepoMappingService {
         return mappingRepository.findAll();
     }
 
-    public Optional<RepoMapping> getMappingById(Long id) {
+    public Optional<RepoMapping> getMappingById(String id) {
         return mappingRepository.findById(id);
     }
 
@@ -49,7 +49,8 @@ public class RepoMappingService {
         if (mapping.getBranchPattern() == null || mapping.getBranchPattern().isBlank()) {
             mapping.setBranchPattern("*");
         }
-        if (mapping.getSourceVisibility() == com.gitutility.model.enums.RepoVisibility.PUBLIC) {
+        if (mapping.getSourceVisibility() == com.gitutility.model.enums.RepoVisibility.PUBLIC
+                && (mapping.getSourceCredentialId() == null || mapping.getSourceCredentialId().isBlank())) {
             mapping.setSourcePublicRead(Boolean.TRUE);
         }
 
@@ -116,7 +117,7 @@ public class RepoMappingService {
         return job;
     }
 
-    public RepoMapping updateMapping(Long id, RepoMapping updated) {
+    public RepoMapping updateMapping(String id, RepoMapping updated) {
         RepoMapping existing = mappingRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Mapping not found with id: " + id));
 
@@ -170,12 +171,11 @@ public class RepoMappingService {
         } else if (updated.getTargetInstallationId() != null) {
             existing.setTargetInstallationId(updated.getTargetInstallationId());
         }
-        if (updated.getSourcePublicRead() != null
-                || (updated.getSourceVisibility() == com.gitutility.model.enums.RepoVisibility.PUBLIC)) {
-            existing.setSourcePublicRead(
-                    updated.getSourceVisibility() == com.gitutility.model.enums.RepoVisibility.PUBLIC
-                            ? Boolean.TRUE
-                            : updated.getSourcePublicRead());
+        if (updated.getSourcePublicRead() != null) {
+            existing.setSourcePublicRead(updated.getSourcePublicRead());
+        } else if (updated.getSourceVisibility() == com.gitutility.model.enums.RepoVisibility.PUBLIC
+                && (updated.getSourceCredentialId() == null || updated.getSourceCredentialId().isBlank())) {
+            existing.setSourcePublicRead(Boolean.TRUE);
         }
 
         featureFlagsService.assertMappingAllowed(existing);
@@ -190,7 +190,7 @@ public class RepoMappingService {
      * In Git mirror synchronization, sharing a repository across multiple pairs leads to destructive commit DAG clobbering,
      * non-fast-forward push rejections, and accidental branch pruning.
      */
-    public void validateNoRepositoryCollisions(Long mappingId, RepoMapping candidate) {
+    public void validateNoRepositoryCollisions(String mappingId, RepoMapping candidate) {
         if (!candidate.isActive()) {
             return;
         }
@@ -272,19 +272,19 @@ public class RepoMappingService {
         }
     }
 
-    public void deleteMapping(Long id) {
+    public void deleteMapping(String id) {
         mappingRepository.deleteById(id);
     }
 
-    public SyncJob triggerManualSync(Long mappingId, String branch, String direction) {
+    public SyncJob triggerManualSync(String mappingId, String branch, String direction) {
         return triggerManualSync(mappingId, branch, direction, false);
     }
 
-    public SyncJob triggerManualSync(Long mappingId, String branch, String direction, boolean overwriteFromSource) {
+    public SyncJob triggerManualSync(String mappingId, String branch, String direction, boolean overwriteFromSource) {
         return triggerManualSync(mappingId, branch, direction, overwriteFromSource, false);
     }
 
-    public SyncJob triggerManualSync(Long mappingId, String branch, String direction,
+    public SyncJob triggerManualSync(String mappingId, String branch, String direction,
                                      boolean overwriteFromSource, boolean startFresh) {
         RepoMapping mapping = mappingRepository.findById(mappingId)
                 .orElseThrow(() -> new IllegalArgumentException("Mapping not found with id: " + mappingId));

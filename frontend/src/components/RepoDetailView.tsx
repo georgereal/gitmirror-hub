@@ -35,7 +35,7 @@ import {
   FileText,
   KeyRound
 } from 'lucide-react';
-import { RepoMapping, SyncJob, PermissionCheckReport, SyncDiffReport, StorageTier, JobProgress, TrunkConflictPolicy, SyncConflictRecord, DiffInspectionProgress } from '../types';
+import { RepoMapping, SyncJob, PermissionCheckReport, SyncDiffReport, StorageTier, JobProgress, TrunkConflictPolicy, SyncConflictRecord, DiffInspectionProgress, MetadataSyncSettings } from '../types';
 import {
   testRepoConnection,
   updateMapping,
@@ -48,9 +48,12 @@ import {
   pauseJob,
   getMappingConflicts,
   resolveMappingConflict,
-  openConflictPr
+  openConflictPr,
+  applyReplicaRuleset,
+  getMetadataSyncSettings
 } from '../services/api';
 import { InfoTooltip } from './InfoTooltip';
+import { PeerHealthCard } from './PeerHealthCard';
 import { JobLogModal } from './JobLogModal';
 import { SyncRunsHistoryModal } from './SyncRunsHistoryModal';
 import { DiffInspectionModal } from './DiffInspectionModal';
@@ -65,14 +68,15 @@ interface RepoDetailViewProps {
   mapping: RepoMapping;
   activeRepoTab?: 'code' | 'pull-requests' | 'metadata' | 'settings';
   onUpdate: (updated: Partial<RepoMapping>) => Promise<void>;
-  onTriggerSync: (id: number, branch?: string, overwriteFromSource?: boolean, startFresh?: boolean) => Promise<void>;
-  onDelete: (id: number) => Promise<void>;
+  onTriggerSync: (id: string, branch?: string, overwriteFromSource?: boolean, startFresh?: boolean) => Promise<void>;
+  onDelete: (id: string) => Promise<void>;
   onBack: () => void;
   recentJobs: SyncJob[];
-  progressByJobId?: Record<number, JobProgress>;
+  progressByJobId?: Record<string, JobProgress>;
   diffProgress?: DiffInspectionProgress | null;
   onDiffProgressClear?: () => void;
   onRefreshJobs?: () => void;
+  onMappingLoaded?: (mapping: RepoMapping) => void;
   allMappings?: RepoMapping[];
 }
 
@@ -88,6 +92,7 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
   diffProgress = null,
   onDiffProgressClear,
   onRefreshJobs,
+  onMappingLoaded,
   allMappings = []
 }) => {
   const [currentTab, setCurrentTab] = useState<'code' | 'pull-requests' | 'metadata' | 'settings'>(activeRepoTab);
@@ -115,6 +120,9 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
   const [branchPattern, setBranchPattern] = useState(mapping.branchPattern || '*');
   const [syncDirection, setSyncDirection] = useState(mapping.syncDirection || 'BIDIRECTIONAL');
   const [trunkConflictPolicy, setTrunkConflictPolicy] = useState<TrunkConflictPolicy>(mapping.trunkConflictPolicy || 'ISOLATE');
+  const [primarySide, setPrimarySide] = useState<'A' | 'B'>(mapping.primarySide || 'A');
+  const [rulesetBusy, setRulesetBusy] = useState<string | null>(null);
+  const [rulesetMessage, setRulesetMessage] = useState<string | null>(null);
   const [storageTier, setStorageTier] = useState<StorageTier>(mapping.storageTier || 'AUTO_LRU');
   const [active, setActive] = useState(mapping.active ?? true);
 
@@ -148,10 +156,21 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
   const [syncingLfs, setSyncingLfs] = useState(false);
   const [syncingReleases, setSyncingReleases] = useState(false);
   const [syncingCiChecks, setSyncingCiChecks] = useState(false);
+  const [metadataSettings, setMetadataSettings] = useState<MetadataSyncSettings | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [conflicts, setConflicts] = useState<SyncConflictRecord[]>([]);
-  const [conflictBusyId, setConflictBusyId] = useState<number | null>(null);
+  const [conflictBusyId, setConflictBusyId] = useState<string | null>(null);
   const [fullSyncChoiceOpen, setFullSyncChoiceOpen] = useState(false);
+
+  useEffect(() => {
+    void getMetadataSyncSettings().then(setMetadataSettings).catch(() => setMetadataSettings(null));
+  }, []);
+
+  const prsOff = metadataSettings?.pullRequestsEnabled === false;
+  const releasesOff = metadataSettings?.releasesEnabled === false;
+  const lfsOff = metadataSettings?.lfsEnabled === false;
+  const ciOff = metadataSettings?.ciChecksEnabled === false;
+  const metadataOffTitle = 'Turn this on in Settings → Metadata sync';
 
   const pairJobs = recentJobs.filter(j => j.mappingId === mapping.id);
   const latestJob = pairJobs[0] || null;
@@ -396,6 +415,7 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
         repoUrl: repoAUrl,
         requiredAccess: 'READ',
         credentialId: mapping.sourceCredentialId,
+        installationId: mapping.sourceInstallationId || undefined,
       });
       setCheckReport(res);
     } catch (e: any) {
@@ -411,6 +431,26 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
       });
     } finally {
       setTestingAccess(false);
+    }
+  };
+
+  const runRuleset = async (action: 'lock' | 'unlock' | 'swap') => {
+    setRulesetBusy(action);
+    setRulesetMessage(null);
+    try {
+      const updated = await applyReplicaRuleset(mapping.id, action, primarySide);
+      if (updated.primarySide === 'A' || updated.primarySide === 'B') {
+        setPrimarySide(updated.primarySide);
+      }
+      onMappingLoaded?.(updated);
+      setRulesetMessage(action === 'unlock'
+        ? 'Replica ruleset is disabled. Both sides can accept pushes.'
+        : `Primary is side ${updated.primarySide || primarySide}. Replica ruleset is ${updated.replicaRulesetEnforcement || 'active'}.`);
+    } catch (e: any) {
+      const message = e?.response?.data?.message || e?.message || 'Ruleset update failed';
+      setRulesetMessage(message);
+    } finally {
+      setRulesetBusy(null);
     }
   };
 
@@ -435,7 +475,7 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
 
   const openConflicts = conflicts.filter((c) => c.status === 'OPEN' || c.status === 'PR_OPENED');
 
-  const handleResolveConflict = async (conflictId: number) => {
+  const handleResolveConflict = async (conflictId: string) => {
     setConflictBusyId(conflictId);
     try {
       await resolveMappingConflict(mapping.id, conflictId);
@@ -447,7 +487,7 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
     }
   };
 
-  const handleOpenConflictPr = async (conflictId: number) => {
+  const handleOpenConflictPr = async (conflictId: string) => {
     setConflictBusyId(conflictId);
     try {
       const row = await openConflictPr(mapping.id, conflictId);
@@ -1151,9 +1191,9 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
             <div className="flex items-center space-x-2 shrink-0">
               <button
                 onClick={handleSyncPrs}
-                disabled={syncingPrs || fullDiffLoading}
+                disabled={syncingPrs || fullDiffLoading || prsOff}
                 className="inline-flex items-center space-x-1.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs px-3.5 py-1.5 rounded-lg font-medium shadow-sm transition-colors disabled:opacity-50"
-                title="Synchronize open pull requests metadata across source and target"
+                title={prsOff ? metadataOffTitle : 'Synchronize open pull requests metadata across source and target'}
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${syncingPrs ? 'animate-spin' : ''}`} />
                 <span>{syncingPrs ? 'Syncing PRs...' : 'Sync Pull Requests'}</span>
@@ -1515,9 +1555,9 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
                     </span>
                     <button
                       onClick={handleSyncReleases}
-                      disabled={syncingReleases || fullDiffLoading}
+                      disabled={syncingReleases || fullDiffLoading || releasesOff}
                       className="inline-flex items-center space-x-1 px-2.5 py-1 bg-blue-700 hover:bg-blue-800 text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
-                      title="Replicate releases and downloadable binary attachments to target"
+                      title={releasesOff ? metadataOffTitle : 'Replicate releases and downloadable binary attachments to target'}
                     >
                       <RefreshCw className={`w-3 h-3 ${syncingReleases ? 'animate-spin' : ''}`} />
                       <span>{syncingReleases ? 'Syncing...' : 'Sync Releases & Assets'}</span>
@@ -1654,9 +1694,9 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
                     </span>
                     <button
                       onClick={handleSyncLfs}
-                      disabled={syncingLfs || fullDiffLoading}
+                      disabled={syncingLfs || fullDiffLoading || lfsOff}
                       className="inline-flex items-center space-x-1 px-2.5 py-1 bg-purple-700 hover:bg-purple-800 text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
-                      title="Transfer Git LFS binary blobs between remotes via Batch API"
+                      title={lfsOff ? metadataOffTitle : 'Transfer Git LFS binary blobs between remotes via Batch API'}
                     >
                       <RefreshCw className={`w-3 h-3 ${syncingLfs ? 'animate-spin' : ''}`} />
                       <span>{syncingLfs ? 'Syncing...' : 'Sync Git LFS Blobs'}</span>
@@ -1740,7 +1780,8 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
                     </span>
                     <button
                       onClick={handleSyncCiChecks}
-                      disabled={syncingCiChecks || fullDiffLoading}
+                      disabled={syncingCiChecks || fullDiffLoading || ciOff}
+                      title={ciOff ? metadataOffTitle : 'Backfill CI checks onto mirrored tips'}
                       className="inline-flex items-center space-x-1 px-2.5 py-1 bg-blue-700 hover:bg-blue-800 text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
                     >
                       <RefreshCw className={`w-3 h-3 ${syncingCiChecks ? 'animate-spin' : ''}`} />
@@ -2056,11 +2097,10 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
                     <option value="UNIDIRECTIONAL_A_TO_B">Unidirectional (Source A ➔ Target B Only)</option>
                     <option value="UNIDIRECTIONAL_B_TO_A">Unidirectional (Target B ➔ Source A Only)</option>
                   </select>
-                  {shouldWarnBidirectionalBackup(mapping.sourceVisibility, mapping.targetVisibility, syncDirection) && (
+                  {shouldWarnBidirectionalBackup(mapping, syncDirection) && (
                     <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
-                      <strong>Public → private backup.</strong> With bidirectional sync, mirror-only webhooks
-                      (Dependabot, etc.) can enqueue reverse syncs toward the public upstream. Use{' '}
-                      <span className="font-semibold">Unidirectional A → B</span> for backup mirrors.
+                      <strong>Public read only.</strong> This source has no credential, so its events and writes are unavailable.
+                      Sync stays <span className="font-semibold">Unidirectional A → B</span>.
                     </div>
                   )}
                 </div>
@@ -2079,8 +2119,49 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
                     <option value="ORIGIN_WINS">Origin wins (force-push source onto dest)</option>
                   </select>
                   <p className="text-[11px] text-zinc-500 mt-1">
-                    ISOLATE is the default for bidirectional pairs. ORIGIN_WINS is for designated backup replicas only.
+                    Applies to every branch that already exists on the destination. A new branch is still created.
+                    ISOLATE keeps the destination tip. ORIGIN_WINS is for a designated replica.
                   </p>
+                </div>
+
+                <PeerHealthCard mapping={mapping} />
+                <div>
+                  <p className="text-[11px] text-zinc-500">
+                    Lock / unlock / swap need both remotes up. During DR use Fail back on the map above.
+                    {mapping.replicaRulesetEnforcement
+                      ? ` Replica ruleset is ${mapping.replicaRulesetEnforcement}.`
+                      : ''}
+                    {mapping.writeAuthorityNote ? ` ${mapping.writeAuthorityNote}` : ''}
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={rulesetBusy != null || mapping.peerStatus?.link === 'broken' || mapping.peerStatus?.phase === 'FAILOVER'}
+                      onClick={() => runRuleset('lock')}
+                      className="px-3 py-1.5 rounded-lg bg-zinc-900 text-white text-xs font-medium disabled:opacity-50"
+                    >
+                      {rulesetBusy === 'lock' ? 'Locking…' : 'Lock replica'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={rulesetBusy != null || mapping.peerStatus?.link === 'broken'}
+                      onClick={() => runRuleset('unlock')}
+                      className="px-3 py-1.5 rounded-lg border border-zinc-300 text-xs font-medium text-zinc-800 disabled:opacity-50"
+                    >
+                      {rulesetBusy === 'unlock' ? 'Unlocking…' : 'Unlock replica'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={rulesetBusy != null || mapping.peerStatus?.link === 'broken' || mapping.peerStatus?.phase === 'FAILOVER'}
+                      onClick={() => runRuleset('swap')}
+                      className="px-3 py-1.5 rounded-lg border border-zinc-300 text-xs font-medium text-zinc-800 disabled:opacity-50"
+                    >
+                      {rulesetBusy === 'swap' ? 'Swapping…' : 'Swap primary'}
+                    </button>
+                  </div>
+                  {rulesetMessage && (
+                    <p className="text-[11px] text-zinc-600 mt-2">{rulesetMessage}</p>
+                  )}
                 </div>
               </div>
 

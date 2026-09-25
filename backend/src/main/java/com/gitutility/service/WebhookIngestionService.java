@@ -5,6 +5,7 @@ import tools.jackson.databind.ObjectMapper;
 import com.gitutility.model.dto.GitHubPushPayload;
 import com.gitutility.model.dto.InboundWebhookMessage;
 import com.gitutility.model.entity.RepoMapping;
+import com.gitutility.model.entity.ScmCredential;
 import com.gitutility.model.entity.SyncJob;
 import com.gitutility.model.entity.UnmappedWebhookEvent;
 import com.gitutility.model.enums.PairSide;
@@ -16,6 +17,7 @@ import com.gitutility.repository.SyncJobRepository;
 import com.gitutility.repository.UnmappedWebhookEventRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -48,6 +50,14 @@ public class WebhookIngestionService {
     private final UnmappedWebhookEventRepository unmappedWebhookEventRepository;
     private final RefOriginService refOriginService;
     private final RefInterestPolicy refInterestPolicy;
+    private final ScmCredentialService scmCredentialService;
+
+    private MetadataSyncSettingsService metadataSyncSettingsService;
+
+    @Autowired(required = false)
+    public void setMetadataSyncSettingsService(MetadataSyncSettingsService metadataSyncSettingsService) {
+        this.metadataSyncSettingsService = metadataSyncSettingsService;
+    }
 
     /**
      * Process an inbound webhook envelope received from Cloudflare Worker via AMQP.
@@ -77,7 +87,7 @@ public class WebhookIngestionService {
                         "Mapping '" + mapping.getName() + "' is configured as inactive", message.getRawPayload());
                 return;
             }
-            processInboundPayload(mapping, message.getRawPayload());
+            processInboundPayload(mapping, message.getRawPayload(), message.getEventType());
         } else {
             // Match dynamically by repo URL / full name
             try {
@@ -107,17 +117,124 @@ public class WebhookIngestionService {
                             "No active mirror pair configured for repository: " + repoFullName, message.getRawPayload());
                     return;
                 }
-                processInboundPayload(matches.get(0), message.getRawPayload());
+                processInboundPayload(matches.get(0), message.getRawPayload(), message.getEventType());
             } catch (Exception e) {
                 log.error("Failed to parse generic inbound push payload: {}", e.getMessage(), e);
             }
         }
     }
 
-    private void processInboundPayload(RepoMapping mapping, String rawPayload) {
+    /**
+     * Entry for the Kafka incremental bus when the record carries a metadata event body.
+     */
+    public void ingestMetadataPayload(String rawPayload) {
+        if (rawPayload == null || rawPayload.isBlank()) {
+            return;
+        }
+        RepoMapping mapping = findMappingForPayload(rawPayload);
+        if (mapping == null) {
+            log.info("Metadata webhook has no active pair");
+            return;
+        }
+        processInboundPayload(mapping, rawPayload, null);
+    }
+
+    public RepoMapping findMappingForPayload(String rawPayload) {
         try {
             JsonNode root = objectMapper.readTree(rawPayload);
-            if (root.has("pull_request") || root.has("pullrequest")) {
+            JsonNode repoNode = root.path("repository");
+            String repoUrl = repoNode.path("clone_url").asText(null);
+            if (repoUrl == null || repoUrl.isBlank()) {
+                repoUrl = repoNode.path("html_url").asText(null);
+            }
+            String repoFullName = repoNode.path("full_name").asText(null);
+            List<RepoMapping> matches = mappingRepository.findActiveMatchingRepo(repoUrl, repoFullName);
+            return matches.isEmpty() ? null : matches.get(0);
+        } catch (Exception e) {
+            log.debug("Could not resolve a pair from webhook payload: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    public ResponseEntity<?> processGithubDelivery(RepoMapping mapping, String eventType, String rawPayload) {
+        String type = eventType == null ? "push" : eventType.trim().toLowerCase();
+        if ("ping".equals(type)) {
+            return ResponseEntity.ok(Map.of("status", "pong"));
+        }
+        if (isMetadataEvent(type) || "create".equals(type) || "delete".equals(type)) {
+            processInboundPayload(mapping, rawPayload, type);
+            return ResponseEntity.accepted().body(Map.of("status", "accepted", "event", type));
+        }
+        if (!"push".equals(type)) {
+            return ResponseEntity.ok(Map.of("status", "ignored", "reason", "Event type is not mirrored: " + type));
+        }
+        return processPushEvent(mapping, rawPayload);
+    }
+
+    public static boolean isMetadataEvent(String eventType) {
+        if (eventType == null) {
+            return false;
+        }
+        return switch (eventType.trim().toLowerCase()) {
+            case "pull_request", "release", "status", "check_run" -> true;
+            default -> false;
+        };
+    }
+
+    private boolean pullRequestsOn() {
+        return metadataSyncSettingsService == null || metadataSyncSettingsService.isPullRequestsEnabled();
+    }
+
+    private boolean releasesOn() {
+        return metadataSyncSettingsService == null || metadataSyncSettingsService.isReleasesEnabled();
+    }
+
+    private boolean ciChecksOn() {
+        return metadataSyncSettingsService == null || metadataSyncSettingsService.isCiChecksEnabled();
+    }
+
+    private String synthesizeRefEvent(JsonNode root, String eventType) {
+        String shortRef = root.path("ref").asText("");
+        if (shortRef.isBlank()) {
+            return null;
+        }
+        String refType = root.path("ref_type").asText("branch");
+        String fullRef = shortRef.startsWith("refs/")
+                ? shortRef
+                : ("tag".equals(refType) ? "refs/tags/" : "refs/heads/") + shortRef;
+        boolean deleted = "delete".equals(eventType);
+        String zero = "0000000000000000000000000000000000000000";
+        try {
+            var node = objectMapper.createObjectNode();
+            node.put("ref", fullRef);
+            node.put("before", deleted ? root.path("before").asText(zero) : zero);
+            node.put("after", deleted ? zero : "");
+            node.put("deleted", deleted);
+            if (root.has("repository")) {
+                node.set("repository", root.path("repository").deepCopy());
+            }
+            if (root.has("sender")) {
+                node.set("sender", root.path("sender").deepCopy());
+            }
+            return objectMapper.writeValueAsString(node);
+        } catch (Exception e) {
+            log.warn("Could not normalize {} event: {}", eventType, e.getMessage());
+            return null;
+        }
+    }
+
+    private void processInboundPayload(RepoMapping mapping, String rawPayload, String eventType) {
+        String type = eventType == null ? "" : eventType.trim().toLowerCase();
+        try {
+            JsonNode root = objectMapper.readTree(rawPayload);
+            if ("create".equals(type) || "delete".equals(type)) {
+                String synthesized = synthesizeRefEvent(root, type);
+                if (synthesized != null) {
+                    processPushEvent(mapping, synthesized);
+                }
+                return;
+            }
+            if (root.has("pull_request") || root.has("pullrequest") || "pull_request".equals(type)) {
                 String action = root.path("action").asText(root.has("pullrequest") ? "opened" : "opened");
                 JsonNode prNode = root.has("pull_request") ? root.path("pull_request") : root.path("pullrequest");
                 String inboundRepoUrl = root.path("repository").path("clone_url").asText(null);
@@ -137,7 +254,52 @@ public class WebhookIngestionService {
                     log.info("Skipped PR webhook for head '{}' on mapping {} ({})", headBranch, mapping.getName(), reason);
                     return;
                 }
+                String senderLogin = root.path("sender").path("login").asText(null);
+                if (isMirrorAppActor(mapping, inboundRepoUrl, senderLogin)) {
+                    recordDiscardedEvent("webhook", mapping.getName(), inboundRepoUrl, "pull_request",
+                            senderLogin, headBranch, null, "MIRROR_APP_PUSH",
+                            "Pull request event was sent by the mirror GitHub App", rawPayload);
+                    return;
+                }
+                long eventPrNumber = prNode.path("number").asLong(prNode.path("id").asLong(0));
+                if (eventPrNumber > 0 && dedupLedgerService.isMirroredPullRequest(inboundRepoUrl, eventPrNumber)) {
+                    recordDiscardedEvent("webhook", mapping.getName(), inboundRepoUrl, "pull_request",
+                            senderLogin, headBranch, null, "LOOP_DETECTED_SYSTEM_ECHO",
+                            "Pull request #" + eventPrNumber + " was created by this mirror", rawPayload);
+                    return;
+                }
+                if (!pullRequestsOn()) {
+                    log.info("Pull request webhook skipped; metadata setting is off");
+                    return;
+                }
                 pullRequestSyncService.handlePrWebhookEvent(mapping, action, prNode, inboundRepoUrl);
+                return;
+            }
+            if (root.has("check_run") || "check_run".equals(type)) {
+                if (!ciChecksOn()) {
+                    log.info("Check run webhook skipped; metadata setting is off");
+                    return;
+                }
+                JsonNode checkRun = root.path("check_run");
+                String checkAction = root.path("action").asText("");
+                String checkStatus = checkRun.path("status").asText("");
+                if (!"completed".equalsIgnoreCase(checkAction) && !"completed".equalsIgnoreCase(checkStatus)) {
+                    log.info("Check run '{}' is still {}; waiting for completed",
+                            checkRun.path("name").asText(""), checkStatus);
+                    return;
+                }
+                String inboundRepoUrl = root.path("repository").path("clone_url").asText(null);
+                releaseAndStatusSyncService.replicateWebhookCheckRun(mapping, inboundRepoUrl, checkRun);
+                return;
+            }
+            if (root.has("release") || "release".equals(type)) {
+                if (!releasesOn()) {
+                    log.info("Release webhook skipped; metadata setting is off");
+                    return;
+                }
+                String inboundRepoUrl = root.path("repository").path("clone_url").asText(null);
+                releaseAndStatusSyncService.mirrorWebhookRelease(
+                        mapping, inboundRepoUrl, root.path("action").asText(""), root.path("release"));
                 return;
             }
             if (root.has("state") && root.has("sha") && root.has("context")) {
@@ -146,7 +308,13 @@ public class WebhookIngestionService {
                 String targetUrl = root.path("target_url").asText(null);
                 String description = root.path("description").asText(null);
                 String context = root.path("context").asText(null);
-                releaseAndStatusSyncService.replicateCommitStatus(mapping, sha, state, targetUrl, description, context);
+                if (!ciChecksOn()) {
+                    log.info("Commit status webhook skipped; metadata setting is off");
+                    return;
+                }
+                String inboundRepoUrl = root.path("repository").path("clone_url").asText(null);
+                releaseAndStatusSyncService.replicateInboundCommitStatus(
+                        mapping, inboundRepoUrl, sha, state, targetUrl, description, context);
                 return;
             }
             if (root.has("commit_status")) {
@@ -156,7 +324,13 @@ public class WebhookIngestionService {
                 String targetUrl = cs.path("url").asText(null);
                 String description = cs.path("description").asText(null);
                 String context = cs.path("name").asText(null);
-                releaseAndStatusSyncService.replicateCommitStatus(mapping, sha, state, targetUrl, description, context);
+                if (!ciChecksOn()) {
+                    log.info("Commit status webhook skipped; metadata setting is off");
+                    return;
+                }
+                String inboundRepoUrl = root.path("repository").path("links").path("html").path("href").asText(null);
+                releaseAndStatusSyncService.replicateInboundCommitStatus(
+                        mapping, inboundRepoUrl, sha, state, targetUrl, description, context);
                 return;
             }
         } catch (Exception e) {
@@ -232,6 +406,14 @@ public class WebhookIngestionService {
                 author = (payload != null && payload.getPusher() != null)
                         ? payload.getPusher().getName()
                         : (payload != null && payload.getSender() != null ? payload.getSender().getLogin() : "unknown");
+            }
+
+            String senderLogin = payload != null && payload.getSender() != null ? payload.getSender().getLogin() : null;
+            String pusherName = payload != null && payload.getPusher() != null ? payload.getPusher().getName() : null;
+            if (isMirrorAppActor(mapping, inboundRepoUrl, senderLogin, pusherName)) {
+                return skipPush(mapping, mapping.getRepoAUrl(), mapping.getRepoBUrl(), ref, branch, afterSha,
+                        commitMessage, author, "MIRROR_APP_PUSH",
+                        "Push was sent by the mirror GitHub App");
             }
 
             // Agentic / bot / pattern filter — before direction flip so discard reasons stay clear.
@@ -369,6 +551,32 @@ public class WebhookIngestionService {
         }
     }
 
+    private boolean isMirrorAppActor(RepoMapping mapping, String repoUrl, String... actors) {
+        if (scmCredentialService == null || mapping == null || actors == null) {
+            return false;
+        }
+        boolean inboundIsB = repoUrl != null && RepoMappingService.sameRepo(repoUrl, mapping.getRepoBUrl());
+        String credId = inboundIsB ? mapping.getTargetCredentialId() : mapping.getSourceCredentialId();
+        if (credId == null || credId.isBlank()) {
+            return false;
+        }
+        try {
+            ScmCredential cred = scmCredentialService.require(credId);
+            String bot = cred.getBotLogin();
+            if (bot == null || bot.isBlank()) {
+                return false;
+            }
+            for (String actor : actors) {
+                if (actor != null && bot.equalsIgnoreCase(actor.trim())) {
+                    return true;
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Mirror App actor check skipped: {}", e.getMessage());
+        }
+        return false;
+    }
+
     private ResponseEntity<?> skipPush(RepoMapping mapping, String sourceRepo, String targetRepo,
                                        String ref, String branch, String afterSha, String commitMessage,
                                        String author, String skipReason, String publicReason) {
@@ -449,7 +657,7 @@ public class WebhookIngestionService {
             Instant cutoff = Instant.now().minus(7, ChronoUnit.DAYS);
             int deleted = unmappedWebhookEventRepository.deleteOlderThan(cutoff);
             if (deleted > 0) {
-                log.info("Purged {} unmapped webhook events older than 7 days (cutoff: {})", deleted, cutoff);
+                log.info("Purged {} discarded webhook events older than 7 days (cutoff: {}). Kafka dead-letter rows are kept.", deleted, cutoff);
             }
         } catch (Exception e) {
             log.warn("Failed to purge old unmapped webhook events: {}", e.getMessage());

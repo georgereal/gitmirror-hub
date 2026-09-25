@@ -1,5 +1,6 @@
 package com.gitutility.config;
 
+import com.gitutility.persistence.PersistenceConditions.OnH2;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -12,8 +13,13 @@ import java.sql.Statement;
 /**
  * Ensures existing persistent H2 database tables have all newly added columns
  * across application updates without requiring manual database drops or resets.
+ *
+ * <p>Active only when {@code git-utility.persistence.provider=h2} (default) — the
+ * MongoDB provider needs no relational DDL and this bean (which requires a JDBC
+ * {@link DataSource}) is not instantiated there.</p>
  */
 @Component
+@OnH2
 @RequiredArgsConstructor
 @Slf4j
 public class DatabaseSchemaMigrator {
@@ -255,7 +261,18 @@ public class DatabaseSchemaMigrator {
             }
             try {
                 stmt.execute("ALTER TABLE repo_mappings ADD COLUMN IF NOT EXISTS trunk_conflict_policy VARCHAR(20) DEFAULT 'ISOLATE'");
-                log.info("Database migration: verified repo_mappings.trunk_conflict_policy column.");
+                stmt.execute("ALTER TABLE repo_mappings ADD COLUMN IF NOT EXISTS primary_side VARCHAR(8)");
+                stmt.execute("ALTER TABLE repo_mappings ADD COLUMN IF NOT EXISTS replica_ruleset_id BIGINT");
+                stmt.execute("ALTER TABLE repo_mappings ADD COLUMN IF NOT EXISTS replica_ruleset_enforcement VARCHAR(20)");
+                stmt.execute("""
+                        CREATE TABLE IF NOT EXISTS echo_ledger (
+                            id VARCHAR(64) PRIMARY KEY,
+                            repo_key VARCHAR(512) NOT NULL,
+                            token VARCHAR(512) NOT NULL,
+                            expires_at TIMESTAMP NOT NULL
+                        )
+                        """);
+                log.info("Database migration: verified replica ruleset columns and echo_ledger.");
             } catch (Exception e) {
                 log.debug("Schema migration notice (repo_mappings.trunk_conflict_policy): {}", e.getMessage());
             }
@@ -290,6 +307,29 @@ public class DatabaseSchemaMigrator {
             }
             try {
                 stmt.execute("ALTER TABLE scm_credentials ADD COLUMN IF NOT EXISTS installation_ids_json CLOB");
+                stmt.execute("ALTER TABLE scm_credentials ADD COLUMN IF NOT EXISTS enterprise_slug VARCHAR(120)");
+                stmt.execute("""
+                        CREATE TABLE IF NOT EXISTS write_authority (
+                            id VARCHAR(32) PRIMARY KEY,
+                            record_key VARCHAR(220) NOT NULL,
+                            subject VARCHAR(20) NOT NULL,
+                            mapping_id VARCHAR(32),
+                            side VARCHAR(8),
+                            credential_id VARCHAR(32),
+                            org_login VARCHAR(120),
+                            enterprise_slug VARCHAR(120),
+                            link_mode VARCHAR(20),
+                            scope VARCHAR(20),
+                            target VARCHAR(20),
+                            access VARCHAR(20),
+                            ruleset_id BIGINT,
+                            enforcement VARCHAR(20),
+                            ruleset_name VARCHAR(120),
+                            repo_full_name VARCHAR(300),
+                            updated_at TIMESTAMP
+                        )
+                        """);
+                stmt.execute("CREATE UNIQUE INDEX IF NOT EXISTS write_authority_record_key ON write_authority(record_key)");
                 log.info("Database migration: verified scm_credentials.installation_ids_json column.");
             } catch (Exception e) {
                 log.debug("Schema migration notice (scm_credentials.installation_ids_json): {}", e.getMessage());

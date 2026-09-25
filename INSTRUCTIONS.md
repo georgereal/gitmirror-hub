@@ -180,20 +180,35 @@ npx wrangler login
 # 3. Check logged-in account
 npx wrangler whoami
 
-# 4. Set encrypted Cloudflare secrets (CloudAMQP & HMAC Webhook Secret)
-npx wrangler secret put RABBITMQ_USER        # CloudAMQP / RabbitMQ username
-npx wrangler secret put RABBITMQ_PASSWORD    # CloudAMQP / RabbitMQ password
-npx wrangler secret put WEBHOOK_SECRET       # Legacy/global GitHub HMAC (optional if using the JSON map)
-npx wrangler secret put WEBHOOK_SECRETS_JSON # Optional JSON map: {"12":"secret-for-credential-12"}
-npx wrangler secret put BITBUCKET_WEBHOOK_SECRET
+# 4. Local env file (gitignored). Fill in the CloudAMQP host, vhost, user, password, and HMAC.
+cp .env.example .env
 
-# 5. Deploy to Cloudflare's global edge network
+# 5. Deploy. This uploads .env to Cloudflare as encrypted secrets.
 npm run deploy
 ```
 
 - **Live Edge Webhook Endpoint**: `https://gitmirror-webhook-worker.<your-username>.workers.dev`
 - **Live Health Check**: `curl https://gitmirror-webhook-worker.<your-username>.workers.dev/health`
 - **Real-time Tail Logs**: `npx wrangler tail`
+
+**Local preview** (`npm run dev` in `webhook-worker/`) is only your machine. Stop it with Ctrl+C. That does not stop a Worker already deployed on Cloudflare.
+
+**Stop the deployed Rabbit worker, keep secrets:** set `ENABLED=false` in `webhook-worker/.env`, then `npm run deploy`. `GET /health` reports `enabled: false`. `POST` returns 503 and does not publish. Start again with `ENABLED=true` and `npm run deploy`.
+
+**Take the public URL down** (secrets stay): set `workers_dev = false` in that `wrangler.toml` and `npm run deploy`. Set it back to `true` and deploy to open the URL.
+
+**Delete the Worker** (secrets are removed; the next deploy uploads `.env` again):
+
+```bash
+cd webhook-worker
+npx wrangler delete
+```
+
+### Kafka webhook worker (separate Cloudflare script)
+
+[`webhook-worker-kafka/`](webhook-worker-kafka/README.md) is a second Worker. It produces normalized git events to a Kafka topic over the Confluent REST API. Deploy it only when `GIT_WEBHOOK_BUS_PROVIDER=kafka`. Its cluster and API key live in gitignored `webhook-worker-kafka/.env`, same as the Rabbit worker. Start, stop, and delete use `ENABLED` in that file, `workers_dev` in `wrangler.toml`, and `wrangler delete`. The script name is `gitmirror-webhook-worker-kafka`. The Confluent walkthrough is [`INSTRUCTIONS-KAFKA-WEBHOOK.md`](INSTRUCTIONS-KAFKA-WEBHOOK.md).
+
+Both Workers accept only `push`, `create`, `delete`, `pull_request`, `release`, `status`, and `check_run`. After those events are added on the GitHub App, redeploy the Worker for the bus you use. An older bundle answers `200 ignored` and Hub never stores the delivery.
 
 ---
 
@@ -242,19 +257,53 @@ For `replicas > 1`, all Hub pods **complement each other** as competing Rabbit c
 
 | Dependency | Why |
 | :--- | :--- |
-| Shared DB (H2 `AUTO_SERVER` locally; **PostgreSQL** for real fleets) | Fleet heartbeats, pair leases, cluster pause/CB, job ledger |
+| Shared DB (H2 `AUTO_SERVER` locally; **MongoDB** for real fleets) | Fleet heartbeats, pair leases, cluster pause/CB, job ledger |
 | Shared RabbitMQ / CloudAMQP | Competing consumers on full / incremental / inbound queues |
 | Shared bare-repo storage (`NAS_MOUNT`) or accept cold re-fetch | Local NVMe is not shared across pods |
+
+### Storage providers (`GIT_PERSISTENCE_PROVIDER`)
+
+Exactly one persistence store is active per Hub process — selected by env, enforced at boot, **no fallbacks**:
+
+| Value | Store | Use when |
+| :--- | :--- | :--- |
+| **`h2`** (default) | File H2 + Spring Data JPA (`./data/gitutility`) | Dev and local multi-pod smoke (same cwd / data dir) |
+| **`mongo`** | MongoDB + Spring Data MongoDB | Enterprise scale-out; requires a reachable `MONGODB_URI` at startup |
+
+| Environment variable | Default | Applies to | Notes |
+| :--- | :--- | :--- | :--- |
+| `GIT_PERSISTENCE_PROVIDER` | `h2` | both | `h2` \| `mongo`; unknown values fail fast at startup |
+| `MONGODB_URI` | `mongodb://localhost:27017/gitutility` | `mongo` | Bound as `spring.mongodb.uri` (Boot 4.x key — `spring.data.mongodb.*` is unbound since 4.0.0); Atlas (`mongodb+srv://…`) works; unreachable DB aborts startup (ping fail-fast) |
+| `MONGODB_DATABASE` | `gitutility` | `mongo` | Bound as `spring.mongodb.database`, which **overrides** the database in the URI — set it only to switch databases |
+
+**Descriptor:** `GET /api/v1/persistence` reports the active store (mirrors `GET /api/v1/messaging`).
+
+**Store contract tests:** the persistence facades are proven by an abstract contract suite executed against both stores. The H2 side (`H2StoreContractTest`) runs on every `mvn test` (in-memory H2). The Mongo side (`MongoStoreContractTest`) runs **only** against a real MongoDB you provide — no Docker / Testcontainers:
+
+```bash
+# Point the mongo contract suite at a real MongoDB (replica set recommended —
+# single node is fine — because @Transactional service methods use
+# MongoTransactionManager). Unset ⇒ the suite skips and mvn test stays green.
+export MONGO_CONTRACT_URI="mongodb://user:pass@host:27017/gitutility?replicaSet=rs0"
+mvn -f backend/pom.xml test -Dtest=MongoStoreContractTest
+# …or inline: mvn -f backend/pom.xml test -Dtest=MongoStoreContractTest -DMONGO_CONTRACT_URI="mongodb+srv://…"
+```
+
+`MongoContractDb` publishes the URI as `MONGODB_URI` + `spring.mongodb.uri` system properties so the test context binds it regardless of initializer ordering; `@EnabledIf(StoreContractEnvironment#mongoContractAvailable)` skips the suite when the variable is absent.
+
+### Breaking changes when adopting this build (ObjectId-string ids)
+
+1. **Wipe existing H2 data**: entity ids changed from BIGINT to 24-char ObjectId-hex strings. Existing `./data/` file databases (BIGINT ids) are incompatible — delete `./data/` (or the configured data dir) before first boot.
+2. **Drain queues before deploying**: queued AMQP messages from a pre-upgrade build carry numeric ids and will dead-letter on the new build.
 
 ### Storage roadmap (cluster tables)
 
 | Stage | Store | Use |
 | :--- | :--- | :--- |
-| **Now** | File H2 + `AUTO_SERVER=TRUE` | Dev and local multi-pod smoke (same cwd / data dir) |
-| **Enterprise** | **PostgreSQL** | Production fleets — JPA entities: `sync_jobs`, `pair_leases`, `cluster_runtime`, `instance_heartbeats` |
-| **Optional later** | Document DB (e.g. MongoDB) | Non-relational payloads only if needed — **not** a replacement for the JPA cluster tables above |
+| **Now** | File H2 + `AUTO_SERVER=TRUE` (default) | Dev and local multi-pod smoke (same cwd / data dir) |
+| **Enterprise** | **MongoDB** | Production fleets — every store facade, including `sync_jobs`, `pair_leases`, `cluster_runtime`, `instance_heartbeats` (atomic single-document ops; see `future-work/done/multi-store-persistence-h2-mongo.md`) |
 
-Migration to Postgres (datasource profile + Flyway/Liquibase) is planned when leaving H2 for real fleets; this runbook does not implement that switch yet.
+Runbook migration between stores is not implemented (fresh start per store); see `future-work/done/multi-store-persistence-h2-mongo.md` for the shipped design.
 
 **Identity:** set `GIT_UTILITY_INSTANCE_ID` or rely on `HOSTNAME` / `POD_NAME`.
 
@@ -295,9 +344,145 @@ Migration to Postgres (datasource profile + Flyway/Liquibase) is planned when le
 
 - **Goal**: Verify that automated pushes by this utility do not trigger an infinite ping-pong loop between bidirectional repositories.
 - **Steps**:
-  1. When a push event is processed for Repo A, the JGit engine pushes commit `X` to Repo B and records `(Repo B, Commit X)` in the `DedupLedgerService`.
-  2. When GitHub fires the subsequent push webhook for Repo B containing commit `X`, the ingestion layer intercepts it.
-  3. In the **Live Sync Table**, the event appears with status `SKIPPED` and skip reason `LOOP_DETECTED_SYSTEM_ECHO`. No outbound push is made, terminating the cycle.
+  1. When a push event is processed for Repo A, the engine writes `(Repo B, Commit X)` to the shared `echo_ledger` table **before** the Git push. A pull request the Hub creates is recorded the same way (`pr:<number>`), and a push whose sender is the mirror App bot (`{slug}[bot]`) is dropped as `MIRROR_APP_PUSH`.
+  2. When GitHub fires the subsequent webhook, any pod reads that row (or the App login) and skips it. The row lives in the same database as pair leases, so it is visible across pods for `git-utility.dedup.ledger-ttl-seconds` (default 600).
+  3. In the **Live Sync Table**, a push echo appears with status `SKIPPED` and skip reason `LOOP_DETECTED_SYSTEM_ECHO` or `MIRROR_APP_PUSH`. No outbound push is made.
+
+### Replica read-only ruleset (GitHub and GHES)
+
+A branch ruleset makes the replica read-only for people. The mirror GitHub App is the only bypass actor, so Hub pushes still land. GitLab and Bitbucket pairs do not have this API.
+
+The badge on **Settings → Replica rulesets** (`/settings/write-authority`) is **Missing ruleset** until GitHub has a ruleset with one of the names below. **Enforced** means `enforcement` is `active`. **Off** means the ruleset exists and enforcement is `disabled`.
+
+#### Permissions
+
+Repository rulesets need repository **Administration: Read and write** and **Contents: Read and write** on that installation.
+
+An organization ruleset also needs organization **Administration: Read and write**. GitHub grants that only after an org owner accepts the new permission on the installation (Organization settings → GitHub Apps → the mirror App → Review request). The App registration page updating is not enough. **Refresh** on Replica rulesets drops cached installation tokens and reads `GET /app/installations` again.
+
+An enterprise ruleset is GitHub.com only. Save an **Enterprise slug** on the App credential. The installation token must be allowed to call `/enterprises/{slug}/rulesets`. GHES has no enterprise ruleset API.
+
+`actor_id` is the GitHub App id (`ScmCredential.appId`, the `id` from `GET /app`). It is not the installation id. Bypass type is `Integration`. `IntegrationInstallation` is not a valid bypass actor.
+
+#### Set it from the Hub
+
+On a pair, choose the writable primary and click **Lock replica**. Hub creates `gitmirror-replica-readonly` on the other repository if it is missing and sets enforcement to `active`. **Unlock replica** sets enforcement to `disabled` and does not delete the ruleset. **Swap primary** locks the old primary first, then unlocks the old replica.
+
+When the source host is down, open **Settings → Disaster recovery** and use **Activate DR** on the provider-to-provider lane. Every pair that shares that source and destination switches together. Hub locks the old source at enterprise scope when the credential has an enterprise slug, otherwise at organization scope, and uses a repository ruleset only when those scopes cannot be written. The live replica unlocks immediately. Incrementals park (they do not go to the DLQ). A 2-minute heartbeat (`GIT_PEER_HEARTBEAT_SECONDS`) keeps probing the dark host and applies that same lock as soon as the host answers, then drains held events. **Fail back** needs both providers up. **Check providers** runs the probe immediately. Repositories under the lane are a detail list.
+
+**Settings → Replica rulesets** covers organization and enterprise scope, and the same repository lock. Under each organization, set **Read-only** or **Write**, then **Apply**. Read-only creates the ruleset when it is missing and enforces it immediately. Write sets an existing ruleset to `disabled` and does not create one that is missing. A linked pair cannot be read-only on both sides; locking one side opens the other. Organization and enterprise rulesets start at this repository. Covering every repository asks you to type `ALL REPOS`.
+
+| Scope | Name | API |
+| --- | --- | --- |
+| This repository | `gitmirror-replica-readonly` | `POST /repos/{owner}/{repo}/rulesets` |
+| Organization, this repository | `gitmirror-readonly-{repo}` | `POST /orgs/{org}/rulesets` |
+| Organization, all repositories | `gitmirror-org-readonly` | `POST /orgs/{org}/rulesets` |
+| Enterprise, this repository | `gitmirror-readonly-{org}-{repo}` | `POST /enterprises/{slug}/rulesets` |
+| Enterprise, all repositories | `gitmirror-enterprise-readonly` | `POST /enterprises/{slug}/rulesets` |
+
+Turn an existing ruleset on or off with `PUT` to the same path plus `/{ruleset_id}` and `"enforcement": "active"` or `"disabled"`.
+
+#### Set it in GitHub (manual fallback)
+
+On the replica: **Settings → Rules → Rulesets → New branch ruleset**.
+
+- Name `gitmirror-replica-readonly`, enforcement **Active**.
+- Target branches: include all branches (`~ALL`).
+- Rules: restrict creations, restrict updates (leave “Allow fork sync” off), restrict deletions.
+- Bypass list: the mirror GitHub App only, bypass mode **Always**.
+
+GHES uses the same screens on that appliance. For an organization or enterprise ruleset, create it under the org or enterprise rulesets page with the matching name from the table, and limit **Repository** (and **Organization**, for enterprise) to this repo unless you intend every repository.
+
+#### JSON Hub sends
+
+Repository ruleset. `actor_id` is the GitHub App id. The sample uses `5049517`. Substitute the App id for the credential that should still be allowed to push.
+
+```json
+{
+  "name": "gitmirror-replica-readonly",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [
+    { "actor_id": 5049517, "actor_type": "Integration", "bypass_mode": "always" }
+  ],
+  "conditions": { "ref_name": { "include": ["~ALL"], "exclude": [] } },
+  "rules": [
+    { "type": "creation" },
+    { "type": "update", "parameters": { "update_allows_fetch_and_merge": false } },
+    { "type": "deletion" }
+  ]
+}
+```
+
+#### Test this on one public repository
+
+Use this when the organization ruleset banner says enforcement waits for GitHub Team. A repository ruleset is a different object. GitHub enforces it on a **public** repository on the Free plan. Create it on the repository, under **Settings → Rules → Rulesets**, not under the organization's rulesets.
+
+Pick a public test repository. From a shell, with a token that has repository **Administration: Read and write** on that repo:
+
+```bash
+curl -sS -X POST \
+  -H "Accept: application/vnd.github+json" \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  https://api.github.com/repos/OWNER/REPO/rulesets \
+  -d @- <<'EOF'
+{
+  "name": "gitmirror-replica-readonly",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [
+    { "actor_id": 5049517, "actor_type": "Integration", "bypass_mode": "always" }
+  ],
+  "conditions": { "ref_name": { "include": ["~ALL"], "exclude": [] } },
+  "rules": [
+    { "type": "creation" },
+    { "type": "update", "parameters": { "update_allows_fetch_and_merge": false } },
+    { "type": "deletion" }
+  ]
+}
+EOF
+```
+
+Replace `OWNER/REPO`. Keep `actor_id` as the App id, not an installation id.
+
+Then, as your user account (not the App), try `git push` and try to create a branch. GitHub should reject both. Clone and opening a pull request still work. Merging that pull request should fail.
+
+The same push from the mirror App is allowed, because that App id is the bypass actor.
+
+Turn the test off without deleting it:
+
+```bash
+curl -sS -X PUT \
+  -H "Accept: application/vnd.github+json" \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  https://api.github.com/repos/OWNER/REPO/rulesets/RULESET_ID \
+  -d '{"enforcement":"disabled"}'
+```
+
+`RULESET_ID` is the `id` in the create response. On a **private** repository in a Free organization, GitHub stores this ruleset and still does not enforce it until the organization is on GitHub Team.
+
+Organization and enterprise bodies keep that bypass list and those three rules. Conditions add `repository_name`. `~ALL` covers every repository; a single short name is wrapped as `{ "include": ["repo"], "exclude": [], "protected": true }`. An enterprise ruleset also sets `organization_name` to `~ALL` or that org’s login. The all-repositories names are `gitmirror-org-readonly` and `gitmirror-enterprise-readonly`.
+
+#### What an enforced ruleset blocks
+
+The three rules apply to every branch (`~ALL`). They apply to people and to any token that is not the mirror App. A local `git commit` still succeeds; the push is what GitHub rejects.
+
+Blocked:
+
+- Pushing commits, including a commit made in the GitHub web editor.
+- Creating a branch, deleting a branch, and force-pushing.
+- Merging a pull request, because a merge moves the base branch.
+- The pull request **Update branch** button (`update_allows_fetch_and_merge` is `false`).
+
+Still allowed:
+
+- Clone, fetch, and browse code, history, and existing branches.
+- Open, edit, comment on, review, approve, and close a pull request. Merging it is the step that fails. A new pull request needs a head branch that already exists here, or a head branch on a fork, because creating a branch on this repository is blocked.
+- Issues, discussions, wiki, release notes, repository settings, and Actions runs that do not push a branch.
+
+Tags are not covered. `target` is `branch` only, so creating or moving a tag still works.
 
 ---
 
@@ -356,8 +541,8 @@ Full App setup (create → permissions → install → Hub card): [`SCM_PROVIDER
 - **Webhook secret**: The secret stored on that credential card. Worker `WEBHOOK_SECRETS_JSON` maps credential id → secret; `WEBHOOK_SECRET` remains a legacy fallback.
 - **SSL verification**: `Enable SSL verification`
 - **Active**: `[x] Active`
-- **Permissions**: `Contents: Read & write`, `Metadata: Read-only`, **`Actions: Read & write`** (to cancel mirror-triggered workflow runs), and **`Workflows: Read & write`** if the source contains `.github/workflows` (otherwise GitHub returns `REJECTED_OTHER_REASON` on every branch).
-- **Events**: `Push`
+- **Permissions**: `Contents: Read & write`, `Metadata: Read-only`, `Pull requests: Read & write`, `Commit statuses: Read & write`, `Checks: Read & write`, **`Actions: Read & write`** (to cancel mirror-triggered workflow runs), and **`Workflows: Read & write`** if the source contains `.github/workflows` (otherwise GitHub returns `REJECTED_OTHER_REASON` on every branch). Organization **Administration: Read & write** is required for org-level read-only rulesets.
+- **Events**: Push, Create, Delete, Pull request, Release, and Status. There is no **Check run** checkbox on the App. **Checks: Read and write** subscribes the App to `check_run` automatically. The full table is [`SCM_PROVIDER_SETUP.md`](SCM_PROVIDER_SETUP.md) §1.3. Accept the new Checks permission on each installation, then redeploy the Cloudflare Worker for this bus.
 
 #### Preventing Actions from running on mirror sync (important)
 
@@ -382,25 +567,34 @@ Do **not** rewrite commits with `[skip ci]` — that breaks SHA-preserving mirro
 - **Content type**: `application/json`
 - **Secret**: The secret passphrase configured in `WEBHOOK_SECRET` / Step 2.
 - **SSL verification**: `Enable SSL verification`
-- **Which events would you like to trigger this webhook?**: `Just the push event`.
+- **Which events would you like to trigger this webhook?**: send the individual events, not “just the push event”: Push, Create, Delete, Pull request, Release, Status, and **Check runs**. On a repository webhook that last box is labeled **Check runs**. A GitHub App has no such box; Checks write subscribes it. Same set as [`SCM_PROVIDER_SETUP.md`](SCM_PROVIDER_SETUP.md) §1.3.
 - Click **Add webhook**.
 
 ---
 
 
 
-## 6. Disaster Recovery & CI/CD Failover Procedure
+## 6. Disaster recovery
 
-In the event of a primary SCM (e.g., GitHub Primary) outage:
+DR is a provider-to-provider lane, not a switch on each repository. Open **Settings → Disaster recovery** (`/settings/dr`).
 
-1. **Verify Mirror Freshness**:
-  - Open the GitMirror Hub dashboard. Verify that the **Dead Letter Queue (DLQ)** count is `0` and the last sync timestamps for all critical pairs are up to date.
-2. **Switch CI/CD Pipeline Remote URLs**:
-  - Update the Git remote URL in your CI/CD runner configurations (Jenkinsfiles, ArgoCD Application definitions, or GitLab CI runners) to point to the backup repository (`https://github.com/my-backup-org/core-service.git`).
-3. **In-Flight PR Verification**:
-  - CI test runners querying `refs/pull/<PR_ID>/head` or `refs/pull/<PR_ID>/merge` can check out the mirrored refs directly on the backup repository.
-4. **Post-Incident Recovery (Failback)**:
-  - Once the primary SCM recovers, developers continue pushing to either repository. The bidirectional mirror automatically synchronizes newly committed changes back to the primary repository while discarding echo loops.
+Each card is one source host and one destination host. Every pair on those two hosts moves together. The boxes show whether each provider is up. The arrow aimed at a down provider turns red and ends in a cross. **Ruleset updates** expands enterprises, then the organizations used by those pairs, then repositories.
+
+**Metadata sync** (`/settings/metadata`) is separate. It turns pull requests, releases and assets, CI checks, and Git LFS on or off for every pair. Git ref push stays on. The GitHub App events for those switches are in [`SCM_PROVIDER_SETUP.md`](SCM_PROVIDER_SETUP.md) §1.3.
+
+### When the source goes down
+
+1. Confirm the down provider on the lane (red cross on that box, red line toward it). **Check providers** probes immediately. The background heartbeat is `GIT_PEER_HEARTBEAT_SECONDS` (default 120).
+2. Click **Activate DR** on that lane. Hub unlocks the live replica now, even if the old source does not answer, and points incremental sync back toward the demoted source.
+3. The read-only lock is attempted in this order: enterprise ruleset (GitHub.com credential with an enterprise slug), then each organization, then a repository ruleset if the wider scope cannot be written. While the demoted host is down the lock stays pending. The heartbeat applies it as soon as that host answers.
+4. Incremental git and metadata events park in `failover_parked_event`. They are not sent to the DLQ for connection refused, timeout, or HTTP 502/503/504. Processing stays paused until both providers are up and the lock is applied. Then Hub drains the parked events. This is not a full `*` mirror.
+5. Point CI remotes at the DR repositories only after the lane shows the replica writable. People should not push to the old source once its ruleset is applied.
+
+### Fail back
+
+**Fail back** stays disabled until both providers are up. It locks the side that was writable during DR, opens the original source, restores the previous sync direction, and drains anything still parked. Do not fail back from a single repository page. The pair page only links to this lane.
+
+GitLab and Bitbucket lanes still park events. They have no ruleset API, so the read-only lock is GitHub and GHES only.
 
 ---
 

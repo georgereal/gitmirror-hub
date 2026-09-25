@@ -15,7 +15,7 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 public class SyncDiffReport {
-    private Long mappingId;
+    private String mappingId;
     private String pairName;
     private String sourceRepo;
     private String targetRepo;

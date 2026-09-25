@@ -1,5 +1,8 @@
 package com.gitutility.model.entity;
 
+import com.gitutility.persistence.Ids;
+import org.springframework.data.mongodb.core.mapping.Document;
+import com.gitutility.persistence.store.WritePreparer;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -10,15 +13,15 @@ import java.time.Instant;
 
 @Entity
 @Table(name = "system_engine_configs")
+@Document(collection = "system_engine_configs")
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class SystemEngineConfig {
+public class SystemEngineConfig implements WritePreparer {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     // --- Storage Configuration ---
     @Column(nullable = false)
@@ -124,4 +127,14 @@ public class SystemEngineConfig {
     @Column(nullable = false)
     @Builder.Default
     private Instant updatedAt = Instant.now();
+
+    @PrePersist
+    public void prepareForWrite() {
+        if (Ids.isUnset(id)) {
+            id = Ids.newId();
+        }
+        if (updatedAt == null) {
+            updatedAt = Instant.now();
+        }
+    }
 }

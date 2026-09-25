@@ -10,7 +10,7 @@ GitMirror Hub is a **localhost operator console**. There is no login. Treat it l
 
 ## Secrets & rotation
 
-Webhook HMAC secrets, CloudAMQP passwords, GitHub App PEMs, and PATs must never be committed. Configure them via environment variables and `wrangler secret put`.
+Webhook HMAC secrets, CloudAMQP passwords, GitHub App PEMs, and PATs must never be committed. Worker broker settings live in gitignored `.env` files (`webhook-worker/.env`, `webhook-worker-kafka/.env`) and are uploaded by `npm run deploy`. Hub secrets stay in the process environment.
 
 If this repository was ever private with real broker or webhook values in docs/history, **rotate those secrets** before opening the repo (or after any accidental leak). Removing files from `HEAD` does not remove them from older commits.
 

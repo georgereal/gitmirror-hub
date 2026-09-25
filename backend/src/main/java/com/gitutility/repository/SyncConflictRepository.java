@@ -2,19 +2,37 @@ package com.gitutility.repository;
 
 import com.gitutility.model.entity.SyncConflict;
 import com.gitutility.model.enums.ConflictStatus;
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.stereotype.Repository;
 
 import java.util.List;
 import java.util.Optional;
 
-@Repository
-public interface SyncConflictRepository extends JpaRepository<SyncConflict, Long> {
+/**
+ * Store facade for git-ref / tag / PR-metadata conflicts.
+ * Exactly one provider-backed implementation is active: H2 ({@code repository.h2}) or MongoDB ({@code repository.mongo}).
+ */
+public interface SyncConflictRepository {
 
-    List<SyncConflict> findByMappingIdOrderByCreatedAtDesc(Long mappingId);
+    List<SyncConflict> findByMappingIdOrderByCreatedAtDesc(String mappingId);
 
-    List<SyncConflict> findByMappingIdAndStatusOrderByCreatedAtDesc(Long mappingId, ConflictStatus status);
+    List<SyncConflict> findByMappingIdAndStatusOrderByCreatedAtDesc(String mappingId, ConflictStatus status);
 
-    Optional<SyncConflict> findByMappingIdAndRefNameAndDestShaAndStatus(
-            Long mappingId, String refName, String destSha, ConflictStatus status);
+    Optional<SyncConflict> findByMappingIdAndRefNameAndDestShaAndStatus(String mappingId, String refName, String destSha, ConflictStatus status);
+
+    SyncConflict save(SyncConflict entity);
+
+    List<SyncConflict> saveAll(Iterable<SyncConflict> entities);
+
+    Optional<SyncConflict> findById(String id);
+
+    boolean existsById(String id);
+
+    List<SyncConflict> findAll();
+
+    long count();
+
+    void delete(SyncConflict entity);
+
+    void deleteById(String id);
+
+    void deleteAll();
 }

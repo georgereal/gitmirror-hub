@@ -73,7 +73,7 @@ class QueueObservabilityServiceTest {
         when(dlqRedriveService.getQueueDepth("git.sync.inbound.queue"))
                 .thenReturn(new DlqRedriveService.QueueDepth(0, 1));
 
-        registry.bind(SyncLaneRouter.LANE_FULL, SyncLaneRouter.FULL_CONSUMER_ID, 44L, "openmaic", null);
+        registry.bind(SyncLaneRouter.LANE_FULL, SyncLaneRouter.FULL_CONSUMER_ID, "44", "openmaic", null);
 
         List<QueueStatusResponse.ConsumerLaneStatus> lanes = service.snapshotLanes();
         QueueStatusResponse.ConsumerLaneStatus full = lanes.stream()
@@ -83,7 +83,7 @@ class QueueObservabilityServiceTest {
 
         assertEquals(12, full.getReadyCount());
         assertEquals(1, full.getUnackedCount());
-        assertEquals(44L, full.getCurrentWork().get(0).getJobId());
+        assertEquals("44", full.getCurrentWork().get(0).getJobId());
         assertFalse(full.isDead());
         assertEquals(0, full.getIdleThreads());
 

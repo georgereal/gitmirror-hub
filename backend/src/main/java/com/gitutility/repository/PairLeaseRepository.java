@@ -1,33 +1,37 @@
 package com.gitutility.repository;
 
 import com.gitutility.model.entity.PairLease;
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Modifying;
-import org.springframework.data.jpa.repository.Query;
-import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
+import java.util.List;
+import java.util.Optional;
 
-public interface PairLeaseRepository extends JpaRepository<PairLease, Long> {
+/**
+ * Store facade for multi-pod pair leases (natural key: {@code mappingId}).
+ * Exactly one provider-backed implementation is active: H2 ({@code repository.h2}) or MongoDB ({@code repository.mongo}).
+ * Implementations must keep {@link #renewOwned} / {@link #deleteOwned} atomic on owner + expiry.
+ */
+public interface PairLeaseRepository {
 
-    @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("""
-            DELETE FROM PairLease p
-            WHERE p.mappingId = :mappingId
-              AND p.ownerInstance = :owner
-            """)
-    int deleteOwned(@Param("mappingId") Long mappingId, @Param("owner") String owner);
+    int deleteOwned(String mappingId, String owner);
 
-    @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("""
-            UPDATE PairLease p
-            SET p.expiresAt = :expiresAt, p.updatedAt = :updatedAt, p.jobId = :jobId
-            WHERE p.mappingId = :mappingId
-              AND p.ownerInstance = :owner
-            """)
-    int renewOwned(@Param("mappingId") Long mappingId,
-                   @Param("owner") String owner,
-                   @Param("jobId") Long jobId,
-                   @Param("expiresAt") Instant expiresAt,
-                   @Param("updatedAt") Instant updatedAt);
+    int renewOwned(String mappingId, String owner, String jobId, Instant expiresAt, Instant updatedAt);
+
+    PairLease save(PairLease entity);
+
+    List<PairLease> saveAll(Iterable<PairLease> entities);
+
+    Optional<PairLease> findById(String id);
+
+    boolean existsById(String id);
+
+    List<PairLease> findAll();
+
+    long count();
+
+    void delete(PairLease entity);
+
+    void deleteById(String id);
+
+    void deleteAll();
 }

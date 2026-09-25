@@ -5,64 +5,57 @@ import com.gitutility.model.enums.SyncStatus;
 import com.gitutility.model.enums.TriggerType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Query;
-import org.springframework.data.repository.query.Param;
-import org.springframework.stereotype.Repository;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
-@Repository
-public interface SyncJobRepository extends JpaRepository<SyncJob, Long> {
+/**
+ * Store facade for the sync job ledger.
+ * Exactly one provider-backed implementation is active: H2 ({@code repository.h2}) or MongoDB ({@code repository.mongo}).
+ * {@link #search} must keep its nullable-filter + lane semantics on every store.
+ */
+public interface SyncJobRepository {
 
     List<SyncJob> findTop20ByOrderByCreatedAtDesc();
 
     Page<SyncJob> findAllByOrderByCreatedAtDesc(Pageable pageable);
 
-    Page<SyncJob> findByMappingIdOrderByCreatedAtDesc(Long mappingId, Pageable pageable);
+    Page<SyncJob> findByMappingIdOrderByCreatedAtDesc(String mappingId, Pageable pageable);
 
     Page<SyncJob> findByStatusOrderByCreatedAtDesc(SyncStatus status, Pageable pageable);
 
     List<SyncJob> findByStatus(SyncStatus status);
 
-    List<SyncJob> findByStatusAndMappingId(SyncStatus status, Long mappingId);
+    List<SyncJob> findByStatusAndMappingId(SyncStatus status, String mappingId);
 
     Optional<SyncJob> findByQueueMessageId(String queueMessageId);
 
-    @Query("""
-            SELECT j FROM SyncJob j
-            WHERE (:status IS NULL OR j.status = :status)
-              AND (:mappingId IS NULL OR j.mappingId = :mappingId)
-              AND (:triggerType IS NULL OR j.triggerType = :triggerType)
-              AND (
-                    :lane IS NULL
-                    OR (:lane = 'FULL' AND (j.ref IS NULL OR TRIM(j.ref) = '' OR j.branch = '*'))
-                    OR (:lane = 'INCREMENTAL' AND j.ref IS NOT NULL AND TRIM(j.ref) <> '' AND (j.branch IS NULL OR j.branch <> '*'))
-                  )
-            ORDER BY j.createdAt DESC
-            """)
-    Page<SyncJob> search(
-            @Param("status") SyncStatus status,
-            @Param("mappingId") Long mappingId,
-            @Param("triggerType") TriggerType triggerType,
-            @Param("lane") String lane,
-            Pageable pageable);
+    Page<SyncJob> search(SyncStatus status, String mappingId, TriggerType triggerType, String lane, Pageable pageable);
 
-    @Query("SELECT COUNT(j) FROM SyncJob j WHERE j.status = :status")
-    long countByStatus(@Param("status") SyncStatus status);
+    long countByStatus(SyncStatus status);
 
-    @Query("SELECT COUNT(j) FROM SyncJob j WHERE j.createdAt >= :since")
-    long countJobsSince(@Param("since") java.time.Instant since);
+    long countJobsSince(Instant since);
 
-    @Query("SELECT COUNT(j) FROM SyncJob j WHERE j.status = 'SUCCESS' AND j.createdAt >= :since")
-    long countSuccessJobsSince(@Param("since") java.time.Instant since);
+    long countSuccessJobsSince(Instant since);
 
-    @Query("""
-            SELECT j FROM SyncJob j
-            WHERE (j.startedAt IS NOT NULL AND j.startedAt >= :since)
-               OR j.status IN ('IN_PROGRESS', 'QUEUED', 'PAUSED')
-            ORDER BY j.startedAt DESC
-            """)
-    List<SyncJob> findForUsageWindow(@Param("since") java.time.Instant since);
+    List<SyncJob> findForUsageWindow(Instant since);
+
+    SyncJob save(SyncJob entity);
+
+    List<SyncJob> saveAll(Iterable<SyncJob> entities);
+
+    Optional<SyncJob> findById(String id);
+
+    boolean existsById(String id);
+
+    List<SyncJob> findAll();
+
+    long count();
+
+    void delete(SyncJob entity);
+
+    void deleteById(String id);
+
+    void deleteAll();
 }

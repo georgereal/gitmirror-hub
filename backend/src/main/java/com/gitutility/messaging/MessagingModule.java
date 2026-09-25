@@ -14,6 +14,9 @@ public class MessagingModule {
     @Value("${git-utility.messaging.none.worker-threads:8}")
     private int noneWorkerThreads;
 
+    @Value("${spring.rabbitmq.listener.simple.max-concurrency:5}")
+    private int rabbitLaneMaxConcurrency;
+
     public MessagingProvider provider() {
         return MessagingProvider.from(providerProperty);
     }
@@ -31,6 +34,7 @@ public class MessagingModule {
                     .supportsPauseConsumers(true)
                     .supportsInboundBrokerQueue(true)
                     .workerThreads(null)
+                    .laneMaxConcurrency(Math.max(1, rabbitLaneMaxConcurrency))
                     .build();
             case KAFKA -> MessagingDescriptor.builder()
                     .provider(MessagingProvider.KAFKA)

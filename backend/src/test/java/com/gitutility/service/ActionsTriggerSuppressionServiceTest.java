@@ -114,12 +114,12 @@ class ActionsTriggerSuppressionServiceTest {
         when(githubAdapter.cancelWorkflowRunsByActor(eq("acme/repo"), eq("gitmirror-hub[bot]"), any(Instant.class)))
                 .thenReturn(2);
 
-        service.beginJob(42L);
-        int cancelled = service.suppressAfterWrite("https://github.com/acme/repo.git", 42L);
+        service.beginJob("42");
+        int cancelled = service.suppressAfterWrite("https://github.com/acme/repo.git", "42");
         assertEquals(2, cancelled);
         verify(githubAdapter).cancelWorkflowRunsByActor(eq("acme/repo"), eq("gitmirror-hub[bot]"), any(Instant.class));
         verify(githubAdapter, never()).cancelWorkflowRunsByActor(eq("acme/repo"), eq("someone-else"), any());
-        service.endJob(42L);
+        service.endJob("42");
     }
 
     @Test
@@ -131,7 +131,7 @@ class ActionsTriggerSuppressionServiceTest {
         when(configRepository.findFirstByOrderByIdAsc()).thenReturn(Optional.of(
                 GitHubAppConfig.builder().build()));
 
-        assertEquals(0, service.suppressAfterWrite("https://github.com/acme/repo", 1L));
+        assertEquals(0, service.suppressAfterWrite("https://github.com/acme/repo", "1"));
         verify(githubAdapter, never()).cancelWorkflowRunsByActor(any(), any(), any());
     }
 

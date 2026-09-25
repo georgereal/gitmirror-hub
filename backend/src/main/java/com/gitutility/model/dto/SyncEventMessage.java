@@ -18,15 +18,15 @@ public class SyncEventMessage implements Serializable {
     private static final long serialVersionUID = 1L;
 
     private String messageId;
-    private Long jobId;
-    private Long mappingId;
+    private String jobId;
+    private String mappingId;
     private String pairName;
     private String sourceRepoUrl;
     private String targetRepoUrl;
     private String tokenA;
     private String tokenB;
-    private Long sourceCredentialId;
-    private Long targetCredentialId;
+    private String sourceCredentialId;
+    private String targetCredentialId;
     private String sourceInstallationId;
     private String targetInstallationId;
     private String ref;

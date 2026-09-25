@@ -313,11 +313,11 @@ export const ProvidersAuthPage: React.FC = () => {
             'Go to GitHub -> Settings -> Developer Settings -> GitHub Apps -> New GitHub App (or Personal Access Tokens).',
             'Paste the Edge Webhook URL (right) into the GitHub App webhook field. Use Hub direct only if you are not running the Worker.',
             'Generate a Webhook Secret there and paste the same secret onto each installation card below (it is App-level, not per org).',
-            'Grant Permissions: Contents (Read & Write), Pull requests (Read & Write), Commit statuses (Read & Write), Webhooks (Read & Write).',
+            'Grant Permissions: Contents (Read & Write), Pull requests (Read & Write), Commit statuses (Read & Write), Checks (Read & Write), Webhooks (Read & Write). Accept the new Checks permission on each existing installation.',
             'Generate a Private Key (.pem), download it, and copy the App ID, Client ID, Client Secret, and PEM into a credential card. Add another card only for another installation (org).'
           ],
-          scopes: ['Contents: Read & Write', 'Pull Requests: Read & Write', 'Commit Statuses: Read & Write', 'Webhooks: Read & Write', 'repo (for PAT)'],
-          events: ['Pushes (push)', 'Pull requests (pull_request)', 'Commit statuses (status)', 'Issue comments (issue_comment)']
+          scopes: ['Contents: Read & Write', 'Pull Requests: Read & Write', 'Commit Statuses: Read & Write', 'Checks: Read & Write', 'Webhooks: Read & Write', 'repo (for PAT)'],
+          events: ['push', 'create', 'delete', 'pull_request', 'release', 'status', 'check_run']
         };
       case 'ghes':
         return {
@@ -330,11 +330,11 @@ export const ProvidersAuthPage: React.FC = () => {
             'Navigate to your on-premises GHES instance: https://<ghes-host>/settings/apps/new.',
             'Paste the Edge Webhook URL (right) into the GitHub App webhook field. Use Hub direct only if you are not running the Worker.',
             'Generate a Webhook Secret there and paste the same secret onto each installation card (it is App-level, not per org).',
-            'Configure repository permissions for Contents, Pull Requests, and Commit Statuses.',
+            'Configure repository permissions for Contents, Pull Requests, Commit Statuses, and Checks (Read & Write). Accept the new Checks permission on each existing installation.',
             'Download the generated RSA Private Key and copy the App ID, Client ID, Client Secret, PEM, and Installation ID onto a credential card.'
           ],
-          scopes: ['Contents: Read & Write', 'Pull Requests: Read & Write', 'Commit Statuses: Read & Write', 'Internal API v3 access'],
-          events: ['push', 'pull_request', 'status', 'check_run']
+          scopes: ['Contents: Read & Write', 'Pull Requests: Read & Write', 'Commit Statuses: Read & Write', 'Checks: Read & Write', 'Internal API v3 access'],
+          events: ['push', 'create', 'delete', 'pull_request', 'release', 'status', 'check_run']
         };
       case 'bitbucket':
         return {

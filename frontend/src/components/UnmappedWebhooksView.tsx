@@ -44,7 +44,7 @@ export const UnmappedWebhooksView: React.FC<UnmappedWebhooksViewProps> = ({ onCo
     fetchEvents();
   }, []);
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (id: string) => {
     try {
       await deleteUnmappedWebhook(id);
       setEvents((prev) => prev.filter((e) => e.id !== id));
@@ -105,6 +105,18 @@ export const UnmappedWebhooksView: React.FC<UnmappedWebhooksViewProps> = ({ onCo
             <span>Direction Excluded</span>
           </span>
         );
+      case 'KAFKA_POISON':
+        return (
+          <span className="inline-flex items-center space-x-1 bg-rose-50 text-rose-700 border border-rose-200 px-2 py-0.5 rounded-full text-[10px] font-medium">
+            <span>Dead letter</span>
+          </span>
+        );
+      case 'LOOP_DETECTED_SYSTEM_ECHO':
+        return (
+          <span className="inline-flex items-center space-x-1 bg-zinc-100 text-zinc-700 border border-zinc-200 px-2 py-0.5 rounded-full text-[10px] font-medium">
+            <span>Echo skip</span>
+          </span>
+        );
       default:
         return (
           <span className="inline-flex items-center space-x-1 bg-zinc-100 text-zinc-600 border border-zinc-200 px-2 py-0.5 rounded-full text-[10px] font-medium">
@@ -142,7 +154,7 @@ export const UnmappedWebhooksView: React.FC<UnmappedWebhooksViewProps> = ({ onCo
             </span>
           </div>
           <p className="text-xs text-zinc-500 mt-0.5">
-            Real-time trace of incoming webhooks received from AMQP that were ignored or discarded.
+            Skipped incremental and inbound webhook events. Kafka records Hub could not apply stay in Dead letter on Execution and are not removed by this 7-day cleanup.
           </p>
         </div>
 
@@ -168,6 +180,8 @@ export const UnmappedWebhooksView: React.FC<UnmappedWebhooksViewProps> = ({ onCo
             <option value="INACTIVE_MAPPING">Inactive Mapping</option>
             <option value="NON_BRANCH_REF">Non-Branch Ref</option>
             <option value="DIRECTION_IGNORED">Direction Excluded</option>
+            <option value="KAFKA_POISON">Dead letter</option>
+            <option value="LOOP_DETECTED_SYSTEM_ECHO">Echo skip</option>
           </select>
 
           <button

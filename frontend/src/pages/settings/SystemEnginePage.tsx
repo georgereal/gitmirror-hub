@@ -337,7 +337,7 @@ export const SystemEnginePage: React.FC = () => {
           </div>
 
           {/* 3. Concurrency & Metadata Throttling */}
-          <div className="rounded-xl border border-zinc-200 bg-zinc-50/70 p-4 space-y-3">
+          <div id="job-lane-parallelism" className="rounded-xl border border-zinc-200 bg-zinc-50/70 p-4 space-y-3 scroll-mt-24">
             <div className="flex items-center space-x-2 border-b border-zinc-200/60 pb-2.5">
               <Sliders className="w-4 h-4 text-purple-600" />
               <span className="font-semibold text-zinc-900">Concurrency & Rate Limiting Token Bucket</span>
@@ -348,6 +348,13 @@ export const SystemEnginePage: React.FC = () => {
                 howItWorks="Restricts simultaneous Git push operations and enforces cooldown timers on secondary metadata syncs (PRs, releases, statuses)."
               />
             </div>
+
+            <p className="text-[11px] text-zinc-500">
+              How many bulk mirror jobs run at once is a startup setting, not this form.
+              RabbitMQ: <span className="font-mono text-zinc-700">spring.rabbitmq.listener.simple.max-concurrency</span> (default 5 consumers per lane).
+              In-process: <span className="font-mono text-zinc-700">GIT_MESSAGING_NONE_WORKER_THREADS</span> (default 8).
+              Restart Hub after changing either. The push cap below limits outbound Git pushes across those workers.
+            </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>

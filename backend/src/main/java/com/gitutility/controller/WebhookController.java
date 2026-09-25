@@ -1,7 +1,7 @@
 package com.gitutility.controller;
 
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
-import com.gitutility.model.dto.GitHubPushPayload;
 import com.gitutility.model.entity.RepoMapping;
 import com.gitutility.repository.RepoMappingRepository;
 import com.gitutility.service.WebhookIngestionService;
@@ -27,14 +27,13 @@ public class WebhookController {
 
     @PostMapping("/github/{mappingId}")
     public ResponseEntity<?> handleMappingSpecificWebhook(
-            @PathVariable Long mappingId,
+            @PathVariable String mappingId,
             @RequestHeader(value = "X-GitHub-Event", defaultValue = "push") String eventType,
             @RequestHeader(value = "X-Hub-Signature-256", required = false) String signature256,
             @RequestBody String rawPayload) {
 
-        if (!"push".equalsIgnoreCase(eventType)) {
-            log.info("Ignoring non-push GitHub event: {}", eventType);
-            return ResponseEntity.ok(Map.of("status", "ignored", "reason", "Only push events are processed"));
+        if ("ping".equalsIgnoreCase(eventType)) {
+            return ResponseEntity.ok(Map.of("status", "pong"));
         }
 
         RepoMapping mapping = mappingRepository.findById(mappingId)
@@ -58,7 +57,7 @@ public class WebhookController {
             }
         }
 
-        return webhookIngestionService.processPushEvent(mapping, rawPayload);
+        return webhookIngestionService.processGithubDelivery(mapping, eventType, rawPayload);
     }
 
     @PostMapping({"/github", "/ghes"})
@@ -66,44 +65,29 @@ public class WebhookController {
             @RequestHeader(value = "X-GitHub-Event", defaultValue = "push") String eventType,
             @RequestBody String rawPayload) {
 
-        if (!"push".equalsIgnoreCase(eventType)) {
-            return ResponseEntity.ok(Map.of("status", "ignored", "reason", "Only push events are processed"));
+        if ("ping".equalsIgnoreCase(eventType)) {
+            return ResponseEntity.ok(Map.of("status", "pong"));
         }
 
         try {
-            GitHubPushPayload payload = objectMapper.readValue(rawPayload, GitHubPushPayload.class);
-            if (payload.getRepository() == null) {
-                return ResponseEntity.badRequest().body(Map.of("error", "No repository info in payload"));
+            RepoMapping mapping = webhookIngestionService.findMappingForPayload(rawPayload);
+            if (mapping == null) {
+                log.info("No active mapping configured for webhook payload");
+                return ResponseEntity.ok(Map.of("status", "ignored", "reason", "No active mapping found for repo"));
             }
-
-            String repoUrl = payload.getRepository().getCloneUrl();
-            String repoFullName = payload.getRepository().getFullName();
-
-            List<RepoMapping> matches = mappingRepository.findActiveMatchingRepo(repoUrl, repoFullName);
-            if (matches.isEmpty()) {
-                log.info("No active mapping configured for repo: {}", repoFullName);
-                return ResponseEntity.ok(Map.of("status", "ignored", "reason", "No active mapping found for repo: " + repoFullName));
-            }
-
-            // Process with the first matched mapping
-            RepoMapping mapping = matches.get(0);
-            return webhookIngestionService.processPushEvent(mapping, rawPayload);
-
+            return webhookIngestionService.processGithubDelivery(mapping, eventType, rawPayload);
         } catch (Exception e) {
-            log.error("Error parsing generic push webhook: {}", e.getMessage());
+            log.error("Error parsing generic webhook: {}", e.getMessage());
             return ResponseEntity.badRequest().body(Map.of("error", "Invalid JSON payload: " + e.getMessage()));
         }
     }
 
     @PostMapping({"/github/credential/{credentialId}", "/ghes/credential/{credentialId}"})
     public ResponseEntity<?> handleCredentialWebhook(
-            @PathVariable Long credentialId,
+            @PathVariable String credentialId,
             @RequestHeader(value = "X-GitHub-Event", defaultValue = "push") String eventType,
             @RequestHeader(value = "X-Hub-Signature-256", required = false) String signature256,
             @RequestBody String rawPayload) {
-        if (!"push".equalsIgnoreCase(eventType) && !"ping".equalsIgnoreCase(eventType)) {
-            return ResponseEntity.ok(Map.of("status", "ignored", "reason", "Only push events are processed"));
-        }
         if ("ping".equalsIgnoreCase(eventType)) {
             return ResponseEntity.ok(Map.of("status", "pong"));
         }
@@ -115,12 +99,12 @@ public class WebhookController {
             }
         }
         try {
-            GitHubPushPayload payload = objectMapper.readValue(rawPayload, GitHubPushPayload.class);
-            if (payload.getRepository() == null) {
+            JsonNode repo = objectMapper.readTree(rawPayload).path("repository");
+            String repoUrl = repo.path("clone_url").asText(null);
+            String repoFullName = repo.path("full_name").asText("unknown");
+            if ((repoUrl == null || repoUrl.isBlank()) && "unknown".equals(repoFullName)) {
                 return ResponseEntity.badRequest().body(Map.of("error", "No repository info in payload"));
             }
-            String repoUrl = payload.getRepository().getCloneUrl();
-            String repoFullName = payload.getRepository().getFullName();
             List<RepoMapping> matches = mappingRepository.findActiveMatchingRepo(repoUrl, repoFullName).stream()
                     .filter(m -> credentialId.equals(m.getSourceCredentialId())
                             || credentialId.equals(m.getTargetCredentialId()))
@@ -129,7 +113,7 @@ public class WebhookController {
                 return ResponseEntity.ok(Map.of("status", "ignored",
                         "reason", "No active pair bound to credential " + credentialId + " for " + repoFullName));
             }
-            return webhookIngestionService.processPushEvent(matches.get(0), rawPayload);
+            return webhookIngestionService.processGithubDelivery(matches.get(0), eventType, rawPayload);
         } catch (Exception e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }

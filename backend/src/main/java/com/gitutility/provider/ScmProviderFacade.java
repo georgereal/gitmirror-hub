@@ -1,9 +1,11 @@
 package com.gitutility.provider;
 
 import com.gitutility.model.dto.*;
+import com.gitutility.model.entity.ScmCredential;
 import com.gitutility.model.enums.ScmProviderType;
 import com.gitutility.service.FeatureFlagsService;
 import com.gitutility.service.ScmCredentialContext;
+import com.gitutility.service.ScmCredentialService;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.transport.CredentialsProvider;
 import org.springframework.stereotype.Service;
@@ -23,10 +25,13 @@ public class ScmProviderFacade {
     private final List<ScmProviderAdapter> adapters;
     private final Map<ScmProviderType, ScmProviderAdapter> adapterByType = new ConcurrentHashMap<>();
     private final FeatureFlagsService featureFlagsService;
+    private final ScmCredentialService scmCredentialService;
 
-    public ScmProviderFacade(List<ScmProviderAdapter> adapters, FeatureFlagsService featureFlagsService) {
+    public ScmProviderFacade(List<ScmProviderAdapter> adapters, FeatureFlagsService featureFlagsService,
+                              ScmCredentialService scmCredentialService) {
         this.adapters = adapters;
         this.featureFlagsService = featureFlagsService;
+        this.scmCredentialService = scmCredentialService;
         for (ScmProviderAdapter adapter : adapters) {
             adapterByType.put(adapter.getProviderType(), adapter);
             log.info("Registered SCM Provider Adapter: {} [{}]", adapter.getProviderType(), adapter.getClass().getSimpleName());
@@ -92,12 +97,71 @@ public class ScmProviderFacade {
      */
     public PermissionCheckReport testConnection(String provider, TestConnectionRequest req) {
         TestConnectionRequest safeReq = req != null ? req : TestConnectionRequest.builder().build();
-        if (safeReq.getCredentialId() != null) {
-            try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(safeReq.getCredentialId())) {
-                return testConnectionUnlocked(provider, safeReq);
+        if (safeReq.getCredentialId() == null || safeReq.getCredentialId().isBlank()) {
+            return testConnectionUnlocked(provider, safeReq);
+        }
+        String installationId;
+        try {
+            installationId = installationForCheck(safeReq);
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return installationFailure(provider, safeReq, e.getMessage());
+        }
+        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(safeReq.getCredentialId(), installationId)) {
+            PermissionCheckReport report = testConnectionUnlocked(provider, safeReq);
+            stampBinding(report, safeReq.getCredentialId(), installationId);
+            return report;
+        }
+    }
+
+    /**
+     * Installation token for this check. A caller-supplied id is used as-is when it belongs to the
+     * credential. Otherwise a GitHub App with a repo URL is resolved to the installation that owns
+     * that repo. The first selected install is not used once a repository is in play.
+     */
+    private String installationForCheck(TestConnectionRequest req) {
+        ScmCredential cred = scmCredentialService.requireEnabled(req.getCredentialId());
+        if (!cred.isGitHubApp()) {
+            return null;
+        }
+        return scmCredentialService.resolveInstallationIdForRepo(cred, req.getRepoUrl(), req.getInstallationId());
+    }
+
+    private PermissionCheckReport installationFailure(String provider, TestConnectionRequest req, String message) {
+        if (!PublicReadProbe.writeRequired(req) && !Boolean.TRUE.equals(req.getKnownPrivate())) {
+            TestConnectionRequest anon = TestConnectionRequest.builder()
+                    .repoUrl(req.getRepoUrl())
+                    .requiredAccess(req.getRequiredAccess())
+                    .knownPrivate(false)
+                    .build();
+            PermissionCheckReport pub = testConnectionUnlocked(provider, anon);
+            if (pub != null && pub.isValid() && "PUBLIC".equals(pub.getAccessMode())) {
+                return pub;
             }
         }
-        return testConnectionUnlocked(provider, safeReq);
+        String text = message != null ? message : "Could not resolve the GitHub App installation for this repository.";
+        return PermissionCheckReport.builder()
+                .valid(false)
+                .repoFullName(req.getRepoUrl())
+                .credentialId(req.getCredentialId())
+                .httpStatusCode(404)
+                .message(text)
+                .errors(List.of(text))
+                .passedChecks(List.of())
+                .warnings(List.of())
+                .build();
+    }
+
+    /** Record the credential and installation the check actually used. Public read stays unbound. */
+    private void stampBinding(PermissionCheckReport report, String credentialId, String installationId) {
+        if (report == null || "PUBLIC".equals(report.getAccessMode())) {
+            return;
+        }
+        report.setCredentialId(credentialId);
+        if (installationId == null || installationId.isBlank()) {
+            return;
+        }
+        report.setInstallationId(installationId);
+        report.setInstallationLogin(scmCredentialService.accountLoginForInstallation(credentialId, installationId));
     }
 
     private PermissionCheckReport testConnectionUnlocked(String provider, TestConnectionRequest safeReq) {
@@ -245,15 +309,27 @@ public class ScmProviderFacade {
         }
         req.inferIdentityFromUrl();
         if (req.getCredentialId() != null) {
-            try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(req.getCredentialId())) {
-                return createRemoteRepositoryUnlocked(req);
+            String installationId = null;
+            ScmCredential cred = scmCredentialService.requireEnabled(req.getCredentialId());
+            if (cred.isGitHubApp() && req.getOwner() != null && !req.getOwner().isBlank()) {
+                installationId = scmCredentialService.installationIdForAccount(cred, req.getOwner());
+            }
+            try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(req.getCredentialId(), installationId)) {
+                GitHubRepoOption created = createRemoteRepositoryUnlocked(req);
+                if (created != null) {
+                    created.setCredentialId(req.getCredentialId());
+                    if (installationId != null) {
+                        created.setInstallationId(installationId);
+                    }
+                }
+                return created;
             }
         }
         return createRemoteRepositoryUnlocked(req);
     }
 
     /** Cheap existence probe routed to the URL's adapter (bulk migration preflight + engine create stage). */
-    public boolean repositoryExists(String repoUrl, Long credentialId) {
+    public boolean repositoryExists(String repoUrl, String credentialId) {
         if (repoUrl == null || repoUrl.isBlank()) {
             return false;
         }
@@ -270,7 +346,7 @@ public class ScmProviderFacade {
     }
 
     /** Lightweight "has commits" probe routed to the URL's adapter (bulk migration Option 2). */
-    public boolean hasCommits(String repoUrl, Long credentialId) {
+    public boolean hasCommits(String repoUrl, String credentialId) {
         if (repoUrl == null || repoUrl.isBlank()) {
             return false;
         }
@@ -301,7 +377,8 @@ public class ScmProviderFacade {
                         .name(req.getName() != null ? req.getName() : fullName)
                         .fullName(fullName != null ? fullName : req.getName())
                         .cloneUrl(targetUrl != null ? targetUrl : "")
-                        .isPrivate(req.getIsPrivate() == null || req.getIsPrivate())
+                        .isPrivate(!"public".equals(req.resolvedVisibility()))
+                        .visibility(req.resolvedVisibility())
                         .provider(adapter.getProviderType().name())
                         .hasWriteAccess(true)
                         .hasAdminAccess(true)

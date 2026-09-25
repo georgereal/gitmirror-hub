@@ -31,7 +31,7 @@ public class WebSocketNotificationService {
      * Pipeline stage change for the Observability UI. Uses the stage label as the progress
      * message so the badge shows "Git LFS" / "PR metadata" instead of the raw id.
      */
-    public void notifyPipeline(Long jobId, Long mappingId, String stageId, String stageLabel,
+    public void notifyPipeline(String jobId, String mappingId, String stageId, String stageLabel,
                                Map<String, Object> pipeline, Map<String, Object> providerTraffic) {
         String id = stageId != null && !stageId.isBlank() ? stageId : "pipeline";
         String label = stageLabel != null && !stageLabel.isBlank() ? stageLabel : id;
@@ -42,13 +42,13 @@ public class WebSocketNotificationService {
     /**
      * Throttled live fetch/push ticks for the Observability UI. Not persisted as audit rows.
      */
-    public void notifyJobProgress(Long jobId, Long mappingId, String operation, String phase,
+    public void notifyJobProgress(String jobId, String mappingId, String operation, String phase,
                                   int current, int total, String message) {
         notifyJobProgress(jobId, mappingId, operation, phase, current, total, message,
                 null, null, null, null, null, null, null);
     }
 
-    public void notifyJobProgress(Long jobId, Long mappingId, String operation, String phase,
+    public void notifyJobProgress(String jobId, String mappingId, String operation, String phase,
                                   int current, int total, String message,
                                   Long etaMs, Long elapsedMs,
                                   String remoteRole, String remoteLabel,
@@ -58,7 +58,7 @@ public class WebSocketNotificationService {
                 etaMs, elapsedMs, null, remoteRole, remoteLabel, pipeline, providerTraffic);
     }
 
-    public void notifyJobProgress(Long jobId, Long mappingId, String operation, String phase,
+    public void notifyJobProgress(String jobId, String mappingId, String operation, String phase,
                                   int current, int total, String message,
                                   Long etaMs, Long elapsedMs, Long wallElapsedMs,
                                   String remoteRole, String remoteLabel,
@@ -125,7 +125,7 @@ public class WebSocketNotificationService {
         }
     }
 
-    public void notifyDiffProgress(Long mappingId, String phase, int current, int total, String message,
+    public void notifyDiffProgress(String mappingId, String phase, int current, int total, String message,
                                    Map<String, Object> pipeline, Map<String, Object> counts, boolean complete) {
         try {
             Map<String, Object> payload = new HashMap<>();

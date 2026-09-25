@@ -37,9 +37,21 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- future-work/multi-store-persistence-h2-mongo.md Phase 1: Mongo stack on the compile
+             classpath; autoconfiguration is excluded at runtime unless
+             git-utility.persistence.provider=mongo (PersistenceEnvironmentPostProcessor). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-mongodb</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-kafka</artifactId>
         </dependency>
 
         <dependency>
@@ -100,6 +112,7 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+
     </dependencies>
 
     <build>

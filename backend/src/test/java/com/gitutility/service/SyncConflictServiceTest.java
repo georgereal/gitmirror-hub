@@ -42,12 +42,12 @@ class SyncConflictServiceTest {
 
     @Test
     void recordsGitRefConflictWhenNoneOpen() {
-        when(conflictRepository.findByMappingIdAndRefNameAndDestShaAndStatus(eq(4L), any(), any(), eq(ConflictStatus.OPEN)))
+        when(conflictRepository.findByMappingIdAndRefNameAndDestShaAndStatus(eq("4"), any(), any(), eq(ConflictStatus.OPEN)))
                 .thenReturn(Optional.empty());
-        when(conflictRepository.findByMappingIdAndRefNameAndDestShaAndStatus(eq(4L), any(), any(), eq(ConflictStatus.PR_OPENED)))
+        when(conflictRepository.findByMappingIdAndRefNameAndDestShaAndStatus(eq("4"), any(), any(), eq(ConflictStatus.PR_OPENED)))
                 .thenReturn(Optional.empty());
 
-        SyncConflict row = service.recordGitRefConflict(4L, 9L, ConflictKind.GIT_REF, TrunkConflictPolicy.ISOLATE,
+        SyncConflict row = service.recordGitRefConflict("4", "9", ConflictKind.GIT_REF, TrunkConflictPolicy.ISOLATE,
                 "refs/heads/main", "aaa", "bbb", "sync-conflict/main-1", "https://github.com/org/dest", "isolated");
 
         assertEquals(ConflictStatus.OPEN, row.getStatus());
@@ -56,9 +56,9 @@ class SyncConflictServiceTest {
 
     @Test
     void openConflictPrCreatesDestinationPullRequest() {
-        RepoMapping mapping = RepoMapping.builder().id(4L).repoBUrl("https://github.com/org/dest").build();
+        RepoMapping mapping = RepoMapping.builder().id("4").repoBUrl("https://github.com/org/dest").build();
         SyncConflict conflict = SyncConflict.builder()
-                .mappingId(4L)
+                .mappingId("4")
                 .refName("refs/heads/main")
                 .isolatedBranch("sync-conflict/main-1")
                 .sourceSha("abcdef1")

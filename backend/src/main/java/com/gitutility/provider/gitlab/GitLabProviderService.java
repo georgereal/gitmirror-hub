@@ -8,6 +8,7 @@ import com.gitutility.model.entity.GitHubAppConfig;
 import com.gitutility.model.enums.ScmProviderType;
 import com.gitutility.provider.PublicReadProbe;
 import com.gitutility.provider.ScmProviderAdapter;
+import com.gitutility.provider.ScmVisibility;
 import com.gitutility.repository.GitHubAppConfigRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -139,14 +140,14 @@ public class GitLabProviderService implements ScmProviderAdapter {
             passed.add("GitLab Authentication Verified: Connected to " + host + " as @" + username);
 
             String defaultBranch = "main";
-            boolean isPrivate = true;
+            String visibility = "PRIVATE";
             if (repoFullName != null && repoFullName.contains("/")) {
                 String encodedPath = URLEncoder.encode(repoFullName, StandardCharsets.UTF_8);
                 String projectUrl = host + "/api/v4/projects/" + encodedPath;
                 ResponseEntity<String> projResp = restTemplate.exchange(URI.create(projectUrl), HttpMethod.GET, new HttpEntity<>(headers), String.class);
                 JsonNode projNode = objectMapper.readTree(projResp.getBody());
                 defaultBranch = projNode.path("default_branch").asText("main");
-                isPrivate = !"public".equalsIgnoreCase(projNode.path("visibility").asText("private"));
+                visibility = ScmVisibility.fromRepoNode(projNode);
                 passed.add("GitLab Project Metadata Verified: " + repoFullName + " (default branch: " + defaultBranch + ")");
             }
 
@@ -155,7 +156,8 @@ public class GitLabProviderService implements ScmProviderAdapter {
                     .httpStatusCode(200)
                     .repoFullName(repoFullName)
                     .defaultBranch(defaultBranch)
-                    .isPrivate(isPrivate)
+                    .isPrivate(ScmVisibility.isPrivateFlag(visibility))
+                    .visibility(visibility)
                     .accessMode("AUTHENTICATED")
                     .message("GitLab connection successful.")
                     .permissions(PermissionCheckReport.PermissionsDetail.builder()
@@ -312,7 +314,7 @@ public class GitLabProviderService implements ScmProviderAdapter {
             Map<String, Object> body = new HashMap<>();
             body.put("name", req.getName());
             body.put("description", req.getDescription() != null ? req.getDescription() : "Mirrored by GitMirror Hub");
-            body.put("visibility", req.isPrivateRepo() ? "private" : "public");
+            body.put("visibility", req.resolvedVisibility());
 
             String url = host + "/api/v4/projects";
             restTemplate.exchange(URI.create(url), HttpMethod.POST, new HttpEntity<>(body, headers), String.class);

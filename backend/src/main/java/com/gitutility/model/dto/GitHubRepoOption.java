@@ -20,6 +20,10 @@ public class GitHubRepoOption {
     /** Explicit name — Lombok {@code isPrivate()} otherwise serializes as {@code "private"}. */
     @JsonProperty("isPrivate")
     private boolean isPrivate;
+    /** {@code public}, {@code private}, or {@code internal}. */
+    private String visibility;
+    /** True when this GitHub App installation includes the repository. */
+    private boolean appInstalled;
     private boolean canPush;
     private boolean canPull;
     @JsonProperty("isAdmin")
@@ -32,7 +36,7 @@ public class GitHubRepoOption {
     private String namespace;
     private String description;
     /** GitHub/GHES credential this search result was loaded with. */
-    private Long credentialId;
+    private String credentialId;
     /** Installation that returned this repo (App multi-install cards). */
     private String installationId;
 }

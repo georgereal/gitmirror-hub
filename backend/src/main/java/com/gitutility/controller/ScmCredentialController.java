@@ -28,7 +28,7 @@ public class ScmCredentialController {
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<ScmCredentialResponse> get(@PathVariable Long id) {
+    public ResponseEntity<ScmCredentialResponse> get(@PathVariable String id) {
         return ResponseEntity.ok(ScmCredentialResponse.fromEntity(credentialService.require(id)));
     }
 
@@ -39,18 +39,18 @@ public class ScmCredentialController {
     }
 
     @PutMapping("/{id}")
-    public ResponseEntity<ScmCredentialResponse> update(@PathVariable Long id, @RequestBody ScmCredentialRequest request) {
+    public ResponseEntity<ScmCredentialResponse> update(@PathVariable String id, @RequestBody ScmCredentialRequest request) {
         return ResponseEntity.ok(ScmCredentialResponse.fromEntity(credentialService.update(id, request)));
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> delete(@PathVariable Long id) {
+    public ResponseEntity<Void> delete(@PathVariable String id) {
         credentialService.delete(id);
         return ResponseEntity.noContent().build();
     }
 
     @GetMapping("/{id}/installations")
-    public ResponseEntity<List<ScmInstallationOption>> installations(@PathVariable Long id) {
+    public ResponseEntity<List<ScmInstallationOption>> installations(@PathVariable String id) {
         return ResponseEntity.ok(credentialService.listInstallations(id));
     }
 
@@ -60,26 +60,37 @@ public class ScmCredentialController {
         return ResponseEntity.ok(credentialService.previewInstallations(request));
     }
 
+    @GetMapping("/{id}/repositories/page")
+    public ResponseEntity<RepoSearchResult> repositoryPage(
+            @PathVariable String id,
+            @RequestParam(required = false, defaultValue = "") String query,
+            @RequestParam(required = false, defaultValue = "1") int page,
+            @RequestParam(required = false, defaultValue = "30") int limit,
+            @RequestParam(required = false, defaultValue = "") String visibility) {
+        return ResponseEntity.ok(credentialService.pageInstallationRepositories(id, query, page, limit, visibility));
+    }
+
     @GetMapping("/{id}/repositories")
     public ResponseEntity<RepoSearchResult> repositories(
-            @PathVariable Long id,
+            @PathVariable String id,
             @RequestParam(required = false, defaultValue = "") String query,
             @RequestParam(required = false, defaultValue = "1") int page,
             @RequestParam(required = false, defaultValue = "15") int limit,
-            @RequestParam(required = false, defaultValue = "PULL") String access) {
-        return ResponseEntity.ok(credentialService.searchRepositories(id, query, page, limit, access));
+            @RequestParam(required = false, defaultValue = "PULL") String access,
+            @RequestParam(required = false) String installationId) {
+        return ResponseEntity.ok(credentialService.searchRepositories(id, query, page, limit, access, installationId));
     }
 
     @PostMapping("/{id}/test")
     public ResponseEntity<PermissionCheckReport> test(
-            @PathVariable Long id,
+            @PathVariable String id,
             @RequestBody(required = false) TestConnectionRequest request) {
         return ResponseEntity.ok(credentialService.testConnection(id, request));
     }
 
     @PostMapping("/{id}/create-repo")
     public ResponseEntity<Map<String, Object>> createRepo(
-            @PathVariable Long id,
+            @PathVariable String id,
             @RequestBody CreateRepoRequest request) {
         boolean ok = credentialService.createRemoteRepository(id, request);
         if (!ok) {

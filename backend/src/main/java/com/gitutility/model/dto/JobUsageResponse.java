@@ -26,8 +26,8 @@ public class JobUsageResponse {
     @NoArgsConstructor
     @AllArgsConstructor
     public static class JobUsageRow {
-        private Long id;
-        private Long mappingId;
+        private String id;
+        private String mappingId;
         private String pairName;
         private String status;
         private String triggerType;

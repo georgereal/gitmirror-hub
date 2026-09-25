@@ -35,7 +35,7 @@ public class BulkSubmissionService {
      * Cancels every queued job of a submission (per mapping) and cooperatively requests
      * cancellation of in-progress ones. Skipped rows have no jobs and are untouched.
      */
-    public int cancelSubmission(Long submissionId, String reason) {
+    public int cancelSubmission(String submissionId, String reason) {
         bulkSubmissionRepository.findById(submissionId).ifPresent(sub -> {
             if (sub.getCancelledAt() == null) {
                 sub.setCancelledAt(Instant.now());
@@ -66,7 +66,7 @@ public class BulkSubmissionService {
      * burn the queue on identical failures. In-progress jobs are left alone.
      */
     public int stopRemainingQueuedOnAccessFailure(RepoMapping failedMapping, String reason) {
-        Long submissionId = failedMapping.getBulkSubmissionId();
+        String submissionId = failedMapping.getBulkSubmissionId();
         if (submissionId == null) {
             return 0;
         }

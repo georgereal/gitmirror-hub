@@ -1,0 +1,11 @@
+name = "gitmirror-webhook-worker-kafka"
+main = "src/index.ts"
+compatibility_date = "2024-09-01"
+
+# Leave this false until you want the public URL. Deploy with true to start, false to stop
+# the URL while keeping secrets. See README "Start and stop".
+workers_dev = true
+
+# Confluent REST endpoint, cluster id, topic, API key, and webhook HMAC live in .env.
+# Copy .env.example to .env. That file is gitignored.
+# `npm run dev` loads it locally. `npm run deploy` uploads it as encrypted secrets.

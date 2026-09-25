@@ -58,52 +58,29 @@ This will print your logged-in email and **Cloudflare Account ID**.
 
 ---
 
-### Step 3: Configure `wrangler.toml`
+### Step 3: Fill in `.env` (gitignored)
 
-Open `webhook-worker/wrangler.toml` and update your settings:
-
-```toml
-name = "gitmirror-webhook-worker"
-main = "src/index.ts"
-compatibility_date = "2024-09-01"
-
-# (Optional) If you have multiple Cloudflare accounts, set your Account ID explicitly:
-# account_id = "your_32_character_account_id_from_whoami"
-
-[vars]
-# For CloudAMQP, use your instance hostname (HTTPS port 443)
-RABBITMQ_HTTP_URL = "https://lemur.cloudamqp.com"
-RABBITMQ_VHOST = "your-cloudamqp-vhost"
-RABBITMQ_EXCHANGE = "git.sync.exchange"
-RABBITMQ_ROUTING_KEY = "git.webhook.inbound"
-```
-
-> **How to find CloudAMQP parameters**:
-> If your CloudAMQP connection string is:
-> `amqps://myuser:mypassword@lemur.cloudamqp.com/myvhost`
-> * `RABBITMQ_HTTP_URL` = `"https://lemur.cloudamqp.com"`
-> * `RABBITMQ_VHOST` = `"myvhost"`
-> * `RABBITMQ_USER` = `"myuser"`
-> * `RABBITMQ_PASSWORD` = `"mypassword"`
-
----
-
-### Step 4: Set Secrets in Cloudflare (Mandatory)
-
-Secrets are encrypted by Cloudflare at rest and injected into your worker runtime securely.
-
-Run the following commands in the `webhook-worker` directory (using Node 22+):
+`wrangler.toml` has no CloudAMQP values. Copy the example and edit the copy:
 
 ```bash
-# 1. Store RabbitMQ / CloudAMQP Username
-npx wrangler secret put RABBITMQ_USER
-
-# 2. Store RabbitMQ / CloudAMQP Password
-npx wrangler secret put RABBITMQ_PASSWORD
-
-# 3. Store Webhook Secret for HMAC verification
-npx wrangler secret put WEBHOOK_SECRET
+cd webhook-worker
+cp .env.example .env
 ```
+
+`.env` is listed in `.gitignore`. If your CloudAMQP URL is `amqps://myuser:mypassword@lemur.cloudamqp.com/myvhost`, the file is:
+
+```text
+ENABLED=true
+RABBITMQ_HTTP_URL=https://lemur.cloudamqp.com
+RABBITMQ_VHOST=myvhost
+RABBITMQ_USER=myuser
+RABBITMQ_PASSWORD=mypassword
+RABBITMQ_EXCHANGE=git.sync.exchange
+RABBITMQ_ROUTING_KEY=git.webhook.inbound
+WEBHOOK_SECRET=<same secret as the GitHub webhook>
+```
+
+`npm run deploy` uploads every non-empty line as a Cloudflare secret. You do not run `wrangler secret put` for these.
 
 > **Note on `WEBHOOK_SECRET`**:
 > To generate a secure 32-byte hexadecimal secret:
@@ -114,7 +91,7 @@ npx wrangler secret put WEBHOOK_SECRET
 
 ---
 
-### Step 5: Test Locally (Optional)
+### Step 4: Test Locally (Optional)
 
 Start the local development server with Wrangler:
 
@@ -139,7 +116,7 @@ Expected JSON response:
 
 ---
 
-### Step 6: Deploy to Cloudflare
+### Step 5: Deploy to Cloudflare
 
 Deploy your worker to Cloudflare's global edge network:
 
@@ -157,9 +134,19 @@ Deployed gitmirror-webhook-worker triggers (0.12 sec)
   https://gitmirror-webhook-worker.<your-workers-subdomain>.workers.dev
 ```
 
+`npm run dev` is a local preview only. Ctrl+C stops that process and leaves the deployed Worker running.
+
+**Stop the deployed Worker and keep secrets:** set `ENABLED=false` in `.env`, then `npm run deploy`. Health reports `"status": "stopped"`. POSTs return 503. Start again with `ENABLED=true` and `npm run deploy`.
+
+**Hide the public URL** (secrets stay): set `workers_dev = false` and `npm run deploy`. Set it back to `true` and deploy to open the URL.
+
+**Delete the Worker** (the next deploy must set secrets again): `npx wrangler delete`.
+
+The Kafka publisher is a different script: [`webhook-worker-kafka/`](../webhook-worker-kafka/README.md).
+
 ---
 
-### Step 7: Verify Live Deployment
+### Step 6: Verify Live Deployment
 
 Run a quick health check against your live deployed URL:
 
@@ -251,16 +238,15 @@ In Bitbucket Cloud, webhooks can be registered per-repository to forward push, P
   * `[x] Declined`
   * `[x] Comment created`
 
-### Step 4: Configure Wrangler Secrets for Bitbucket HMAC Validation
-If you entered a secret in Bitbucket's webhook settings:
+### Step 4: Put the Bitbucket secret in `.env`
+If you entered a secret in Bitbucket's webhook settings, add it to `webhook-worker/.env` and deploy:
+
+```text
+BITBUCKET_WEBHOOK_SECRET=<the Bitbucket webhook secret>
+```
+
 ```bash
 cd webhook-worker
-
-# Set Bitbucket-specific secret (or share WEBHOOK_SECRET)
-npx wrangler secret put BITBUCKET_WEBHOOK_SECRET
-# Paste your secret and hit Enter
-
-# Deploy the updated worker
 npm run deploy
 ```
 

@@ -1,6 +1,9 @@
 package com.gitutility.model.entity;
 
 import com.gitutility.model.enums.LogLevel;
+import com.gitutility.persistence.Ids;
+import org.springframework.data.mongodb.core.mapping.Document;
+import com.gitutility.persistence.store.WritePreparer;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -13,18 +16,18 @@ import java.time.Instant;
 @Table(name = "sync_audit_logs", indexes = {
     @Index(name = "idx_sync_audit_job_id", columnList = "jobId")
 })
+@Document(collection = "sync_audit_logs")
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class SyncAuditLog {
+public class SyncAuditLog implements WritePreparer {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     @Column(nullable = false)
-    private Long jobId;
+    private String jobId;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
@@ -39,7 +42,10 @@ public class SyncAuditLog {
     private Instant timestamp = Instant.now();
 
     @PrePersist
-    protected void onCreate() {
+    public void prepareForWrite() {
+        if (Ids.isUnset(id)) {
+            id = Ids.newId();
+        }
         if (timestamp == null) {
             timestamp = Instant.now();
         }

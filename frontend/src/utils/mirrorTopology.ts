@@ -1,17 +1,17 @@
 import { RepoMapping, SyncDirection } from '../types';
 
-export function isPublicToPrivateBackup(
-  mapping: Pick<RepoMapping, 'sourceVisibility' | 'targetVisibility'>
+/** Source is readable without a credential, so Hub cannot subscribe to its events or push to it. */
+export function isAnonymousPublicSource(
+  mapping: Pick<RepoMapping, 'sourceCredentialId' | 'sourcePublicRead' | 'sourceVisibility'>
 ): boolean {
-  return mapping.sourceVisibility === 'PUBLIC' && mapping.targetVisibility === 'PRIVATE';
+  if (mapping.sourceCredentialId) return false;
+  return mapping.sourcePublicRead === true || mapping.sourceVisibility === 'PUBLIC';
 }
 
 export function shouldWarnBidirectionalBackup(
-  sourceVisibility: RepoMapping['sourceVisibility'] | undefined,
-  targetVisibility: RepoMapping['targetVisibility'] | undefined,
+  mapping: Pick<RepoMapping, 'sourceCredentialId' | 'sourcePublicRead' | 'sourceVisibility'>,
   syncDirection: SyncDirection | undefined
 ): boolean {
-  return sourceVisibility === 'PUBLIC'
-    && targetVisibility === 'PRIVATE'
-    && (syncDirection === 'BIDIRECTIONAL' || !syncDirection);
+  return isAnonymousPublicSource(mapping)
+    && (syncDirection === 'BIDIRECTIONAL' || syncDirection === 'UNIDIRECTIONAL_B_TO_A' || !syncDirection);
 }

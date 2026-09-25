@@ -18,7 +18,7 @@ public class InboundWebhookMessage implements Serializable {
     private static final long serialVersionUID = 1L;
 
     private String provider; // "github", "gitlab", "bitbucket"
-    private Long mappingId;
+    private String mappingId;
     private String eventType;
     private String deliveryId;
     private Map<String, String> headers;

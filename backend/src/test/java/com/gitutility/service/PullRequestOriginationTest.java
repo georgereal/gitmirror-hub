@@ -88,7 +88,7 @@ class PullRequestOriginationTest {
 
     private RepoMapping pair() {
         return RepoMapping.builder()
-                .id(4L)
+                .id("4")
                 .repoAUrl("https://github.com/THU-MAIC/OpenMAIC")
                 .repoBUrl("https://github.com/acme/mirror-dest")
                 .build();
@@ -96,7 +96,7 @@ class PullRequestOriginationTest {
 
     @Test
     void originOpenedForkPrCachesObjectsWithoutDestBranchOrPr() {
-        when(prMappingRepository.findByMappingIdAndSourcePrNumber(4L, 1287L)).thenReturn(Optional.empty());
+        when(prMappingRepository.findByMappingIdAndSourcePrNumber("4", 1287L)).thenReturn(Optional.empty());
         when(prMappingRepository.save(any(PrMapping.class))).thenAnswer(i -> i.getArgument(0));
 
         ObjectNode pr = mapper.createObjectNode();
@@ -125,7 +125,7 @@ class PullRequestOriginationTest {
 
     @Test
     void originOpenedForkPrNamedMainDoesNotCreateDestPrOrTargetMain() {
-        when(prMappingRepository.findByMappingIdAndSourcePrNumber(4L, 65L)).thenReturn(Optional.empty());
+        when(prMappingRepository.findByMappingIdAndSourcePrNumber("4", 65L)).thenReturn(Optional.empty());
         when(prMappingRepository.save(any(PrMapping.class))).thenAnswer(i -> i.getArgument(0));
 
         ObjectNode pr = mapper.createObjectNode();
@@ -149,7 +149,7 @@ class PullRequestOriginationTest {
     @Test
     void originCloseClosesReplicaAndDoesNotCloseOriginOnReplicaWebhook() {
         PrMapping existing = PrMapping.builder()
-                .mappingId(4L)
+                .mappingId("4")
                 .sourcePrNumber(1287L)
                 .targetPrNumber(9L)
                 .headBranch("add-repocloud-deploy-button")
@@ -157,7 +157,7 @@ class PullRequestOriginationTest {
                 .originSide("A")
                 .state("open")
                 .build();
-        when(prMappingRepository.findByMappingIdAndSourcePrNumber(4L, 1287L)).thenReturn(Optional.of(existing));
+        when(prMappingRepository.findByMappingIdAndSourcePrNumber("4", 1287L)).thenReturn(Optional.of(existing));
         when(prMappingRepository.save(any(PrMapping.class))).thenAnswer(i -> i.getArgument(0));
 
         ObjectNode pr = mapper.createObjectNode();
@@ -172,7 +172,7 @@ class PullRequestOriginationTest {
         assertEquals("closed", existing.getState());
 
         reset(githubAdapter);
-        when(prMappingRepository.findByMappingIdAndTargetPrNumber(4L, 9L)).thenReturn(Optional.of(existing));
+        when(prMappingRepository.findByMappingIdAndTargetPrNumber("4", 9L)).thenReturn(Optional.of(existing));
         ObjectNode destPr = mapper.createObjectNode();
         destPr.put("number", 9);
         destPr.putObject("head").put("ref", "add-repocloud-deploy-button");
@@ -204,14 +204,14 @@ class PullRequestOriginationTest {
     @Test
     void originEditPatchesReplicaWhenCasMatches() {
         PrMapping existing = PrMapping.builder()
-                .mappingId(4L)
+                .mappingId("4")
                 .sourcePrNumber(1287L)
                 .targetPrNumber(9L)
                 .originSide("A")
                 .lastPushedTitle("old")
                 .lastPushedBody("body")
                 .build();
-        when(prMappingRepository.findByMappingIdAndSourcePrNumber(4L, 1287L)).thenReturn(Optional.of(existing));
+        when(prMappingRepository.findByMappingIdAndSourcePrNumber("4", 1287L)).thenReturn(Optional.of(existing));
         when(prMappingRepository.save(any(PrMapping.class))).thenAnswer(i -> i.getArgument(0));
         when(githubAdapter.getPullRequest("acme/mirror-dest", 9L))
                 .thenReturn(com.gitutility.model.dto.PullRequestSnapshot.builder().title("old").body("body").build());
@@ -236,14 +236,14 @@ class PullRequestOriginationTest {
     @Test
     void originEditRecordsMetadataConflictOnCasMiss() {
         PrMapping existing = PrMapping.builder()
-                .mappingId(4L)
+                .mappingId("4")
                 .sourcePrNumber(1287L)
                 .targetPrNumber(9L)
                 .originSide("A")
                 .lastPushedTitle("old")
                 .lastPushedBody("body")
                 .build();
-        when(prMappingRepository.findByMappingIdAndSourcePrNumber(4L, 1287L)).thenReturn(Optional.of(existing));
+        when(prMappingRepository.findByMappingIdAndSourcePrNumber("4", 1287L)).thenReturn(Optional.of(existing));
         when(githubAdapter.getPullRequest("acme/mirror-dest", 9L))
                 .thenReturn(com.gitutility.model.dto.PullRequestSnapshot.builder().title("replica edited").body("body").build());
 
@@ -257,19 +257,19 @@ class PullRequestOriginationTest {
         service.handlePrWebhookEvent(pair(), "edited", pr, "https://github.com/THU-MAIC/OpenMAIC.git");
 
         verify(githubAdapter, never()).updatePullRequest(anyString(), anyLong(), any(), any());
-        verify(syncConflictService).recordMetadataConflict(eq(4L), isNull(), eq("pr:1287"),
+        verify(syncConflictService).recordMetadataConflict(eq("4"), isNull(), eq("pr:1287"),
                 eq("acme/mirror-dest"), eq("origin edited"), eq("replica edited"), anyString());
     }
 
     @Test
     void replicaEditDoesNotWriteOrigin() {
         PrMapping existing = PrMapping.builder()
-                .mappingId(4L)
+                .mappingId("4")
                 .sourcePrNumber(1287L)
                 .targetPrNumber(9L)
                 .originSide("A")
                 .build();
-        when(prMappingRepository.findByMappingIdAndTargetPrNumber(4L, 9L)).thenReturn(Optional.of(existing));
+        when(prMappingRepository.findByMappingIdAndTargetPrNumber("4", 9L)).thenReturn(Optional.of(existing));
 
         ObjectNode pr = mapper.createObjectNode();
         pr.put("number", 9);
@@ -292,7 +292,7 @@ class PullRequestOriginationTest {
         pr.putObject("head").put("ref", "sync-conflict/main-20260101-120000");
         pr.putObject("base").put("ref", "main");
 
-        when(prMappingRepository.findByMappingIdAndTargetPrNumber(4L, 44L)).thenReturn(Optional.empty());
+        when(prMappingRepository.findByMappingIdAndTargetPrNumber("4", 44L)).thenReturn(Optional.empty());
 
         service.handlePrWebhookEvent(pair(), "opened", pr, "https://github.com/acme/mirror-dest.git");
 

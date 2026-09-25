@@ -5,6 +5,7 @@ import {
   SyncAuditLog,
   QueueStatus,
   MessagingModuleInfo,
+  PersistenceModuleInfo,
   RuntimeMetrics,
   ClusterRuntimeMetrics,
   ScmQuotas,
@@ -48,23 +49,24 @@ export interface BulkMirrorRow {
   destUrl?: string;
   outcome: 'CREATED_QUEUED' | 'SKIPPED' | 'FAILED_VALIDATION';
   reason?: string;
-  mappingId?: number;
-  jobId?: number;
+  mappingId?: string;
+  jobId?: string;
 }
 
 export interface BulkMirrorRequest {
-  mode: 'CREATE_DEST' | 'USE_EXISTING';
+  mode: 'CREATE_DEST' | 'USE_EXISTING' | 'SELECTIVE';
   items: Array<{
     sourceUrl: string;
     sourceProvider?: string;
-    sourceCredentialId?: number;
+    sourceCredentialId?: string;
     sourceInstallationId?: string;
-    sourceVisibility?: 'UNKNOWN' | 'PUBLIC' | 'PRIVATE';
+    sourceVisibility?: 'UNKNOWN' | 'PUBLIC' | 'PRIVATE' | 'INTERNAL';
     sourcePublicRead?: boolean;
     destName?: string;
     destUrl?: string;
-    destCredentialId?: number;
+    destCredentialId?: string;
     destInstallationId?: string;
+    destVisibility?: 'UNKNOWN' | 'PUBLIC' | 'PRIVATE' | 'INTERNAL';
     includeNonEmptyDest?: boolean;
   }>;
   branchPattern?: string;
@@ -73,13 +75,14 @@ export interface BulkMirrorRequest {
   storageTier?: string;
   active?: boolean;
   destOwner?: string;
-  destCredentialId?: number;
+  destCredentialId?: string;
   destInstallationId?: string;
   destPrivate?: boolean;
+  destVisibility?: 'PUBLIC' | 'PRIVATE' | 'INTERNAL';
 }
 
 export interface BulkMirrorResponse {
-  submissionId: number;
+  submissionId: string;
   rows: BulkMirrorRow[];
   createdQueuedCount: number;
   skippedCount: number;
@@ -91,13 +94,13 @@ export const submitBulkMigration = async (payload: BulkMirrorRequest): Promise<B
   return res.data;
 };
 
-export const getBulkSubmission = async (id: number) => {
+export const getBulkSubmission = async (id: string) => {
   const res = await api.get(`/bulk/${id}`);
   return res.data;
 };
 
 export interface BulkSubmissionRecord {
-  id: number;
+  id: string;
   mode: 'CREATE_DEST' | 'USE_EXISTING' | string;
   itemCount: number;
   createdCount: number;
@@ -111,13 +114,13 @@ export const listBulkSubmissions = async (): Promise<BulkSubmissionRecord[]> => 
   return res.data;
 };
 
-export const cancelBulkSubmission = async (id: number, reason?: string) => {
+export const cancelBulkSubmission = async (id: string, reason?: string) => {
   const res = await api.post(`/bulk/${id}/cancel`, { reason });
-  return res.data as { submissionId: number; cancelled: number; status: string };
+  return res.data as { submissionId: string; cancelled: number; status: string };
 };
 
 /** Lightweight "destination has commits" probe (bulk migration Option 2 pre-submit warning). */
-export const probeRepoHasCommits = async (url: string, credentialId?: number): Promise<boolean> => {
+export const probeRepoHasCommits = async (url: string, credentialId?: string): Promise<boolean> => {
   try {
     const res = await api.get('/github-app/repo-has-commits', { params: { url, credentialId } });
     return Boolean(res.data?.hasCommits);
@@ -126,17 +129,27 @@ export const probeRepoHasCommits = async (url: string, credentialId?: number): P
   }
 };
 
-export const updateMapping = async (id: number, mapping: Partial<RepoMapping>): Promise<RepoMapping> => {
+/** Whether a destination name is already taken. Creation still happens when the mirror job starts. */
+export const probeRepoExists = async (url: string, credentialId?: string): Promise<boolean> => {
+  try {
+    const res = await api.get('/github-app/repo-exists', { params: { url, credentialId } });
+    return Boolean(res.data?.exists);
+  } catch {
+    return false;
+  }
+};
+
+export const updateMapping = async (id: string, mapping: Partial<RepoMapping>): Promise<RepoMapping> => {
   const res = await api.put(`/mappings/${id}`, mapping);
   return res.data;
 };
 
-export const deleteMapping = async (id: number): Promise<void> => {
+export const deleteMapping = async (id: string): Promise<void> => {
   await api.delete(`/mappings/${id}`);
 };
 
 export const triggerManualSync = async (
-  id: number,
+  id: string,
   branch = '*',
   direction = 'A_TO_B',
   overwriteFromSource = false,
@@ -146,22 +159,216 @@ export const triggerManualSync = async (
   return res.data;
 };
 
-export const syncPullRequests = async (mappingId: number): Promise<{ syncedCount: number; message: string }> => {
+export const syncPullRequests = async (mappingId: string): Promise<{ syncedCount: number; message: string }> => {
   const res = await api.post(`/mappings/${mappingId}/sync-prs`);
   return res.data;
 };
 
-export const syncLfsObjects = async (mappingId: number): Promise<{ syncedCount: number; bytesTransferred?: number; message: string; error?: string }> => {
+export const syncLfsObjects = async (mappingId: string): Promise<{ syncedCount: number; bytesTransferred?: number; message: string; error?: string }> => {
   const res = await api.post(`/mappings/${mappingId}/sync-lfs`);
   return res.data;
 };
 
-export const syncReleases = async (mappingId: number): Promise<{ jobId?: number; syncedCount: number; message: string }> => {
+export const syncReleases = async (mappingId: string): Promise<{ jobId?: string; syncedCount: number; message: string }> => {
   const res = await api.post(`/mappings/${mappingId}/sync-releases`);
   return res.data;
 };
 
-export const syncCiChecks = async (mappingId: number): Promise<{ jobId?: number; syncedCount: number; message: string }> => {
+export interface WriteAuthorityChip {
+  enabled: boolean;
+  reason?: string | null;
+  orgLogin?: string | null;
+}
+
+export interface WriteAuthoritySide {
+  side: 'A' | 'B';
+  repoFullName?: string | null;
+  repoUrl?: string | null;
+  credentialId?: string | null;
+  credentialLabel?: string | null;
+  access: 'write' | 'readonly';
+  scope: 'repo' | 'org' | 'enterprise';
+  target: 'this_repo' | 'all_repos';
+  enforcement?: string | null;
+  rulesetId?: number | null;
+  rulesetName?: string | null;
+  rulesetState?: 'missing' | 'active' | 'disabled' | 'unknown' | string | null;
+  rulesetDetail?: string | null;
+  repoRulesetName?: string | null;
+  repoRulesetState?: 'missing' | 'active' | 'disabled' | 'unknown' | string | null;
+  repoRulesetDetail?: string | null;
+  repo: WriteAuthorityChip;
+  org: WriteAuthorityChip;
+  enterprise: WriteAuthorityChip;
+  coverageNote?: string | null;
+}
+
+export interface WriteAuthorityRepo {
+  credentialId: string;
+  credentialLabel?: string | null;
+  appId?: string | null;
+  fullName: string;
+  privateRepo?: boolean;
+  canManage: boolean;
+  disabledReason?: string | null;
+  rulesetId?: number | null;
+  rulesetName?: string | null;
+  rulesetState?: string | null;
+  rulesetDetail?: string | null;
+}
+
+export interface WriteAuthorityView {
+  pairs: Array<{
+    id: string;
+    name: string;
+    linkMode: 'linked' | 'independent' | string;
+    sides: WriteAuthoritySide[];
+  }>;
+  orgs: Array<{
+    credentialId: string;
+    credentialLabel?: string;
+    orgLogin: string;
+    provider?: string;
+    canManage: boolean;
+    disabledReason?: string | null;
+    access: 'write' | 'readonly';
+    enforcement?: string | null;
+    rulesetId?: number | null;
+    rulesetName?: string | null;
+    rulesetState?: string | null;
+    rulesetDetail?: string | null;
+  }>;
+  enterprises: Array<{
+    credentialId: string;
+    credentialLabel?: string;
+    slug: string;
+    probeOk: boolean;
+    disabledReason?: string | null;
+    access: 'write' | 'readonly';
+    enforcement?: string | null;
+    rulesetId?: number | null;
+    rulesetName?: string | null;
+    rulesetState?: string | null;
+    rulesetDetail?: string | null;
+  }>;
+}
+
+export const getWriteAuthority = async (refresh = false): Promise<WriteAuthorityView> => {
+  const res = await api.get('/write-authority', { params: refresh ? { refresh: true } : {} });
+  return res.data;
+};
+
+export const getRepositoryRuleset = async (
+  credentialId: string,
+  fullName: string,
+  installationId?: string
+): Promise<WriteAuthorityRepo> => {
+  const res = await api.get('/write-authority/repository', {
+    params: { credentialId, fullName, installationId: installationId || undefined },
+  });
+  return res.data;
+};
+
+export interface RepositoryRulesetItem {
+  id: number;
+  name: string;
+  target: string;
+  enforcement: string;
+  hubReplica: boolean;
+}
+
+export const listRepositoryRulesets = async (
+  credentialId: string,
+  fullName: string,
+  installationId?: string
+): Promise<RepositoryRulesetItem[]> => {
+  const res = await api.get('/write-authority/repository/rulesets', {
+    params: { credentialId, fullName, installationId: installationId || undefined },
+  });
+  return res.data;
+};
+
+export const setRepositoryRulesetEnforcement = async (body: {
+  credentialId: string;
+  repoFullName: string;
+  installationId?: string;
+  rulesetId: number;
+  enforcement: 'active' | 'disabled';
+}): Promise<void> => {
+  await api.post('/write-authority/repository/rulesets/enforcement', body);
+};
+
+export const pageCredentialRepositories = async (
+  id: string,
+  params: { query?: string; page?: number; limit?: number; visibility?: 'private' | 'internal' | 'public' }
+): Promise<RepoSearchResult> => {
+  const res = await api.get(`/scm-credentials/${id}/repositories/page`, { params });
+  return res.data;
+};
+
+export const applyWriteAuthority = async (body: {
+  link?: 'linked' | 'independent';
+  pairId?: string;
+  sides?: Array<{ side: 'A' | 'B'; access: 'write' | 'readonly'; scope: string; target: string }>;
+  org?: { credentialId: string; orgLogin: string; access: 'write' | 'readonly' };
+  repository?: { credentialId: string; repoFullName: string; installationId?: string; access: 'write' | 'readonly' };
+  enterprise?: { credentialId: string; access: 'write' | 'readonly' };
+  confirmAllRepos?: string;
+}): Promise<WriteAuthorityView> => {
+  const res = await api.post('/write-authority', body);
+  return res.data;
+};
+
+export const listDrLanes = async (): Promise<import('../types').DrLane[]> => {
+  const res = await api.get('/dr-lanes');
+  return res.data;
+};
+
+export const activateDrLane = async (laneKey: string): Promise<import('../types').DrLane> => {
+  const res = await api.post('/dr-lanes/activate', { laneKey });
+  return res.data;
+};
+
+export const failBackDrLane = async (laneKey: string): Promise<import('../types').DrLane> => {
+  const res = await api.post('/dr-lanes/fail-back', { laneKey });
+  return res.data;
+};
+
+export const probeDrLane = async (laneKey: string): Promise<import('../types').DrLane> => {
+  const res = await api.post('/dr-lanes/probe', { laneKey });
+  return res.data;
+};
+
+export const getPeerStatus = async (mappingId: string): Promise<import('../types').PeerStatus> => {
+  const res = await api.get(`/mappings/${mappingId}/peer-status`);
+  return res.data;
+};
+
+export const probePeerHeartbeat = async (mappingId: string): Promise<import('../types').PeerStatus> => {
+  const res = await api.post(`/mappings/${mappingId}/peer-heartbeat`);
+  return res.data;
+};
+
+export const activateDr = async (mappingId: string): Promise<import('../types').PeerStatus> => {
+  const res = await api.post(`/mappings/${mappingId}/activate-dr`);
+  return res.data;
+};
+
+export const failBack = async (mappingId: string): Promise<import('../types').PeerStatus> => {
+  const res = await api.post(`/mappings/${mappingId}/fail-back`);
+  return res.data;
+};
+
+export const applyReplicaRuleset = async (
+  mappingId: string,
+  action: 'lock' | 'unlock' | 'swap',
+  primarySide?: 'A' | 'B'
+): Promise<RepoMapping> => {
+  const res = await api.post(`/mappings/${mappingId}/replica-ruleset`, { action, primarySide });
+  return res.data;
+};
+
+export const syncCiChecks = async (mappingId: string): Promise<{ jobId?: string; syncedCount: number; message: string }> => {
   const res = await api.post(`/mappings/${mappingId}/sync-ci-checks`);
   return res.data;
 };
@@ -175,7 +382,7 @@ export const getJobs = async (
   page = 0,
   size = 50,
   status?: string,
-  mappingId?: number,
+  mappingId?: string,
   triggerType?: string,
   lane?: string
 ): Promise<{ content: SyncJob[]; totalElements: number; totalPages: number }> => {
@@ -188,12 +395,12 @@ export const getJobs = async (
   return res.data;
 };
 
-export const getJob = async (id: number): Promise<SyncJob> => {
+export const getJob = async (id: string): Promise<SyncJob> => {
   const res = await api.get(`/jobs/${id}`);
   return res.data;
 };
 
-export const getJobLogs = async (id: number): Promise<SyncAuditLog[]> => {
+export const getJobLogs = async (id: string): Promise<SyncAuditLog[]> => {
   const res = await api.get(`/jobs/${id}/logs`);
   return res.data;
 };
@@ -203,39 +410,39 @@ export const getDashboardStats = async (): Promise<DashboardStats> => {
   return res.data;
 };
 
-export const retryJob = async (id: number): Promise<SyncJob> => {
+export const retryJob = async (id: string): Promise<SyncJob> => {
   const res = await api.post(`/jobs/${id}/retry`);
   return res.data;
 };
 
-export const resumeJob = async (id: number): Promise<SyncJob> => {
+export const resumeJob = async (id: string): Promise<SyncJob> => {
   const res = await api.post(`/jobs/${id}/resume`);
   return res.data;
 };
 
 export const dispatchJobs = async (
-  jobIds: number[]
+  jobIds: string[]
 ): Promise<{ dispatched: number; skipped: number; errors: string[] }> => {
   const res = await api.post('/jobs/dispatch', { jobIds });
   return res.data;
 };
 
-export const pauseJob = async (id: number): Promise<SyncJob> => {
+export const pauseJob = async (id: string): Promise<SyncJob> => {
   const res = await api.post(`/jobs/${id}/pause`);
   return res.data;
 };
 
-export const skipJobStage = async (id: number, stageId: string): Promise<SyncJob> => {
+export const skipJobStage = async (id: string, stageId: string): Promise<SyncJob> => {
   const res = await api.post(`/jobs/${id}/skip-stage`, { stageId });
   return res.data;
 };
 
-export const cancelJob = async (id: number): Promise<SyncJob> => {
+export const cancelJob = async (id: string): Promise<SyncJob> => {
   const res = await api.post(`/jobs/${id}/cancel`);
   return res.data;
 };
 
-export const cancelQueuedJobs = async (mappingId?: number): Promise<{ cancelledCount: number; message: string }> => {
+export const cancelQueuedJobs = async (mappingId?: string): Promise<{ cancelledCount: number; message: string }> => {
   const res = await api.post('/jobs/cancel-queued', null, { params: mappingId ? { mappingId } : {} });
   return res.data;
 };
@@ -245,8 +452,67 @@ export const getQueueStatus = async (): Promise<QueueStatus> => {
   return res.data;
 };
 
+export interface KafkaPartitionStatus {
+  partition: number;
+  start: number;
+  committed: number | null;
+  end: number;
+  pending: number;
+  processed: number;
+}
+
+export interface KafkaStoredFailure {
+  id: string;
+  provider?: string;
+  repoUrl?: string;
+  repoFullName?: string;
+  branch?: string;
+  commitSha?: string;
+  eventType?: string;
+  details?: string;
+  receivedAt?: string;
+}
+
+export interface WebhookBusStatus {
+  provider: string;
+  topic?: string;
+  groupId?: string;
+  lag?: number | null;
+  pending?: number | null;
+  processed?: number | null;
+  paused?: boolean;
+  lagError?: string;
+  stale?: boolean;
+  partitionCount?: number;
+  groupState?: string;
+  memberCount?: number;
+  sampledAt?: string;
+  partitions?: KafkaPartitionStatus[];
+  storedFailureCount?: number;
+  storedFailures?: KafkaStoredFailure[];
+  queue?: string;
+  exchange?: string;
+  routingKey?: string;
+  deadLetterQueue?: string;
+}
+
+export const getWebhookBus = async (fresh = false): Promise<WebhookBusStatus> => {
+  const res = await api.get('/webhook-bus', { params: fresh ? { fresh: true } : {} });
+  return res.data;
+};
+
+export const redriveWebhookBus = async (limit = 10): Promise<{ redriven: number }> => {
+  const res = await api.post('/webhook-bus/redrive', null, { params: { limit } });
+  return res.data;
+};
+
 export const getMessagingModule = async (): Promise<MessagingModuleInfo> => {
   const res = await api.get('/messaging');
+  return res.data;
+};
+
+export const getPersistenceModule = async (): Promise<PersistenceModuleInfo> => {
+  const res = await api.get('/persistence');
   return res.data;
 };
 
@@ -313,7 +579,7 @@ export const updateSimulationConfig = async (config: {
 };
 
 export const emitSyntheticWebhook = async (data: {
-  mappingId: number;
+  mappingId: string;
   branch: string;
   commitSha: string;
   commitMessage: string;
@@ -339,7 +605,9 @@ export const testRepoConnection = async (data: {
   token?: string;
   requiredAccess: 'READ' | 'WRITE' | 'BOTH';
   knownPrivate?: boolean;
-  credentialId?: number;
+  credentialId?: string;
+  /** App installation that owns the repo. Omit to let the backend resolve it from the URL. */
+  installationId?: string;
 }): Promise<PermissionCheckReport> => {
   const res = await api.post('/github-app/test-connection', data);
   return res.data;
@@ -365,7 +633,7 @@ export const searchRemoteRepositories = async (params: {
   provider?: string;
   page?: number;
   limit?: number;
-  credentialId?: number;
+  credentialId?: string;
   access?: 'PULL' | 'PUSH';
 }): Promise<RepoSearchResult> => {
   const res = await api.get('/github-app/search-repositories', { params });
@@ -382,22 +650,22 @@ export const createScmCredential = async (body: Record<string, unknown>): Promis
   return res.data;
 };
 
-export const updateScmCredential = async (id: number, body: Record<string, unknown>): Promise<import('../types').ScmCredential> => {
+export const updateScmCredential = async (id: string, body: Record<string, unknown>): Promise<import('../types').ScmCredential> => {
   const res = await api.put(`/scm-credentials/${id}`, body);
   return res.data;
 };
 
-export const deleteScmCredential = async (id: number): Promise<void> => {
+export const deleteScmCredential = async (id: string): Promise<void> => {
   await api.delete(`/scm-credentials/${id}`);
 };
 
-export const listScmInstallations = async (id: number): Promise<import('../types').ScmInstallationOption[]> => {
+export const listScmInstallations = async (id: string): Promise<import('../types').ScmInstallationOption[]> => {
   const res = await api.get(`/scm-credentials/${id}/installations`);
   return res.data;
 };
 
 export const previewScmInstallations = async (body: {
-  credentialId?: number;
+  credentialId?: string;
   provider?: string;
   hostUrl?: string;
   appId?: string;
@@ -408,14 +676,14 @@ export const previewScmInstallations = async (body: {
 };
 
 export const searchCredentialRepositories = async (
-  id: number,
-  params: { query?: string; page?: number; limit?: number; access?: string }
+  id: string,
+  params: { query?: string; page?: number; limit?: number; access?: string; installationId?: string }
 ): Promise<RepoSearchResult> => {
   const res = await api.get(`/scm-credentials/${id}/repositories`, { params });
   return res.data;
 };
 
-export const testScmCredential = async (id: number): Promise<PermissionCheckReport> => {
+export const testScmCredential = async (id: string): Promise<PermissionCheckReport> => {
   const res = await api.post(`/scm-credentials/${id}/test`, {});
   return res.data;
 };
@@ -426,8 +694,9 @@ export const createRemoteRepository = async (data: {
   owner?: string;
   accountType?: string;
   isPrivate?: boolean;
+  visibility?: 'public' | 'private' | 'internal';
   description?: string;
-  credentialId?: number;
+  credentialId?: string;
 }): Promise<GitHubRepoOption> => {
   const res = await api.post('/github-app/create-repo', data);
   return res.data;
@@ -444,12 +713,12 @@ export interface SyncDiffOptions {
   branchStatus?: 'ALL' | 'IN_SYNC' | 'PENDING' | 'DIVERGED' | 'DEST_ONLY' | 'ACTIONABLE';
 }
 
-function syncDiffCacheKey(mappingId: number, options?: SyncDiffOptions): string {
+function syncDiffCacheKey(mappingId: string, options?: SyncDiffOptions): string {
   return `${mappingId}:${options?.refresh ? '1' : '0'}:${options?.metadata ? '1' : '0'}:${options?.maxBranches ?? ''}:${options?.branchOffset ?? ''}:${options?.branchSearch ?? ''}:${options?.branchStatus ?? ''}`;
 }
 
 export const getSyncDiffReport = async (
-  mappingId: number,
+  mappingId: string,
   options?: SyncDiffOptions
 ): Promise<SyncDiffReport> => {
   const cacheKey = syncDiffCacheKey(mappingId, options);
@@ -475,17 +744,17 @@ export const getSyncDiffReport = async (
   return request;
 };
 
-export const getMappingConflicts = async (id: number): Promise<SyncConflictRecord[]> => {
+export const getMappingConflicts = async (id: string): Promise<SyncConflictRecord[]> => {
   const res = await api.get(`/mappings/${id}/conflicts`);
   return res.data;
 };
 
-export const resolveMappingConflict = async (mappingId: number, conflictId: number): Promise<SyncConflictRecord> => {
+export const resolveMappingConflict = async (mappingId: string, conflictId: string): Promise<SyncConflictRecord> => {
   const res = await api.post(`/mappings/${mappingId}/conflicts/${conflictId}/resolve`);
   return res.data;
 };
 
-export const openConflictPr = async (mappingId: number, conflictId: number): Promise<SyncConflictRecord> => {
+export const openConflictPr = async (mappingId: string, conflictId: string): Promise<SyncConflictRecord> => {
   const res = await api.post(`/mappings/${mappingId}/conflicts/${conflictId}/open-pr`);
   return res.data;
 };
@@ -495,7 +764,7 @@ export const getUnmappedWebhooks = async (): Promise<UnmappedWebhookEvent[]> => 
   return res.data;
 };
 
-export const deleteUnmappedWebhook = async (id: number): Promise<void> => {
+export const deleteUnmappedWebhook = async (id: string): Promise<void> => {
   await api.delete(`/unmapped-webhooks/${id}`);
 };
 
@@ -521,6 +790,18 @@ export const saveFeatureFlags = async (
   body: Partial<import('../types').FeatureFlags>
 ): Promise<import('../types').FeatureFlags> => {
   const res = await api.put('/feature-flags', body);
+  return res.data;
+};
+
+export const getMetadataSyncSettings = async (): Promise<import('../types').MetadataSyncSettings> => {
+  const res = await api.get('/metadata-sync-settings');
+  return res.data;
+};
+
+export const saveMetadataSyncSettings = async (
+  body: Partial<import('../types').MetadataSyncSettings>
+): Promise<import('../types').MetadataSyncSettings> => {
+  const res = await api.put('/metadata-sync-settings', body);
   return res.data;
 };
 

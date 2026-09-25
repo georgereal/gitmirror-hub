@@ -144,7 +144,7 @@ public class SyncPipelineState {
         return null;
     }
 
-    public boolean isStageSettled(String id) {
+    public synchronized boolean isStageSettled(String id) {
         Stage stage = find(id);
         return stage != null && (DONE.equals(stage.status) || SKIPPED.equals(stage.status));
     }
@@ -189,7 +189,7 @@ public class SyncPipelineState {
         return currentStageId;
     }
 
-    public void markCurrent(String id) {
+    public synchronized void markCurrent(String id) {
         Stage stage = find(id);
         if (stage != null && CURRENT.equals(stage.status) && id.equals(currentStageId)) {
             return;
@@ -204,7 +204,7 @@ public class SyncPipelineState {
         }
     }
 
-    public void markCurrent(String id, String detail) {
+    public synchronized void markCurrent(String id, String detail) {
         markCurrent(id);
         Stage stage = find(id);
         if (stage != null && detail != null) {
@@ -216,7 +216,7 @@ public class SyncPipelineState {
         markDone(id, null);
     }
 
-    public void markDone(String id, String detail) {
+    public synchronized void markDone(String id, String detail) {
         Stage stage = find(id);
         if (stage != null) {
             stage.status = DONE;
@@ -234,7 +234,7 @@ public class SyncPipelineState {
         markSkipped(id, null);
     }
 
-    public void markSkipped(String id, String detail) {
+    public synchronized void markSkipped(String id, String detail) {
         Stage stage = find(id);
         if (stage != null && !DONE.equals(stage.status) && !FAILED.equals(stage.status)) {
             stage.status = SKIPPED;
@@ -248,7 +248,7 @@ public class SyncPipelineState {
         }
     }
 
-    public void markFailed(String id, String reason) {
+    public synchronized void markFailed(String id, String reason) {
         Stage stage = find(id);
         if (stage != null) {
             stage.status = FAILED;
@@ -302,7 +302,25 @@ public class SyncPipelineState {
         }
     }
 
-    public Map<String, Object> toMap() {
+    /**
+     * Marks a stage current without clearing another stage that is already current.
+     * Used while Git LFS runs beside the destination ref push.
+     */
+    public synchronized void markAlongside(String id, String detail) {
+        Stage stage = find(id);
+        if (stage == null || DONE.equals(stage.status) || FAILED.equals(stage.status) || SKIPPED.equals(stage.status)) {
+            return;
+        }
+        stage.status = CURRENT;
+        if (stage.startedAtMs == null) {
+            stage.startedAtMs = System.currentTimeMillis();
+        }
+        if (detail != null) {
+            stage.detail = detail;
+        }
+    }
+
+    public synchronized Map<String, Object> toMap() {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("currentStageId", currentStageId);
         List<Map<String, Object>> stageMaps = new ArrayList<>();
@@ -326,7 +344,7 @@ public class SyncPipelineState {
         return map;
     }
 
-    public String toJson() {
+    public synchronized String toJson() {
         try {
             return MAPPER.writeValueAsString(toMap());
         } catch (Exception e) {
@@ -341,10 +359,12 @@ public class SyncPipelineState {
     }
 
     private void clearCurrent() {
-        for (Stage stage : stages) {
-            if (CURRENT.equals(stage.status)) {
-                stage.status = PENDING;
-            }
+        if (currentStageId == null) {
+            return;
+        }
+        Stage stage = find(currentStageId);
+        if (stage != null && CURRENT.equals(stage.status)) {
+            stage.status = PENDING;
         }
     }
 

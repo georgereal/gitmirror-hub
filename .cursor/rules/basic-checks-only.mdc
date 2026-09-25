@@ -1,0 +1,30 @@
+---
+description: After code changes, run only basic checks. Ask before full builds, browser validation, or any subagent.
+alwaysApply: true
+---
+
+# Basic checks only
+
+After a code change, stop at basic checks. Do not launch heavier validation or other agents unless the user asked for that check in this conversation, or explicitly approved it when asked.
+
+## Allowed without asking
+
+- Editor diagnostics on the files just edited (lints, type errors reported by the IDE).
+
+## Ask first, then wait
+
+- Full or project builds and test runs: `mvn`, Gradle, `npm run build`, `npm test`, `tsc`, Spring Boot, or starting a dev server.
+- Browser tools: navigate, snapshot, click, or any other in-browser validation.
+- Any subagent (explore, general-purpose, Bugbot, security review, CI investigator, best-of-n, or a cloud task).
+
+Ask in one sentence naming the command or agent and why. Do not start it in the same turn as the question.
+
+```text
+# BAD — change landed, then a full boot and a browser pass with no ask
+mvn -f backend/pom.xml spring-boot:run
+browser_navigate http://localhost:3000
+
+# GOOD — edit, read lints on the touched files, then ask
+Read diagnostics for BulkMigrationTab.tsx.
+Ask: "Run the frontend typecheck?"
+```
