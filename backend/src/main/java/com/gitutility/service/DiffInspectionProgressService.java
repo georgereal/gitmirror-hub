@@ -15,14 +15,14 @@ public class DiffInspectionProgressService {
     private static final long BROADCAST_THROTTLE_MS = 400;
 
     private final WebSocketNotificationService webSocketNotificationService;
-    private final Map<Long, Long> lastBroadcastMs = new ConcurrentHashMap<>();
+    private final Map<String, Long> lastBroadcastMs = new ConcurrentHashMap<>();
 
-    public Session open(Long mappingId, DiffInspectOptions inspect) {
+    public Session open(String mappingId, DiffInspectOptions inspect) {
         return new Session(mappingId, DiffInspectionPipeline.forOptions(inspect));
     }
 
     public final class Session {
-        private final Long mappingId;
+        private final String mappingId;
         private final DiffInspectionPipeline pipeline;
         private int inSync;
         private int pending;
@@ -30,7 +30,7 @@ public class DiffInspectionProgressService {
         private int destOnly;
         private boolean closed;
 
-        private Session(Long mappingId, DiffInspectionPipeline pipeline) {
+        private Session(String mappingId, DiffInspectionPipeline pipeline) {
             this.mappingId = mappingId;
             this.pipeline = pipeline;
         }

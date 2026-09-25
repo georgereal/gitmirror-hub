@@ -89,10 +89,10 @@ class PairCatchupLedgerTest {
     @Test
     void recordPrListCompletedPersistsTimestamp() {
         RepoMapping mapping = new RepoMapping();
-        mapping.setId(7L);
-        when(repoMappingRepository.findById(7L)).thenReturn(Optional.of(mapping));
+        mapping.setId("7");
+        when(repoMappingRepository.findById("7")).thenReturn(Optional.of(mapping));
 
-        ledger.recordPrListCompleted(7L);
+        ledger.recordPrListCompleted("7");
 
         assertNotNull(mapping.getLastPrListCompletedAt());
         verify(repoMappingRepository).save(mapping);

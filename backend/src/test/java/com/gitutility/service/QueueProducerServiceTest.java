@@ -55,8 +55,8 @@ class QueueProducerServiceTest {
 
     @Test
     void overwriteFlagIsPublishedOnMessage() {
-        RepoMapping mapping = RepoMapping.builder().id(1L).name("pair").build();
-        SyncJob job = SyncJob.builder().id(9L).mappingId(1L).build();
+        RepoMapping mapping = RepoMapping.builder().id("1").name("pair").build();
+        SyncJob job = SyncJob.builder().id("9").mappingId("1").build();
         producer.enqueueSyncJob(mapping, job, "https://src.git", "https://dst.git",
                 "refs/heads/main", "main", null, "abc", "msg", "author", TriggerType.MANUAL, true);
 
@@ -64,8 +64,8 @@ class QueueProducerServiceTest {
     }
 
     private void enqueue(String ref, String branch, TriggerType triggerType) {
-        RepoMapping mapping = RepoMapping.builder().id(1L).name("pair").build();
-        SyncJob job = SyncJob.builder().id(9L).mappingId(1L).build();
+        RepoMapping mapping = RepoMapping.builder().id("1").name("pair").build();
+        SyncJob job = SyncJob.builder().id("9").mappingId("1").build();
         producer.enqueueSyncJob(mapping, job, "https://src.git", "https://dst.git",
                 ref, branch, null, "abc", "msg", "author", triggerType);
     }

@@ -11,9 +11,9 @@ interface LiveSyncTableProps {
   jobs: SyncJob[];
   progressByJobId?: Record<number, JobProgress>;
   onViewLogs: (job: SyncJob) => void;
-  onRetry: (id: number) => void;
-  onCancel?: (id: number) => void;
-  onPause?: (id: number) => void;
+  onRetry: (id: string) => void;
+  onCancel?: (id: string) => void;
+  onPause?: (id: string) => void;
 }
 
 export const LiveSyncTable: React.FC<LiveSyncTableProps> = ({

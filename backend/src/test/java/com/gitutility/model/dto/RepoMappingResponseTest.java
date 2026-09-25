@@ -12,7 +12,7 @@ class RepoMappingResponseTest {
     @Test
     void fromEntityFallsBackToLastMirrorWhenSnapshotMissing() {
         RepoMapping mapping = RepoMapping.builder()
-                .id(1L)
+                .id("1")
                 .name("testMirror")
                 .repoAUrl("https://github.com/acme/mirror-src")
                 .repoBUrl("https://github.com/acme/mirror-charts")
@@ -38,7 +38,7 @@ class RepoMappingResponseTest {
     @Test
     void fromEntityWithNullLastMirrorCountsDoesNotNpe() {
         RepoMapping mapping = RepoMapping.builder()
-                .id(2L)
+                .id("2")
                 .name("freshPair")
                 .repoAUrl("https://github.com/acme/src")
                 .repoBUrl("https://github.com/acme/dest")
@@ -58,7 +58,7 @@ class RepoMappingResponseTest {
     @Test
     void fromEntityAppliesLastMirrorLfsFloorOverPartialSnapshot() {
         RepoMapping mapping = RepoMapping.builder()
-                .id(5L)
+                .id("5")
                 .name("vscode")
                 .repoAUrl("https://github.com/microsoft/vscode")
                 .repoBUrl("https://github.com/acme/mirror-vscode")

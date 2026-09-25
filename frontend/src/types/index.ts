@@ -6,7 +6,8 @@ export type TriggerType = 'WEBHOOK' | 'MANUAL' | 'INITIAL_BOOTSTRAP' | 'SYNTHETI
 export type LogLevel = 'INFO' | 'WARN' | 'ERROR' | 'DEBUG';
 
 export interface RepoMapping {
-  id: number;
+
+  id: string;
   name: string;
   repoAUrl: string;
   repoBUrl: string;
@@ -22,23 +23,28 @@ export interface RepoMapping {
   hasWebhookSecret?: boolean;
   syncDirection: SyncDirection;
   trunkConflictPolicy?: TrunkConflictPolicy;
+  primarySide?: 'A' | 'B' | null;
+  replicaRulesetId?: number | null;
+  replicaRulesetEnforcement?: string | null;
+  writeAuthorityNote?: string | null;
+  peerStatus?: PeerStatus;
   storageTier?: StorageTier;
   active: boolean;
   lastSyncAt?: string;
   lastSyncStatus?: SyncStatus;
   sourceProvider?: string;
   targetProvider?: string;
-  sourceCredentialId?: number | null;
-  targetCredentialId?: number | null;
+  sourceCredentialId?: string | null;
+  targetCredentialId?: string | null;
   sourceInstallationId?: string | null;
   targetInstallationId?: string | null;
-  sourceVisibility?: 'UNKNOWN' | 'PUBLIC' | 'PRIVATE';
-  targetVisibility?: 'UNKNOWN' | 'PUBLIC' | 'PRIVATE';
+  sourceVisibility?: 'UNKNOWN' | 'PUBLIC' | 'PRIVATE' | 'INTERNAL';
+  targetVisibility?: 'UNKNOWN' | 'PUBLIC' | 'PRIVATE' | 'INTERNAL';
   /** Cached anonymous read for source; true = public HTTPS worked. */
   sourcePublicRead?: boolean | null;
   hasCheckpoint?: boolean;
   syncCheckpointStage?: string;
-  lastMirrorJobId?: number;
+  lastMirrorJobId?: string;
   lastMirrorStatsAt?: string;
   lastMirrorBranchesCount?: number;
   lastMirrorTagsCount?: number;
@@ -61,9 +67,9 @@ export interface RepoMapping {
 }
 
 export interface SyncConflictRecord {
-  id: number;
-  mappingId: number;
-  jobId?: number;
+  id: string;
+  mappingId: string;
+  jobId?: string;
   kind: 'GIT_REF' | 'TAG' | 'METADATA';
   status: 'OPEN' | 'PR_OPENED' | 'RESOLVED';
   policyApplied?: TrunkConflictPolicy;
@@ -81,8 +87,8 @@ export interface SyncConflictRecord {
 }
 
 export interface SyncJob {
-  id: number;
-  mappingId: number;
+  id: string;
+  mappingId: string;
   pairName: string;
   sourceRepo: string;
   targetRepo: string;
@@ -140,8 +146,8 @@ export interface SyncJob {
 }
 
 export interface SyncAuditLog {
-  id: number;
-  jobId: number;
+  id: string;
+  jobId: string;
   level: LogLevel;
   message: string;
   timestamp: string;
@@ -207,8 +213,8 @@ export interface ProviderTraffic {
 
 export interface JobProgress {
   type?: 'JOB_PROGRESS';
-  jobId: number;
-  mappingId?: number;
+  jobId: string;
+  mappingId?: string;
   operation?: string;
   phase?: string;
   current: number;
@@ -226,7 +232,7 @@ export interface JobProgress {
 
 export interface DiffInspectionProgress {
   type?: 'DIFF_PROGRESS' | 'DIFF_COMPLETE';
-  mappingId: number;
+  mappingId: string;
   operation?: string;
   phase?: string;
   current: number;
@@ -243,7 +249,7 @@ export interface DiffInspectionProgress {
 }
 
 export interface CurrentWork {
-  jobId?: number;
+  jobId?: string;
   pairName?: string;
   ref?: string;
   threadName?: string;
@@ -325,6 +331,18 @@ export interface MessagingModuleInfo {
   supportsPauseConsumers: boolean;
   supportsInboundBrokerQueue: boolean;
   workerThreads?: number | null;
+  /** Rabbit full-lane cap (`max-concurrency`). Null for in-process and Kafka. */
+  laneMaxConcurrency?: number | null;
+}
+
+export interface PersistenceModuleInfo {
+  provider: string;
+  displayName: string;
+  description: string;
+  fileBacked: boolean;
+  externalStore: boolean;
+  requiresConnection: boolean;
+  supportsConsole: boolean;
 }
 
 export interface InstallApiUsage {
@@ -469,8 +487,8 @@ export interface DashboardStats {
 }
 
 export interface JobUsageRow {
-  id: number;
-  mappingId?: number;
+  id: string;
+  mappingId?: string;
   pairName?: string;
   status?: string;
   triggerType?: string;
@@ -503,7 +521,7 @@ export interface JobUsageResponse {
 }
 
 export interface ProviderConfig {
-  id?: number;
+  id?: string;
   // GitHub
   authType: 'GITHUB_APP' | 'PERSONAL_ACCESS_TOKEN';
   appId?: string;
@@ -587,12 +605,13 @@ export interface ProviderConfig {
 export type GitHubAppConfig = ProviderConfig;
 
 export interface ScmCredential {
-  id: number;
+  id: string;
   label: string;
   provider: 'GITHUB' | 'GITHUB_ENTERPRISE' | string;
   hostUrl: string;
   authMode: 'GITHUB_APP' | 'PERSONAL_ACCESS_TOKEN';
   appId?: string;
+  enterpriseSlug?: string;
   clientId?: string;
   installationId?: string;
   /** Selected App installation ids (multi-select). */
@@ -633,6 +652,14 @@ export interface PermissionCheckReport {
   httpStatusCode?: number;
   message: string;
   accessMode?: 'PUBLIC' | 'AUTHENTICATED' | string;
+  /** Credential the check authenticated with. Absent on anonymous public read. */
+  credentialId?: string;
+  /** App installation token the check used. */
+  installationId?: string;
+  /** Account login of installationId — the owner the backend actually checked. */
+  installationLogin?: string;
+  /** PUBLIC, PRIVATE, or INTERNAL — the value the provider reported. */
+  visibility?: 'PUBLIC' | 'PRIVATE' | 'INTERNAL' | string;
   permissions?: {
     contentsRead: boolean;
     contentsWrite: boolean;
@@ -655,15 +682,21 @@ export interface GitHubRepoOption {
   cloneUrl: string;
   defaultBranch: string;
   isPrivate: boolean;
+  /** public, private, or internal. */
+  visibility?: 'public' | 'private' | 'internal' | string;
+  /** True when this GitHub App installation includes the repository. */
+  appInstalled?: boolean;
   canPush: boolean;
   canPull: boolean;
   isAdmin: boolean;
   provider?: 'GITHUB' | 'GITLAB' | 'BITBUCKET' | 'ORIGIN' | 'GENERIC' | string;
   namespace?: string;
   description?: string;
-  credentialId?: number;
+  credentialId?: string;
   /** App installation that owns this repo (multi-install cards). */
   installationId?: string;
+  /** Repository owner login. Matches the App installation account for that install. */
+  owner?: string;
   hasWriteAccess?: boolean;
 }
 
@@ -797,7 +830,7 @@ export interface CiCheckRunDetail {
 }
 
 export interface SyncDiffReport {
-  mappingId: number;
+  mappingId: string;
   pairName: string;
   sourceRepo: string;
   targetRepo: string;
@@ -838,7 +871,7 @@ export interface SyncDiffReport {
 }
 
 export interface UnmappedWebhookEvent {
-  id: number;
+  id: string;
   provider: string;
   repoFullName?: string;
   repoUrl?: string;
@@ -878,8 +911,93 @@ export interface FeatureFlags {
   updatedAt?: string;
 }
 
+export interface PeerStatus {
+  mappingId?: string;
+  phase: 'STEADY' | 'FAILOVER' | 'FAILBACK' | string;
+  processing: 'LIVE' | 'PAUSED' | string;
+  pausedReason?: string | null;
+  parkedCount: number;
+  link: 'ok' | 'broken' | string;
+  sides: PeerStatusSide[];
+}
+
+export interface PeerStatusSide {
+  id: 'A' | 'B' | string;
+  provider?: string;
+  host?: string;
+  role: 'primary' | 'replica' | string;
+  reachable: 'UP' | 'DOWN' | 'UNKNOWN' | string;
+  checkedAt?: string;
+  error?: string | null;
+  access?: string;
+  lock?: string;
+  rulesetRollup?: 'green' | 'yellow' | 'red' | string;
+  rulesetTargets?: { scope: string; name?: string; state: string; error?: string }[];
+}
+
+export interface DrLane {
+  laneKey: string;
+  sourceProvider: string;
+  sourceHost?: string;
+  targetProvider: string;
+  targetHost?: string;
+  phase: string;
+  processing: string;
+  link: string;
+  lockScope?: string | null;
+  sourceReachable?: string;
+  targetReachable?: string;
+  sourceRole?: string;
+  targetRole?: string;
+  flow?: string;
+  rulesetRollup?: string;
+  parkedCount: number;
+  pairCount: number;
+  orgs: DrLaneScope[];
+  enterprises: DrLaneScope[];
+  pairs: DrLanePair[];
+  rulesets?: DrLaneRuleset[];
+}
+
+export interface DrLaneRuleset {
+  scope: 'enterprise' | 'org' | 'repo' | string;
+  side: string;
+  name: string;
+  state: 'applied' | 'pending' | 'open' | 'none' | string;
+  detail?: string;
+  pairCount: number;
+}
+
+export interface DrLaneScope {
+  side: string;
+  name: string;
+  credentialId?: string;
+  reachable?: string;
+  rulesetRollup?: string;
+  pairCount: number;
+}
+
+export interface DrLanePair {
+  id: string;
+  name: string;
+  phase?: string;
+  reachableA?: string;
+  reachableB?: string;
+  lock?: string;
+  rulesetRollupA?: string;
+  rulesetRollupB?: string;
+}
+
+export interface MetadataSyncSettings {
+  pullRequestsEnabled: boolean;
+  releasesEnabled: boolean;
+  ciChecksEnabled: boolean;
+  lfsEnabled: boolean;
+  updatedAt?: string;
+}
+
 export interface SystemEngineConfig {
-  id?: number;
+  id?: string;
   localDir: string;
   nasDir: string;
   maxDiskQuotaMb: number;

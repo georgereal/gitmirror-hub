@@ -1,8 +1,9 @@
 package com.gitutility.model.enums;
 
 /**
- * How the mirror treats a non-fast-forward update on a shared trunk
- * ({@code main} / {@code master} / {@code trunk} / {@code release*} / {@code prod*}).
+ * How the mirror treats a non-fast-forward update on a branch that already exists
+ * on the destination. Trunk names are not special; a new branch (no destination tip)
+ * is still created.
  */
 public enum TrunkConflictPolicy {
     /** Keep destination tip; push source onto {@code sync-conflict/<branch>-<ts>} and optionally open a PR. */

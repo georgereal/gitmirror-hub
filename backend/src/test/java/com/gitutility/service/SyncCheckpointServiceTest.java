@@ -84,28 +84,28 @@ class SyncCheckpointServiceTest {
     @Test
     void clearResumeCheckpointPreservesMirrorSnapshot() {
         RepoMapping mapping = new RepoMapping();
-        mapping.setId(6L);
+        mapping.setId("6");
         mapping.setName("test");
         mapping.setSyncCheckpointStage("LFS_DISCOVERY_DONE");
         mapping.setCompletedPushRefs("refs/heads/main=abc\n");
         mapping.setLastMirrorLfsObjects(678);
-        mapping.setLastMirrorJobId(5328L);
+        mapping.setLastMirrorJobId("5328");
 
-        when(repoMappingRepository.findById(6L)).thenReturn(Optional.of(mapping));
+        when(repoMappingRepository.findById("6")).thenReturn(Optional.of(mapping));
 
-        service.clearResumeCheckpoint(6L);
+        service.clearResumeCheckpoint("6");
 
         assertNull(mapping.getSyncCheckpointStage());
         assertNull(mapping.getCompletedPushRefs());
         assertEquals(678, mapping.getLastMirrorLfsObjects());
-        assertEquals(5328L, mapping.getLastMirrorJobId());
+        assertEquals("5328", mapping.getLastMirrorJobId());
         verify(repoMappingRepository).save(mapping);
     }
 
     @Test
     void resetPairProgressClearsStageLfsAndPushLedger() {
         RepoMapping mapping = new RepoMapping();
-        mapping.setId(5L);
+        mapping.setId("5");
         mapping.setName("test");
         mapping.setSyncCheckpointStage("LFS_DISCOVERY_DONE");
         mapping.setCompletedPushRefs("refs/heads/main=abc\n");
@@ -119,9 +119,9 @@ class SyncCheckpointServiceTest {
         mapping.setForkPrMissJson("1\t2026-09-07T12:00:00Z\n");
         mapping.setLastMirrorLfsObjects(42);
 
-        when(repoMappingRepository.findById(5L)).thenReturn(Optional.of(mapping));
+        when(repoMappingRepository.findById("5")).thenReturn(Optional.of(mapping));
 
-        service.resetPairProgress(5L);
+        service.resetPairProgress("5");
 
         assertNull(mapping.getSyncCheckpointStage());
         assertNull(mapping.getCompletedPushRefs());
@@ -140,11 +140,11 @@ class SyncCheckpointServiceTest {
     @Test
     void appendCompletedLfsOidsMergesWithoutDuplicates() {
         RepoMapping mapping = new RepoMapping();
-        mapping.setId(9L);
+        mapping.setId("9");
         mapping.setCompletedLfsOids("a".repeat(64) + "\n");
-        when(repoMappingRepository.findById(9L)).thenReturn(Optional.of(mapping));
+        when(repoMappingRepository.findById("9")).thenReturn(Optional.of(mapping));
 
-        service.appendCompletedLfsOids(9L, java.util.List.of("a".repeat(64), "b".repeat(64)));
+        service.appendCompletedLfsOids("9", java.util.List.of("a".repeat(64), "b".repeat(64)));
 
         java.util.Set<String> oids = SyncCheckpointService.parseOidLines(mapping.getCompletedLfsOids());
         assertEquals(2, oids.size());

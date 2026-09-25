@@ -1,6 +1,7 @@
 package com.gitutility.service;
 
 import com.gitutility.messaging.SyncEventBus;
+import com.gitutility.messaging.webhook.WebhookBusControls;
 import com.gitutility.messaging.none.NoneSyncEventBus;
 import com.gitutility.model.dto.SimulationConfigRequest;
 import com.gitutility.model.dto.SyntheticWebhookRequest;
@@ -40,6 +41,12 @@ public class SimulationService {
 
     @Lazy
     private final QueueProducerService queueProducerService;
+
+    /**
+     * Present only when {@code GIT_WEBHOOK_BUS_PROVIDER} is kafka or rabbitmq.
+     * Resolved on use so pause/resume does not pull the listener into this bean's creation.
+     */
+    private final ObjectProvider<WebhookBusControls> webhookBusControls;
 
     private final AtomicBoolean consumerPaused = new AtomicBoolean(false);
     /** When true, this pod paused itself on boot; cluster poller must not auto-resume. */
@@ -191,6 +198,10 @@ public class SimulationService {
                 container.stop();
             }
         });
+        WebhookBusControls bus = webhookBusControls.getIfAvailable();
+        if (bus != null) {
+            bus.pause();
+        }
         log.info("Paused Git Sync execution consumers");
         broadcastSimulationState();
         return true;
@@ -205,6 +216,10 @@ public class SimulationService {
                 container.start();
             }
         });
+        WebhookBusControls bus = webhookBusControls.getIfAvailable();
+        if (bus != null) {
+            bus.resume();
+        }
         syncEventBus.onConsumersResumed();
         log.info("Resumed Git Sync execution consumers");
         broadcastSimulationState();

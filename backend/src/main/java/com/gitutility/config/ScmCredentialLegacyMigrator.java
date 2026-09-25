@@ -1,5 +1,6 @@
 package com.gitutility.config;
 
+import com.gitutility.persistence.PersistenceConditions.OnH2;
 import com.gitutility.service.ScmCredentialService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -9,6 +10,7 @@ import org.springframework.stereotype.Component;
 import jakarta.annotation.PostConstruct;
 
 @Component
+@OnH2
 @DependsOn("databaseSchemaMigrator")
 @RequiredArgsConstructor
 @Slf4j

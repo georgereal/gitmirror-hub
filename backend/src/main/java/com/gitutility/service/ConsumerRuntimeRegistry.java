@@ -26,13 +26,13 @@ public class ConsumerRuntimeRegistry {
         private final Thread thread;
         private final long threadId;
         private final String threadName;
-        private final Long jobId;
+        private final String jobId;
         private final String pairName;
         private final String ref;
         private final Instant startedAt;
         private volatile SlotState state;
 
-        private Slot(String lane, String listenerId, Thread thread, Long jobId, String pairName, String ref, SlotState state) {
+        private Slot(String lane, String listenerId, Thread thread, String jobId, String pairName, String ref, SlotState state) {
             this.lane = lane;
             this.listenerId = listenerId;
             this.thread = thread;
@@ -65,7 +65,7 @@ public class ConsumerRuntimeRegistry {
             return thread != null && thread.isAlive();
         }
 
-        public Long getJobId() {
+        public String getJobId() {
             return jobId;
         }
 
@@ -92,11 +92,11 @@ public class ConsumerRuntimeRegistry {
 
     private final ConcurrentHashMap<Long, Slot> slotsByThread = new ConcurrentHashMap<>();
 
-    public Slot bind(String lane, String listenerId, Long jobId, String pairName, String ref) {
+    public Slot bind(String lane, String listenerId, String jobId, String pairName, String ref) {
         return bind(lane, listenerId, jobId, pairName, ref, SlotState.PROCESSING);
     }
 
-    public Slot bind(String lane, String listenerId, Long jobId, String pairName, String ref, SlotState state) {
+    public Slot bind(String lane, String listenerId, String jobId, String pairName, String ref, SlotState state) {
         Thread thread = Thread.currentThread();
         Slot slot = new Slot(lane, listenerId, thread, jobId, pairName, ref, state);
         slotsByThread.put(thread.threadId(), slot);

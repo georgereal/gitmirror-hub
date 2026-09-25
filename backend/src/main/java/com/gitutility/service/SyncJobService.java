@@ -42,19 +42,19 @@ public class SyncJobService {
     private final SyncCheckpointService syncCheckpointService;
     private final JobExecutionStateService jobExecutionStateService;
 
-    private final ConcurrentHashMap<Long, Long> lastDurationPersistMs = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> lastDurationPersistMs = new ConcurrentHashMap<>();
 
     public List<SyncJob> getRecentJobs() {
         return syncJobRepository.findTop20ByOrderByCreatedAtDesc();
     }
 
-    public Page<SyncJob> getAllJobs(Pageable pageable, SyncStatus status, Long mappingId,
+    public Page<SyncJob> getAllJobs(Pageable pageable, SyncStatus status, String mappingId,
                                     TriggerType triggerType, String lane) {
         String normalizedLane = normalizeLane(lane);
         return syncJobRepository.search(status, mappingId, triggerType, normalizedLane, pageable);
     }
 
-    public Page<SyncJob> getAllJobs(Pageable pageable, SyncStatus status, Long mappingId) {
+    public Page<SyncJob> getAllJobs(Pageable pageable, SyncStatus status, String mappingId) {
         return getAllJobs(pageable, status, mappingId, null, null);
     }
 
@@ -69,11 +69,11 @@ public class SyncJobService {
         throw new IllegalArgumentException("lane must be FULL or INCREMENTAL");
     }
 
-    public Optional<SyncJob> getJobById(Long id) {
+    public Optional<SyncJob> getJobById(String id) {
         return syncJobRepository.findById(id);
     }
 
-    public List<SyncAuditLog> getAuditLogsForJob(Long jobId) {
+    public List<SyncAuditLog> getAuditLogsForJob(String jobId) {
         return auditLogRepository.findByJobIdOrderByTimestampAsc(jobId);
     }
 
@@ -107,7 +107,7 @@ public class SyncJobService {
         return stats;
     }
 
-    public SyncJob resumeJob(Long jobId) {
+    public SyncJob resumeJob(String jobId) {
         SyncJob job = syncJobRepository.findById(jobId)
                 .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
         if (!isDispatchable(job.getStatus())) {
@@ -128,14 +128,14 @@ public class SyncJobService {
         return job;
     }
 
-    public Map<String, Object> dispatchJobs(List<Long> jobIds) {
+    public Map<String, Object> dispatchJobs(List<String> jobIds) {
         if (jobIds == null || jobIds.isEmpty()) {
             return Map.of("dispatched", 0, "skipped", 0, "errors", List.of());
         }
         int dispatched = 0;
         int skipped = 0;
         List<String> errors = new ArrayList<>();
-        for (Long jobId : jobIds) {
+        for (String jobId : jobIds) {
             try {
                 SyncJob job = syncJobRepository.findById(jobId)
                         .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
@@ -185,7 +185,7 @@ public class SyncJobService {
         );
     }
 
-    public SyncJob retryJob(Long jobId) {
+    public SyncJob retryJob(String jobId) {
         SyncJob oldJob = syncJobRepository.findById(jobId)
                 .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
 
@@ -227,7 +227,7 @@ public class SyncJobService {
         return newJob;
     }
 
-    public SyncJob cancelJob(Long jobId) {
+    public SyncJob cancelJob(String jobId) {
         SyncJob job = syncJobRepository.findById(jobId)
                 .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
         if (!isCancellable(job.getStatus())) {
@@ -237,7 +237,7 @@ public class SyncJobService {
         return markCancelled(job, "Cancelled by operator");
     }
 
-    public SyncJob pauseJob(Long jobId) {
+    public SyncJob pauseJob(String jobId) {
         SyncJob job = syncJobRepository.findById(jobId)
                 .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
         if (!isPausable(job.getStatus())) {
@@ -257,7 +257,7 @@ public class SyncJobService {
         return job;
     }
 
-    public SyncJob skipJobStage(Long jobId, String stageId) {
+    public SyncJob skipJobStage(String jobId, String stageId) {
         SyncJob job = syncJobRepository.findById(jobId)
                 .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
         String skippedStage = (stageId != null && !stageId.isBlank())
@@ -296,7 +296,7 @@ public class SyncJobService {
      * Marks queued jobs cancelled. RabbitMQ messages stay until the consumer ACKs them;
      * the worker skips cancelled IDs in milliseconds. Pass {@code mappingId} to cancel one pair only.
      */
-    public int cancelQueuedJobs(Long mappingId) {
+    public int cancelQueuedJobs(String mappingId) {
         List<SyncJob> jobs = mappingId != null
                 ? syncJobRepository.findByStatusAndMappingId(SyncStatus.QUEUED, mappingId)
                 : syncJobRepository.findByStatus(SyncStatus.QUEUED);
@@ -340,11 +340,11 @@ public class SyncJobService {
         return job;
     }
 
-    private void appendCancelAudit(Long jobId, String message) {
+    private void appendCancelAudit(String jobId, String message) {
         appendAudit(jobId, com.gitutility.model.enums.LogLevel.WARN, message);
     }
 
-    private void appendAudit(Long jobId, LogLevel level, String message) {
+    private void appendAudit(String jobId, LogLevel level, String message) {
         if (jobId == null || auditLogRepository == null) {
             return;
         }
@@ -356,7 +356,7 @@ public class SyncJobService {
                 .build());
     }
 
-    private void appendPauseAudit(Long jobId, String message) {
+    private void appendPauseAudit(String jobId, String message) {
         appendAudit(jobId, LogLevel.INFO, message);
     }
 
@@ -372,7 +372,7 @@ public class SyncJobService {
      * Persists running wall-clock duration for IN_PROGRESS jobs (throttled ~15s) so UI refresh
      * and historical views stay accurate during long mirrors.
      */
-    public void touchRunningDuration(Long jobId) {
+    public void touchRunningDuration(String jobId) {
         if (jobId == null) {
             return;
         }
@@ -393,7 +393,7 @@ public class SyncJobService {
         });
     }
 
-    public void clearDurationPersist(Long jobId) {
+    public void clearDurationPersist(String jobId) {
         if (jobId != null) {
             lastDurationPersistMs.remove(jobId);
         }

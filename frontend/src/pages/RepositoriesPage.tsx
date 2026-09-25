@@ -35,7 +35,7 @@ export const RepositoriesPage: React.FC = () => {
     setIsPairModalOpen(true);
   };
 
-  const handleDeletePair = async (id: number) => {
+  const handleDeletePair = async (id: string) => {
     const mapping = mappings.find((m) => m.id === id);
     const label = mapping?.name || `pair #${id}`;
     if (!confirm(`Remove "${label}" from mirror?\n\nThis stops sync for this pair. Remote Git repositories are not deleted.`)) {
@@ -49,7 +49,7 @@ export const RepositoriesPage: React.FC = () => {
     }
   };
 
-  const handleTriggerSync = async (id: number, branch?: string) => {
+  const handleTriggerSync = async (id: string, branch?: string) => {
     try {
       await triggerManualSync(id, branch || '*');
     } catch (e) {

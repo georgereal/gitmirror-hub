@@ -16,12 +16,13 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 public class ScmCredentialResponse {
-    private Long id;
+    private String id;
     private String label;
     private String provider;
     private String hostUrl;
     private String authMode;
     private String appId;
+    private String enterpriseSlug;
     private String clientId;
     private String installationId;
     private List<String> installationIds;
@@ -52,6 +53,7 @@ public class ScmCredentialResponse {
                 .hostUrl(entity.getHostUrl())
                 .authMode(entity.getAuthMode())
                 .appId(entity.getAppId())
+                .enterpriseSlug(entity.getEnterpriseSlug())
                 .clientId(entity.getClientId())
                 .installationId(entity.getInstallationId())
                 .installationIds(InstallationIds.decode(entity.getInstallationIdsJson(), entity.getInstallationId()))

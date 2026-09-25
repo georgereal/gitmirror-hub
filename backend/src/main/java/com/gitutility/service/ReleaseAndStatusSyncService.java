@@ -13,11 +13,13 @@ import com.gitutility.model.enums.SyncStatus;
 import com.gitutility.model.enums.TriggerType;
 import com.gitutility.provider.ScmProviderAdapter;
 import com.gitutility.provider.ScmProviderFacade;
+import tools.jackson.databind.JsonNode;
 import com.gitutility.repository.RepoMappingRepository;
 import com.gitutility.repository.SyncAuditLogRepository;
 import com.gitutility.repository.SyncJobRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.api.Git;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -89,26 +91,26 @@ public class ReleaseAndStatusSyncService {
     }
 
     public record ReleaseSyncRequest(
-            Long mappingId,
+            String mappingId,
             String sourceRepoUrl,
             String targetRepoUrl,
-            Long sourceCredentialId,
+            String sourceCredentialId,
             String sourceInstallationId,
-            Long targetCredentialId,
+            String targetCredentialId,
             String targetInstallationId,
-            Long jobId,
+            String jobId,
             Consumer<String> progress) {
     }
 
     public record CiCheckSyncRequest(
-            Long mappingId,
+            String mappingId,
             String sourceRepoUrl,
             String targetRepoUrl,
-            Long sourceCredentialId,
+            String sourceCredentialId,
             String sourceInstallationId,
-            Long targetCredentialId,
+            String targetCredentialId,
             String targetInstallationId,
-            Long jobId,
+            String jobId,
             List<String> tipShas,
             Consumer<String> progress) {
     }
@@ -124,6 +126,7 @@ public class ReleaseAndStatusSyncService {
     private final StorageTieringService storageTieringService;
     private final ExecutorService releaseSyncExecutor;
     private final Executor syncTaskExecutor;
+    private PushBatchConcurrencyService pushBatchConcurrencyService;
 
     @Value("${git-utility.git.release-page-size:50}")
     private int releasePageSize;
@@ -156,6 +159,29 @@ public class ReleaseAndStatusSyncService {
         this.syncTaskExecutor = syncTaskExecutor;
     }
 
+    @Autowired(required = false)
+    public void setPushBatchConcurrencyService(PushBatchConcurrencyService pushBatchConcurrencyService) {
+        this.pushBatchConcurrencyService = pushBatchConcurrencyService;
+    }
+
+    private void awaitRateLimitCooldown() {
+        if (pushBatchConcurrencyService == null) {
+            return;
+        }
+        try {
+            pushBatchConcurrencyService.awaitClear();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new MetadataSyncException("Interrupted while waiting for rate-limit cooldown", e);
+        }
+    }
+
+    private void noteRateLimit(Throwable error) {
+        if (pushBatchConcurrencyService != null) {
+            pushBatchConcurrencyService.noteIfRateLimited(error);
+        }
+    }
+
     private void report(Consumer<String> progress, String message) {
         if (progress != null) {
             progress.accept(message);
@@ -167,30 +193,271 @@ public class ReleaseAndStatusSyncService {
      * binding the pair's target credential + installation before delegating to the adapter.
      */
     public boolean replicateCommitStatus(RepoMapping mapping, String sha, String state, String targetUrl, String description, String context) {
-        if (mapping == null || sha == null || sha.isBlank()) return false;
+        return replicateInboundCommitStatus(mapping, null, sha, state, targetUrl, description, context);
+    }
 
-        String targetFullName = scmProviderFacade.parseRepoFullName(mapping.getRepoBUrl());
+    /**
+     * Writes a commit status onto the side opposite the inbound repository.
+     * A blank inbound URL keeps the historical destination (repo B).
+     */
+    public boolean replicateInboundCommitStatus(RepoMapping mapping,
+                                                String inboundRepoUrl,
+                                                String sha,
+                                                String state,
+                                                String targetUrl,
+                                                String description,
+                                                String context) {
+        if (mapping == null || sha == null || sha.isBlank()) return false;
+        MirrorSides sides = mirrorSides(mapping, inboundRepoUrl);
+        String targetFullName = scmProviderFacade.parseRepoFullName(sides.targetUrl());
         if (targetFullName == null) return false;
 
-        ScmProviderAdapter targetAdapter = scmProviderFacade.getAdapterForUrl(mapping.getRepoBUrl());
+        ScmProviderAdapter targetAdapter = scmProviderFacade.getAdapterForUrl(sides.targetUrl());
         try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(
-                mapping.getTargetCredentialId(), mapping.getTargetInstallationId())) {
+                sides.targetCredentialId(), sides.targetInstallationId())) {
             return targetAdapter.replicateCommitStatus(targetFullName, sha, state, targetUrl, description, context);
         }
     }
 
+    /**
+     * Mirrors one GitHub release webhook onto the opposite side, including assets.
+     * {@code deleted} and {@code unpublished} are recorded as skipped.
+     */
+    public void mirrorWebhookRelease(RepoMapping mapping, String inboundRepoUrl, String action, JsonNode releaseNode) {
+        if (mapping == null || releaseNode == null || releaseNode.isMissingNode() || releaseNode.isNull()) {
+            return;
+        }
+        String verb = action == null ? "" : action.trim().toLowerCase();
+        String tag = releaseNode.path("tag_name").asText("");
+        if ("deleted".equals(verb) || "unpublished".equals(verb)) {
+            log.info("Release {} on tag {} recorded as skipped", verb, tag);
+            return;
+        }
+        awaitRateLimitCooldown();
+        SyncDiffReport.ReleaseDetail detail = releaseFromWebhook(releaseNode);
+        if (detail.getTagName() == null || detail.getTagName().isBlank()) {
+            log.info("Release webhook has no tag; skipping");
+            return;
+        }
+        MirrorSides sides = mirrorSides(mapping, inboundRepoUrl);
+        String sourceFullName = scmProviderFacade.parseRepoFullName(sides.sourceUrl());
+        String targetFullName = scmProviderFacade.parseRepoFullName(sides.targetUrl());
+        if (sourceFullName == null || targetFullName == null) {
+            return;
+        }
+        ScmProviderAdapter sourceAdapter = scmProviderFacade.getAdapterForUrl(sides.sourceUrl());
+        ScmProviderAdapter targetAdapter = scmProviderFacade.getAdapterForUrl(sides.targetUrl());
+        if (!targetAdapter.supportsReleaseSync()) {
+            log.info("Release webhook skipped; {} has no Releases API", targetAdapter.getProviderType());
+            return;
+        }
+        Map<String, SyncDiffReport.ReleaseDetail> targetByTag = new LinkedHashMap<>();
+        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(
+                sides.targetCredentialId(), sides.targetInstallationId())) {
+            ReleaseLookup lookup = targetAdapter.findReleaseByTag(targetFullName, detail.getTagName());
+            if (lookup != null && lookup.exists()) {
+                targetByTag.put(detail.getTagName(), releaseFromLookup(lookup));
+            }
+        }
+        ReleaseSyncRequest request = new ReleaseSyncRequest(
+                mapping.getId(),
+                sides.sourceUrl(),
+                sides.targetUrl(),
+                sides.sourceCredentialId(),
+                sides.sourceInstallationId(),
+                sides.targetCredentialId(),
+                sides.targetInstallationId(),
+                null,
+                null);
+        List<String> errors = new ArrayList<>();
+        executeReleasePlan(request, sourceAdapter, sourceFullName, targetAdapter, targetFullName,
+                List.of(detail), targetByTag, null, errors);
+        for (String error : errors) {
+            log.warn("Release webhook mirror: {}", error);
+        }
+    }
+
+    /**
+     * Copies a completed check run onto the opposite side. Skips when that name already
+     * has the same conclusion. Falls back to a commit status when the destination has no Checks API.
+     */
+    public void replicateWebhookCheckRun(RepoMapping mapping, String inboundRepoUrl, JsonNode checkRun) {
+        if (mapping == null || checkRun == null || checkRun.isMissingNode() || checkRun.isNull()) {
+            return;
+        }
+        String name = checkRun.path("name").asText("");
+        String sha = checkRun.path("head_sha").asText("");
+        if (name.isBlank() || sha.isBlank()) {
+            return;
+        }
+        awaitRateLimitCooldown();
+        String status = checkRun.path("status").asText("");
+        String conclusion = textOrNull(checkRun.path("conclusion"));
+        String sourceKey = conclusion != null && !conclusion.isBlank() ? conclusion : status;
+        MirrorSides sides = mirrorSides(mapping, inboundRepoUrl);
+        String sourceFullName = scmProviderFacade.parseRepoFullName(sides.sourceUrl());
+        String targetFullName = scmProviderFacade.parseRepoFullName(sides.targetUrl());
+        if (targetFullName == null) {
+            return;
+        }
+        ScmProviderAdapter targetAdapter = scmProviderFacade.getAdapterForUrl(sides.targetUrl());
+        if (!targetAdapter.supportsCheckRunSync()) {
+            replicateInboundCommitStatus(mapping, inboundRepoUrl, sha,
+                    conclusionToState(conclusion),
+                    textOrNull(checkRun.path("details_url")),
+                    textOrNull(checkRun.path("output").path("summary")),
+                    name);
+            return;
+        }
+        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(
+                sides.targetCredentialId(), sides.targetInstallationId())) {
+            for (SyncDiffReport.CiCheckRunDetail existing : listAllCheckRuns(targetAdapter, targetFullName, sha)) {
+                if (existing == null || existing.getName() == null || !existing.getName().equals(name)) {
+                    continue;
+                }
+                String current = existing.getConclusion() != null && !existing.getConclusion().isBlank()
+                        ? existing.getConclusion()
+                        : existing.getStatus();
+                if (sourceKey != null && sourceKey.equalsIgnoreCase(current)) {
+                    log.info("Check run '{}' on {} already has conclusion {}", name, sha, current);
+                    return;
+                }
+            }
+            String summary = textOrNull(checkRun.path("output").path("summary"));
+            if (summary == null || summary.isBlank()) {
+                summary = "Mirrored from " + (sourceFullName != null ? sourceFullName : sides.sourceUrl());
+            }
+            targetAdapter.createCheckRun(targetFullName, sha, name, status, conclusion,
+                    textOrNull(checkRun.path("started_at")),
+                    textOrNull(checkRun.path("completed_at")),
+                    textOrNull(checkRun.path("details_url")),
+                    summary);
+        }
+    }
+
+    private SyncDiffReport.ReleaseDetail releaseFromWebhook(JsonNode releaseNode) {
+        List<SyncDiffReport.ReleaseAssetDetail> assets = new ArrayList<>();
+        JsonNode assetNodes = releaseNode.path("assets");
+        if (assetNodes.isArray()) {
+            for (JsonNode asset : assetNodes) {
+                String name = asset.path("name").asText("");
+                if (name.isBlank()) {
+                    continue;
+                }
+                assets.add(SyncDiffReport.ReleaseAssetDetail.builder()
+                        .id(asset.path("id").asLong(0))
+                        .name(name)
+                        .sizeBytes(asset.path("size").asLong(0))
+                        .downloadUrl(textOrNull(asset.path("browser_download_url")))
+                        .contentType(textOrNull(asset.path("content_type")))
+                        .downloadCount(asset.path("download_count").asInt(0))
+                        .build());
+            }
+        }
+        return SyncDiffReport.ReleaseDetail.builder()
+                .id(releaseNode.path("id").asLong(0))
+                .name(textOrNull(releaseNode.path("name")))
+                .tagName(textOrNull(releaseNode.path("tag_name")))
+                .body(textOrNull(releaseNode.path("body")))
+                .publishedAt(textOrNull(releaseNode.path("published_at")))
+                .author(textOrNull(releaseNode.path("author").path("login")))
+                .isDraft(releaseNode.path("draft").asBoolean(false))
+                .isPrerelease(releaseNode.path("prerelease").asBoolean(false))
+                .htmlUrl(textOrNull(releaseNode.path("html_url")))
+                .assets(assets)
+                .build();
+    }
+
+    private SyncDiffReport.ReleaseDetail releaseFromLookup(ReleaseLookup lookup) {
+        List<SyncDiffReport.ReleaseAssetDetail> assets = new ArrayList<>();
+        if (lookup.assetNames() != null) {
+            for (String name : lookup.assetNames()) {
+                if (name != null && !name.isBlank()) {
+                    assets.add(SyncDiffReport.ReleaseAssetDetail.builder().name(name).build());
+                }
+            }
+        }
+        Long id = null;
+        if (lookup.externalId() != null) {
+            try {
+                id = Long.parseLong(lookup.externalId());
+            } catch (NumberFormatException ignored) {
+                id = null;
+            }
+        }
+        return SyncDiffReport.ReleaseDetail.builder()
+                .id(id)
+                .tagName(lookup.tagName())
+                .name(lookup.name())
+                .body(lookup.body())
+                .isDraft(lookup.draft())
+                .isPrerelease(lookup.prerelease())
+                .assets(assets)
+                .build();
+    }
+
+    private MirrorSides mirrorSides(RepoMapping mapping, String inboundRepoUrl) {
+        boolean inboundIsB = inboundRepoUrl != null && !inboundRepoUrl.isBlank()
+                && RepoMappingService.sameRepo(inboundRepoUrl, mapping.getRepoBUrl());
+        if (inboundIsB) {
+            return new MirrorSides(
+                    mapping.getRepoBUrl(),
+                    mapping.getRepoAUrl(),
+                    mapping.getTargetCredentialId(),
+                    mapping.getTargetInstallationId(),
+                    mapping.getSourceCredentialId(),
+                    mapping.getSourceInstallationId());
+        }
+        return new MirrorSides(
+                mapping.getRepoAUrl(),
+                mapping.getRepoBUrl(),
+                mapping.getSourceCredentialId(),
+                mapping.getSourceInstallationId(),
+                mapping.getTargetCredentialId(),
+                mapping.getTargetInstallationId());
+    }
+
+    private static String textOrNull(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+        String text = node.asText(null);
+        return text == null || text.isBlank() ? null : text;
+    }
+
+    private static String conclusionToState(String conclusion) {
+        if (conclusion == null) {
+            return "pending";
+        }
+        return switch (conclusion.toLowerCase()) {
+            case "success" -> "success";
+            case "failure", "timed_out", "cancelled", "startup_failure", "action_required" -> "failure";
+            case "neutral", "skipped" -> "success";
+            default -> "pending";
+        };
+    }
+
+    private record MirrorSides(
+            String sourceUrl,
+            String targetUrl,
+            String sourceCredentialId,
+            String sourceInstallationId,
+            String targetCredentialId,
+            String targetInstallationId) {
+    }
+
     /** Legacy count-only entry point (kept for callers and tests). */
-    public int syncReleases(Long mappingId, String sourceRepoUrl, String targetRepoUrl) {
+    public int syncReleases(String mappingId, String sourceRepoUrl, String targetRepoUrl) {
         return syncReleases(mappingId, sourceRepoUrl, targetRepoUrl, null);
     }
 
     /** Legacy entry point returning the mirrored (created + updated) release count. */
-    public int syncReleases(Long mappingId, String sourceRepoUrl, String targetRepoUrl, Consumer<String> progress) {
+    public int syncReleases(String mappingId, String sourceRepoUrl, String targetRepoUrl, Consumer<String> progress) {
         ReleaseSyncRequest request = requestFromMapping(mappingId, sourceRepoUrl, targetRepoUrl, progress);
         return syncReleases(request).mirroredCount();
     }
 
-    private ReleaseSyncRequest requestFromMapping(Long mappingId, String sourceRepoUrl, String targetRepoUrl, Consumer<String> progress) {
+    private ReleaseSyncRequest requestFromMapping(String mappingId, String sourceRepoUrl, String targetRepoUrl, Consumer<String> progress) {
         RepoMapping mapping = mappingId != null ? repoMappingRepository.findById(mappingId).orElse(null) : null;
         return new ReleaseSyncRequest(
                 mappingId,
@@ -217,6 +484,7 @@ public class ReleaseAndStatusSyncService {
             throw new MetadataSyncException("Cannot resolve owner/repo names for release sync (source="
                     + request.sourceRepoUrl() + ", target=" + request.targetRepoUrl() + ")");
         }
+        awaitRateLimitCooldown();
 
         ScmProviderAdapter sourceAdapter = scmProviderFacade.getAdapterForUrl(request.sourceRepoUrl());
         ScmProviderAdapter targetAdapter = scmProviderFacade.getAdapterForUrl(request.targetRepoUrl());
@@ -333,6 +601,7 @@ public class ReleaseAndStatusSyncService {
             final boolean metaUpdate = needsMetadataUpdate;
             final List<SyncDiffReport.ReleaseAssetDetail> assets = missingAssets;
             tasks.add(() -> {
+                awaitRateLimitCooldown();
                 String releaseExtId = extId;
                 if (create) {
                     report(progress, "Releases · Creating '" + label + "' on " + targetFullName + "…");
@@ -392,6 +661,7 @@ public class ReleaseAndStatusSyncService {
                 } catch (java.util.concurrent.ExecutionException ee) {
                     failed++;
                     Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
+                    noteRateLimit(cause);
                     String message = cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
                     if (isAuthFailure(message)) {
                         throw new MetadataSyncException("Release sync aborted — destination credential rejected: " + message, cause);
@@ -507,7 +777,7 @@ public class ReleaseAndStatusSyncService {
     /** Cursor loop over {@code listReleasesPage}; each page binds the side's credentials. */
     private List<SyncDiffReport.ReleaseDetail> listAllReleases(ScmProviderAdapter adapter,
                                                                String repoFullName,
-                                                               Long credentialId,
+                                                               String credentialId,
                                                                String installationId,
                                                                Consumer<String> progress) {
         List<SyncDiffReport.ReleaseDetail> all = new ArrayList<>();
@@ -545,7 +815,7 @@ public class ReleaseAndStatusSyncService {
     /** Destination-side release listing keyed by tag for idempotent diffs. */
     private Map<String, SyncDiffReport.ReleaseDetail> listTargetReleasesByTag(ScmProviderAdapter adapter,
                                                                               String repoFullName,
-                                                                              Long credentialId,
+                                                                              String credentialId,
                                                                               String installationId) {
         Map<String, SyncDiffReport.ReleaseDetail> byTag = new LinkedHashMap<>();
         for (SyncDiffReport.ReleaseDetail release : listAllReleases(adapter, repoFullName, credentialId, installationId, null)) {
@@ -560,7 +830,7 @@ public class ReleaseAndStatusSyncService {
      * Resolves the side token for validation through the credential + installation binding so
      * multi-install GitHub Apps mint the install that owns the repository.
      */
-    private String requireSideToken(String side, Long credentialId, String installationId) {
+    private String requireSideToken(String side, String credentialId, String installationId) {
         if (credentialId == null) {
             return null; // anonymous / public-read side is allowed only for source
         }
@@ -762,7 +1032,7 @@ public class ReleaseAndStatusSyncService {
      * Most recent head tips in the local bare mirror (newest commit time first, capped at
      * {@code ciCheckTipLimit}). Requires a prior Git sync; empty when no mirror exists yet.
      */
-    private List<String> resolveTipShas(Long mappingId) {
+    private List<String> resolveTipShas(String mappingId) {
         if (mappingId == null) {
             return List.of();
         }
@@ -821,7 +1091,7 @@ public class ReleaseAndStatusSyncService {
     // ------------------------------------------------------------------
 
     /** Creates a visible SyncJob and runs a full release mirror on it. Returns the jobId. */
-    public Long launchReleaseSyncJob(Long mappingId) {
+    public String launchReleaseSyncJob(String mappingId) {
         RepoMapping mapping = requireMapping(mappingId);
         SyncJob job = createMetadataJob(mapping, "Standalone release mirror");
         syncTaskExecutor.execute(() -> runReleaseJob(job, mapping));
@@ -829,14 +1099,14 @@ public class ReleaseAndStatusSyncService {
     }
 
     /** Creates a visible SyncJob and runs a CI check backfill on it. Returns the jobId. */
-    public Long launchCiCheckSyncJob(Long mappingId) {
+    public String launchCiCheckSyncJob(String mappingId) {
         RepoMapping mapping = requireMapping(mappingId);
         SyncJob job = createMetadataJob(mapping, "Standalone CI check backfill");
         syncTaskExecutor.execute(() -> runCiCheckJob(job, mapping));
         return job.getId();
     }
 
-    private RepoMapping requireMapping(Long mappingId) {
+    private RepoMapping requireMapping(String mappingId) {
         return repoMappingRepository.findById(mappingId)
                 .orElseThrow(() -> new IllegalArgumentException("Mapping not found for ID: " + mappingId));
     }
@@ -960,7 +1230,7 @@ public class ReleaseAndStatusSyncService {
         }
     }
 
-    private void audit(Long jobId, LogLevel level, String message) {
+    private void audit(String jobId, LogLevel level, String message) {
         if (jobId == null || message == null) {
             return;
         }

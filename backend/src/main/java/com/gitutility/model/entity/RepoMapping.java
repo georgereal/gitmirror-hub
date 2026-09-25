@@ -2,7 +2,11 @@ package com.gitutility.model.entity;
 
 import com.gitutility.model.enums.SyncDirection;
 import com.gitutility.model.enums.SyncStatus;
+import com.gitutility.persistence.Ids;
+import com.gitutility.security.Encrypted;
 import com.gitutility.security.EncryptedStringConverter;
+import org.springframework.data.mongodb.core.mapping.Document;
+import com.gitutility.persistence.store.WritePreparer;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -13,15 +17,15 @@ import java.time.Instant;
 
 @Entity
 @Table(name = "repo_mappings")
+@Document(collection = "repo_mappings")
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class RepoMapping {
+public class RepoMapping implements WritePreparer {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     @Column(nullable = false, unique = true)
     private String name;
@@ -33,10 +37,12 @@ public class RepoMapping {
     private String repoBUrl;
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 2000)
     private String tokenA;
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 2000)
     private String tokenB;
 
@@ -45,6 +51,7 @@ public class RepoMapping {
     private String branchPattern = "*";
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 2000)
     private String webhookSecret;
 
@@ -62,6 +69,21 @@ public class RepoMapping {
     @Builder.Default
     private com.gitutility.model.enums.TrunkConflictPolicy trunkConflictPolicy =
             com.gitutility.model.enums.TrunkConflictPolicy.ISOLATE;
+
+    /**
+     * Writable side of a bidirectional pair. The other side is the replica whose
+     * ruleset blocks human pushes. Null until an operator locks or swaps.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(length = 8)
+    private com.gitutility.model.enums.PairSide primarySide;
+
+    /** Id of {@code gitmirror-replica-readonly} on the current replica, when Hub created it. */
+    private Long replicaRulesetId;
+
+    /** {@code active} or {@code disabled}. */
+    @Column(length = 20)
+    private String replicaRulesetEnforcement;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
@@ -93,10 +115,10 @@ public class RepoMapping {
     private String targetProvider;
 
     /** GitHub/GHES credential used when repo A was picked. */
-    private Long sourceCredentialId;
+    private String sourceCredentialId;
 
     /** GitHub/GHES credential used when repo B was picked. */
-    private Long targetCredentialId;
+    private String targetCredentialId;
 
     /** App installation that owns repo A (when source credential is a multi-install App). */
     @Column(length = 64)
@@ -160,7 +182,7 @@ public class RepoMapping {
     private String forkPrMissJson;
 
     /** Last known git mirror stats (persisted when git phases finish, even if PR metadata is still pending). */
-    private Long lastMirrorJobId;
+    private String lastMirrorJobId;
     private Instant lastMirrorStatsAt;
     private Integer lastMirrorBranchesCount;
     private Integer lastMirrorTagsCount;
@@ -185,10 +207,13 @@ public class RepoMapping {
 
     /** Bulk migration submission that created this pair (null for single-pair creation). */
     @Column
-    private Long bulkSubmissionId;
+    private String bulkSubmissionId;
 
     @PrePersist
-    protected void onCreate() {
+    public void prepareForWrite() {
+        if (Ids.isUnset(id)) {
+            id = Ids.newId();
+        }
         if (this.createdAt == null) {
             this.createdAt = Instant.now();
         }

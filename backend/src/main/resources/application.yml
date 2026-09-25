@@ -13,6 +13,13 @@ spring:
     console:
       enabled: ${GIT_H2_CONSOLE_ENABLED:false}
       path: /h2-console
+  # Boot 4.x relocated these keys: `spring.data.mongodb.*` is a deprecated (level=error)
+  # tombstone that is NO LONGER BOUND — setting it silently falls back to Boot's built-in
+  # default `mongodb://localhost/test`, so MONGODB_URI would be ignored entirely.
+  mongodb:
+    # Effective only when git-utility.persistence.provider=mongo; every other mode excludes Mongo autoconfiguration
+    uri: ${MONGODB_URI:mongodb://localhost:27017/gitutility}
+    database: ${MONGODB_DATABASE:gitutility}
   jpa:
     database-platform: org.hibernate.dialect.H2Dialect
     hibernate:
@@ -28,7 +35,8 @@ spring:
       retry:
         enabled: true
         initial-interval: 1000ms
-        max-attempts: 3
+        # Boot 4.x renamed max-attempts -> max-retries (same semantics, default 3)
+        max-retries: 3
         multiplier: 2.0
     listener:
       simple:
@@ -41,12 +49,15 @@ spring:
         retry:
           enabled: true
           initial-interval: 2000ms
-          max-attempts: 3
+          # Boot 4.x renamed max-attempts -> max-retries (same semantics, default 3)
+          max-retries: 3
           multiplier: 2.0
           max-interval: 10000ms
 
 git-utility:
   workspace-dir: ${GIT_WORKSPACE_DIR:/tmp/git-utility-mirrors}
+  peer-heartbeat-seconds: ${GIT_PEER_HEARTBEAT_SECONDS:120}
+  peer-heartbeat-ms: ${GIT_PEER_HEARTBEAT_MS:120000}
   github:
     graphql-enabled: ${GITHUB_GRAPHQL_ENABLED:true}
   features:
@@ -67,6 +78,8 @@ git-utility:
     push-batch-pool-max-threads: ${GIT_PUSH_BATCH_POOL_MAX_THREADS:8}
     push-batch-per-host-max: ${GIT_PUSH_BATCH_PER_HOST_MAX:4}
     push-batch-throttle-cooldown-seconds: ${GIT_PUSH_BATCH_THROTTLE_COOLDOWN_SECONDS:60}
+    # Cap on a rate-limit episode. Later 429s add jitter, but the deadline never sits further than this from now.
+    push-batch-throttle-cooldown-max-seconds: ${GIT_PUSH_BATCH_THROTTLE_COOLDOWN_MAX_SECONDS:1800}
     push-batch-cpu-high-watermark: ${GIT_PUSH_BATCH_CPU_HIGH_WATERMARK:0.90}
     push-batch-heap-high-watermark-percent: ${GIT_PUSH_BATCH_HEAP_HIGH_WATERMARK_PERCENT:85}
     push-batch-disk-low-watermark-percent: ${GIT_PUSH_BATCH_DISK_LOW_WATERMARK_PERCENT:10}
@@ -102,12 +115,42 @@ git-utility:
     failure-threshold: ${GIT_CIRCUIT_BREAKER_THRESHOLD:5}
     reset-timeout-seconds: ${GIT_CIRCUIT_BREAKER_RESET_SEC:30}
     probe-delay-ms: ${GIT_CIRCUIT_BREAKER_PROBE_MS:30000}
+  persistence:
+    # Canonical: h2 (default) | mongo — exactly one store active at runtime; no fallback, no dual wiring
+    provider: ${GIT_PERSISTENCE_PROVIDER:h2}
   messaging:
     # Canonical: rabbitmq (default) | kafka (reserved) | none (in-process, no broker)
     provider: ${GIT_MESSAGING_PROVIDER:rabbitmq}
     none:
       # In-process full+incremental sync worker threads (GIT_MESSAGING_PROVIDER=none only)
       worker-threads: ${GIT_MESSAGING_NONE_WORKER_THREADS:8}
+  webhook-bus:
+    # Incremental git events only. off | kafka | rabbitmq. Full mirrors stay on messaging.provider.
+    provider: ${GIT_WEBHOOK_BUS_PROVIDER:off}
+    kafka:
+      bootstrap-servers: ${GIT_WEBHOOK_KAFKA_BOOTSTRAP_SERVERS:}
+      security-protocol: ${GIT_WEBHOOK_KAFKA_SECURITY_PROTOCOL:PLAINTEXT}
+      sasl-mechanism: ${GIT_WEBHOOK_KAFKA_SASL_MECHANISM:PLAIN}
+      sasl-username: ${GIT_WEBHOOK_KAFKA_SASL_USERNAME:}
+      sasl-password: ${GIT_WEBHOOK_KAFKA_SASL_PASSWORD:}
+      client-id: ${GIT_WEBHOOK_KAFKA_CLIENT_ID:git-mirror-hub}
+      group-id: ${GIT_WEBHOOK_KAFKA_GROUP_ID:git-mirror-hub}
+      auto-offset-reset: ${GIT_WEBHOOK_KAFKA_AUTO_OFFSET_RESET:earliest}
+      incremental-topic: ${GIT_WEBHOOK_KAFKA_INCREMENTAL_TOPIC:git.sync.incremental}
+      partitions: ${GIT_WEBHOOK_KAFKA_INCREMENTAL_PARTITIONS:32}
+      replication-factor: ${GIT_WEBHOOK_KAFKA_REPLICATION_FACTOR:1}
+      listener-concurrency: ${GIT_WEBHOOK_KAFKA_LISTENER_CONCURRENCY:4}
+      max-poll-interval-ms: ${GIT_WEBHOOK_KAFKA_MAX_POLL_INTERVAL_MS:600000}
+      session-timeout-ms: ${GIT_WEBHOOK_KAFKA_SESSION_TIMEOUT_MS:45000}
+    rabbitmq:
+      addresses: ${GIT_WEBHOOK_RABBITMQ_ADDRESSES:${SPRING_RABBITMQ_ADDRESSES:}}
+      exchange: ${GIT_WEBHOOK_RABBITMQ_EXCHANGE:git.webhook.exchange}
+      queue: ${GIT_WEBHOOK_RABBITMQ_QUEUE:git.webhook.incremental.queue}
+      routing-key: ${GIT_WEBHOOK_RABBITMQ_ROUTING_KEY:git.webhook.incremental}
+      dlx: ${GIT_WEBHOOK_RABBITMQ_DLX:git.webhook.dlx}
+      dlq: ${GIT_WEBHOOK_RABBITMQ_DLQ:git.webhook.incremental.dlq}
+      prefetch: ${GIT_WEBHOOK_RABBITMQ_PREFETCH:1}
+      concurrency: ${GIT_WEBHOOK_RABBITMQ_CONCURRENCY:1}
   bulk:
     # Bulk migration soft request guard (submission-time probing) — NOT an execution cap:
     # execution is paced by lane threads/consumer concurrency; extra jobs wait as QUEUED.

@@ -1,9 +1,10 @@
 package com.gitutility.model.entity;
 
+import com.gitutility.persistence.Ids;
+import org.springframework.data.mongodb.core.mapping.Document;
+import com.gitutility.persistence.store.WritePreparer;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
@@ -22,15 +23,15 @@ import java.time.Instant;
  */
 @Entity
 @Table(name = "bulk_submissions")
+@Document(collection = "bulk_submissions")
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class BulkSubmission {
+public class BulkSubmission implements WritePreparer {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     /** CREATE_DEST (Option 1) | USE_EXISTING (Option 2). */
     @Column(nullable = false, length = 30)
@@ -52,7 +53,10 @@ public class BulkSubmission {
     private Instant createdAt;
 
     @PrePersist
-    protected void onCreate() {
+    public void prepareForWrite() {
+        if (Ids.isUnset(id)) {
+            id = Ids.newId();
+        }
         if (this.createdAt == null) {
             this.createdAt = Instant.now();
         }

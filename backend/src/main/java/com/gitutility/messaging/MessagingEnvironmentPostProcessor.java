@@ -1,7 +1,8 @@
 package com.gitutility.messaging;
 
+import com.gitutility.messaging.webhook.WebhookBusProvider;
+import org.springframework.boot.EnvironmentPostProcessor;
 import org.springframework.boot.SpringApplication;
-import org.springframework.boot.env.EnvironmentPostProcessor;
 import org.springframework.core.Ordered;
 import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.MapPropertySource;
@@ -40,7 +41,7 @@ public class MessagingEnvironmentPostProcessor implements EnvironmentPostProcess
         Map<String, Object> overrides = new LinkedHashMap<>();
         overrides.put("git-utility.messaging.provider", provider.wireId());
 
-        if (provider == MessagingProvider.NONE) {
+        if (provider == MessagingProvider.NONE && !webhookBusUsesRabbit(environment)) {
             appendExclude(environment, overrides, RABBIT_AUTO_CONFIGURATION);
             // Only honor an explicit operator override. application.yml always defines
             // git-utility.queue.pause-consumers-on-startup, so containsProperty() would
@@ -71,6 +72,14 @@ public class MessagingEnvironmentPostProcessor implements EnvironmentPostProcess
             excludes.add(className);
         }
         overrides.put("spring.autoconfigure.exclude", String.join(",", excludes));
+    }
+
+    private static boolean webhookBusUsesRabbit(ConfigurableEnvironment environment) {
+        String raw = firstNonBlank(
+                environment.getProperty("git-utility.webhook-bus.provider"),
+                environment.getProperty("GIT_WEBHOOK_BUS_PROVIDER"),
+                "off");
+        return WebhookBusProvider.from(raw) == WebhookBusProvider.RABBITMQ;
     }
 
     private static String firstNonBlank(String... values) {

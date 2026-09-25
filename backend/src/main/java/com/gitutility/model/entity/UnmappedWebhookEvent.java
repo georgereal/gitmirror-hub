@@ -1,5 +1,8 @@
 package com.gitutility.model.entity;
 
+import com.gitutility.persistence.Ids;
+import org.springframework.data.mongodb.core.mapping.Document;
+import com.gitutility.persistence.store.WritePreparer;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -11,17 +14,18 @@ import java.time.Instant;
 @Entity
 @Table(name = "unmapped_webhook_events", indexes = {
     @Index(name = "idx_unmapped_received_at", columnList = "receivedAt"),
+
     @Index(name = "idx_unmapped_repo_name", columnList = "repoFullName")
 })
+@Document(collection = "unmapped_webhook_events")
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class UnmappedWebhookEvent {
+public class UnmappedWebhookEvent implements WritePreparer {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     @Column(nullable = false)
     private String provider; // e.g. "github", "gitlab", "bitbucket"
@@ -47,13 +51,20 @@ public class UnmappedWebhookEvent {
     @Column(length = 2000)
     private String details;
 
+    /** Original incremental JSON when a Kafka record could not be processed. Replay reads this. */
+    @Column(columnDefinition = "CLOB")
+    private String payloadJson;
+
     @Builder.Default
     @Column(nullable = false)
     private Instant receivedAt = Instant.now();
 
     @PrePersist
     @PreUpdate
-    protected void onPersist() {
+    public void prepareForWrite() {
+        if (Ids.isUnset(id)) {
+            id = Ids.newId();
+        }
         if (receivedAt == null) {
             receivedAt = Instant.now();
         }
@@ -62,6 +73,9 @@ public class UnmappedWebhookEvent {
         }
         if (details != null && details.length() > 2000) {
             details = details.substring(0, 1999) + "\u2026";
+        }
+        if (payloadJson != null && payloadJson.length() > 32_000) {
+            payloadJson = payloadJson.substring(0, 31_999) + "\u2026";
         }
     }
 }

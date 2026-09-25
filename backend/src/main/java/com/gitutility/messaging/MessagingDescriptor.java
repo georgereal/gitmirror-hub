@@ -23,4 +23,9 @@ public class MessagingDescriptor {
     boolean supportsInboundBrokerQueue;
     /** Configured in-process worker threads when provider is {@code none}; null otherwise. */
     Integer workerThreads;
+    /**
+     * Full-lane consumer cap when provider is {@code rabbitmq}
+     * ({@code spring.rabbitmq.listener.simple.max-concurrency}); null otherwise.
+     */
+    Integer laneMaxConcurrency;
 }

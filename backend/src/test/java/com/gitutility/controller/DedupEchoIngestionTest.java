@@ -78,7 +78,8 @@ class DedupEchoIngestionTest {
                 releaseAndStatusSyncService,
                 unmappedWebhookEventRepository,
                 refOriginService,
-                new RefInterestPolicy("agents/,dependabot/", 45_000L, true)
+                new RefInterestPolicy("agents/,dependabot/", 45_000L, true),
+                null
         );
         webhookController = new WebhookController(mappingRepository, ingestion, JsonMapper.builder().build(), null);
     }
@@ -88,11 +89,11 @@ class DedupEchoIngestionTest {
         dedupLedgerService.recordSystemPush(DEST_NO_GIT, PR_HEAD_SHA);
 
         RepoMapping mapping = vscodePair();
-        when(mappingRepository.findById(1L)).thenReturn(Optional.of(mapping));
+        when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
         when(syncJobRepository.save(any(SyncJob.class))).thenAnswer(i -> i.getArgument(0));
 
         ResponseEntity<?> response = webhookController.handleMappingSpecificWebhook(
-                1L, "push", null, destPushPayload(PR_HEAD_SHA, "feat/rag-workflow", "feat: rag workflow")
+                "1", "push", null, destPushPayload(PR_HEAD_SHA, "feat/rag-workflow", "feat: rag workflow")
         );
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
@@ -115,13 +116,13 @@ class DedupEchoIngestionTest {
         dedupLedgerService.recordSystemPush(DEST_NO_GIT, "bbb222");
 
         RepoMapping mapping = vscodePair();
-        when(mappingRepository.findById(1L)).thenReturn(Optional.of(mapping));
+        when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
         when(syncJobRepository.save(any(SyncJob.class))).thenAnswer(i -> i.getArgument(0));
 
         ResponseEntity<?> first = webhookController.handleMappingSpecificWebhook(
-                1L, "push", null, destPushPayload("aaa111", "feat/rag-workflow", "feat: rag"));
+                "1", "push", null, destPushPayload("aaa111", "feat/rag-workflow", "feat: rag"));
         ResponseEntity<?> second = webhookController.handleMappingSpecificWebhook(
-                1L, "push", null, destPushPayload("bbb222", "fix/importer-color-cache-key", "fix: cache"));
+                "1", "push", null, destPushPayload("bbb222", "fix/importer-color-cache-key", "fix: cache"));
 
         assertEquals("skipped", ((Map<?, ?>) first.getBody()).get("status"));
         assertEquals("skipped", ((Map<?, ?>) second.getBody()).get("status"));
@@ -135,10 +136,10 @@ class DedupEchoIngestionTest {
         dedupLedgerService.recordSystemPush(DEST_NO_GIT, PR_HEAD_SHA);
 
         RepoMapping mapping = vscodePair();
-        when(mappingRepository.findById(1L)).thenReturn(Optional.of(mapping));
+        when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
         when(syncJobRepository.save(any(SyncJob.class))).thenAnswer(i -> {
             SyncJob j = i.getArgument(0);
-            j.setId(42L);
+            j.setId("42");
             return j;
         });
 
@@ -159,7 +160,7 @@ class DedupEchoIngestionTest {
                 }
                 """.formatted(sourceSha, SOURCE, sourceSha);
 
-        ResponseEntity<?> response = webhookController.handleMappingSpecificWebhook(1L, "push", null, payload);
+        ResponseEntity<?> response = webhookController.handleMappingSpecificWebhook("1", "push", null, payload);
 
         assertEquals(HttpStatus.ACCEPTED, response.getStatusCode());
         verify(queueProducerService).enqueueSyncJob(
@@ -171,19 +172,19 @@ class DedupEchoIngestionTest {
     @Test
     void destSyntheticForkHeadIsSkippedOnReverseWebhook() {
         RepoMapping mapping = RepoMapping.builder()
-                .id(1L)
+                .id("1")
                 .name("OpenMAIC")
                 .repoAUrl("https://github.com/THU-MAIC/OpenMAIC")
                 .repoBUrl(DEST_NO_GIT)
                 .active(true)
                 .syncDirection(SyncDirection.BIDIRECTIONAL)
                 .build();
-        when(mappingRepository.findById(1L)).thenReturn(Optional.of(mapping));
+        when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
         when(syncJobRepository.save(any(SyncJob.class))).thenAnswer(i -> i.getArgument(0));
-        when(refOriginService.isForkPrHead(1L, "add-repocloud-deploy-button")).thenReturn(true);
+        when(refOriginService.isForkPrHead("1", "add-repocloud-deploy-button")).thenReturn(true);
 
         ResponseEntity<?> response = webhookController.handleMappingSpecificWebhook(
-                1L, "push", null,
+                "1", "push", null,
                 destPushPayload("388dc77aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "add-repocloud-deploy-button", "fork head")
         );
 
@@ -203,17 +204,17 @@ class DedupEchoIngestionTest {
     @Test
     void originDeleteIsEnqueuedAndReplicaDeleteIsSkipped() {
         RepoMapping mapping = RepoMapping.builder()
-                .id(1L)
+                .id("1")
                 .name("OpenMAIC")
                 .repoAUrl("https://github.com/THU-MAIC/OpenMAIC.git")
                 .repoBUrl(DEST_NO_GIT)
                 .active(true)
                 .syncDirection(SyncDirection.BIDIRECTIONAL)
                 .build();
-        when(mappingRepository.findById(1L)).thenReturn(Optional.of(mapping));
+        when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
         when(syncJobRepository.save(any(SyncJob.class))).thenAnswer(i -> {
             SyncJob j = i.getArgument(0);
-            j.setId(99L);
+            j.setId("99");
             return j;
         });
 
@@ -231,14 +232,14 @@ class DedupEchoIngestionTest {
                 }
                 """.formatted(zeros);
 
-        ResponseEntity<?> origin = webhookController.handleMappingSpecificWebhook(1L, "push", null, originDelete);
+        ResponseEntity<?> origin = webhookController.handleMappingSpecificWebhook("1", "push", null, originDelete);
         assertEquals(HttpStatus.ACCEPTED, origin.getStatusCode());
         verify(queueProducerService).enqueueSyncJob(
                 eq(mapping), any(SyncJob.class), any(), any(), eq("refs/heads/feature-x"), eq("feature-x"),
                 any(), eq(zeros), eq("Deleted branch feature-x"), any(), any()
         );
 
-        when(refOriginService.isReplicaEvent(eq(1L), eq("refs/heads/feature-x"), any())).thenReturn(true);
+        when(refOriginService.isReplicaEvent(eq("1"), eq("refs/heads/feature-x"), any())).thenReturn(true);
         String replicaDelete = """
                 {
                   "ref": "refs/heads/feature-x",
@@ -252,7 +253,7 @@ class DedupEchoIngestionTest {
                 }
                 """.formatted(zeros, DEST_WITH_GIT);
 
-        ResponseEntity<?> replica = webhookController.handleMappingSpecificWebhook(1L, "push", null, replicaDelete);
+        ResponseEntity<?> replica = webhookController.handleMappingSpecificWebhook("1", "push", null, replicaDelete);
         assertEquals(HttpStatus.OK, replica.getStatusCode());
         ArgumentCaptor<SyncJob> jobs = ArgumentCaptor.forClass(SyncJob.class);
         verify(syncJobRepository, times(2)).save(jobs.capture());
@@ -262,11 +263,11 @@ class DedupEchoIngestionTest {
     @Test
     void dependabotBranchOnMirrorIsSkipped() {
         RepoMapping mapping = backupVscodePair();
-        when(mappingRepository.findById(1L)).thenReturn(Optional.of(mapping));
+        when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
         when(syncJobRepository.save(any(SyncJob.class))).thenAnswer(i -> i.getArgument(0));
 
         ResponseEntity<?> response = webhookController.handleMappingSpecificWebhook(
-                1L, "push", null,
+                "1", "push", null,
                 destPushPayload("9e42f862f4fbcfa92a3b700e71c7238544a6cdd5",
                         "dependabot/github_actions/actions/cache/save-6.1.0", "bump actions/cache")
         );
@@ -297,16 +298,17 @@ class DedupEchoIngestionTest {
                 releaseAndStatusSyncService,
                 unmappedWebhookEventRepository,
                 refOriginService,
-                new RefInterestPolicy("agents/", 45_000L, true)
+                new RefInterestPolicy("agents/", 45_000L, true),
+                null
         );
         webhookController = new WebhookController(mappingRepository, ingestion, JsonMapper.builder().build(), null);
 
         RepoMapping mapping = backupVscodePair();
-        when(mappingRepository.findById(1L)).thenReturn(Optional.of(mapping));
+        when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
         when(syncJobRepository.save(any(SyncJob.class))).thenAnswer(i -> i.getArgument(0));
 
         ResponseEntity<?> response = webhookController.handleMappingSpecificWebhook(
-                1L, "push", null,
+                "1", "push", null,
                 destPushPayload("9e42f862f4fbcfa92a3b700e71c7238544a6cdd5",
                         "dependabot/github_actions/actions/cache/save-6.1.0", "bump actions/cache")
         );
@@ -324,13 +326,13 @@ class DedupEchoIngestionTest {
     @Test
     void publicPrivateBackupSkipsUnknownOriginMirrorWebhook() {
         RepoMapping mapping = backupVscodePair();
-        when(mappingRepository.findById(1L)).thenReturn(Optional.of(mapping));
+        when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
         when(syncJobRepository.save(any(SyncJob.class))).thenAnswer(i -> i.getArgument(0));
         when(refOriginService.shouldBlockReplicaInboundWebhook(eq(mapping), eq("refs/heads/feature-local"), any()))
                 .thenReturn(true);
 
         ResponseEntity<?> response = webhookController.handleMappingSpecificWebhook(
-                1L, "push", null,
+                "1", "push", null,
                 destPushPayload("abc123def4567890123456789012345678901234", "feature-local", "local mirror work")
         );
 
@@ -346,7 +348,7 @@ class DedupEchoIngestionTest {
 
     private static RepoMapping backupVscodePair() {
         return RepoMapping.builder()
-                .id(1L)
+                .id("1")
                 .name("vscode")
                 .repoAUrl(SOURCE)
                 .repoBUrl(DEST_NO_GIT)
@@ -359,7 +361,7 @@ class DedupEchoIngestionTest {
 
     private static RepoMapping vscodePair() {
         return RepoMapping.builder()
-                .id(1L)
+                .id("1")
                 .name("vscode")
                 .repoAUrl(SOURCE)
                 .repoBUrl(DEST_NO_GIT)

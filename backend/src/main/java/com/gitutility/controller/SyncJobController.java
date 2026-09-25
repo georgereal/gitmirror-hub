@@ -28,7 +28,7 @@ public class SyncJobController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false) SyncStatus status,
-            @RequestParam(required = false) Long mappingId,
+            @RequestParam(required = false) String mappingId,
             @RequestParam(required = false) TriggerType triggerType,
             @RequestParam(required = false) String lane) {
         return ResponseEntity.ok(syncJobService.getAllJobs(
@@ -48,14 +48,14 @@ public class SyncJobController {
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<SyncJob> getJobById(@PathVariable Long id) {
+    public ResponseEntity<SyncJob> getJobById(@PathVariable String id) {
         return syncJobService.getJobById(id)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
 
     @GetMapping("/{id}/logs")
-    public ResponseEntity<List<SyncAuditLog>> getJobLogs(@PathVariable Long id) {
+    public ResponseEntity<List<SyncAuditLog>> getJobLogs(@PathVariable String id) {
         return ResponseEntity.ok(syncJobService.getAuditLogsForJob(id));
     }
 
@@ -65,42 +65,42 @@ public class SyncJobController {
     }
 
     @PostMapping("/{id}/retry")
-    public ResponseEntity<SyncJob> retryJob(@PathVariable Long id) {
+    public ResponseEntity<SyncJob> retryJob(@PathVariable String id) {
         return ResponseEntity.accepted().body(syncJobService.retryJob(id));
     }
 
     @PostMapping("/{id}/resume")
-    public ResponseEntity<SyncJob> resumeJob(@PathVariable Long id) {
+    public ResponseEntity<SyncJob> resumeJob(@PathVariable String id) {
         return ResponseEntity.accepted().body(syncJobService.resumeJob(id));
     }
 
     @PostMapping("/dispatch")
-    public ResponseEntity<Map<String, Object>> dispatchJobs(@RequestBody Map<String, List<Long>> body) {
-        List<Long> jobIds = body != null ? body.get("jobIds") : null;
+    public ResponseEntity<Map<String, Object>> dispatchJobs(@RequestBody Map<String, List<String>> body) {
+        List<String> jobIds = body != null ? body.get("jobIds") : null;
         return ResponseEntity.accepted().body(syncJobService.dispatchJobs(jobIds));
     }
 
     @PostMapping("/{id}/pause")
-    public ResponseEntity<SyncJob> pauseJob(@PathVariable Long id) {
+    public ResponseEntity<SyncJob> pauseJob(@PathVariable String id) {
         return ResponseEntity.ok(syncJobService.pauseJob(id));
     }
 
     @PostMapping("/{id}/skip-stage")
     public ResponseEntity<SyncJob> skipJobStage(
-            @PathVariable Long id,
+            @PathVariable String id,
             @RequestBody(required = false) Map<String, String> body) {
         String stageId = body != null ? body.get("stageId") : null;
         return ResponseEntity.ok(syncJobService.skipJobStage(id, stageId));
     }
 
     @PostMapping("/{id}/cancel")
-    public ResponseEntity<SyncJob> cancelJob(@PathVariable Long id) {
+    public ResponseEntity<SyncJob> cancelJob(@PathVariable String id) {
         return ResponseEntity.ok(syncJobService.cancelJob(id));
     }
 
     @PostMapping("/cancel-queued")
     public ResponseEntity<Map<String, Object>> cancelQueuedJobs(
-            @RequestParam(required = false) Long mappingId) {
+            @RequestParam(required = false) String mappingId) {
         int count = syncJobService.cancelQueuedJobs(mappingId);
         return ResponseEntity.ok(Map.of(
                 "status", "success",

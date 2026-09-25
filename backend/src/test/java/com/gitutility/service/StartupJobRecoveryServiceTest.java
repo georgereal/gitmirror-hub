@@ -46,12 +46,12 @@ class StartupJobRecoveryServiceTest {
     @Test
     void marksStaleInProgressJobsAsInterrupted() {
         SyncJob stale = SyncJob.builder()
-                .id(1L)
+                .id("1")
                 .status(SyncStatus.IN_PROGRESS)
                 .startedAt(Instant.now().minusSeconds(600))
                 .build();
         SyncJob fresh = SyncJob.builder()
-                .id(2L)
+                .id("2")
                 .status(SyncStatus.IN_PROGRESS)
                 .startedAt(Instant.now().minusSeconds(10))
                 .build();

@@ -3,6 +3,9 @@ package com.gitutility.model.entity;
 import com.gitutility.model.enums.ConflictKind;
 import com.gitutility.model.enums.ConflictStatus;
 import com.gitutility.model.enums.TrunkConflictPolicy;
+import com.gitutility.persistence.Ids;
+import org.springframework.data.mongodb.core.mapping.Document;
+import com.gitutility.persistence.store.WritePreparer;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -15,20 +18,20 @@ import java.time.Instant;
 @Table(name = "sync_conflicts", indexes = {
         @Index(name = "idx_sync_conflicts_mapping_status", columnList = "mappingId, status")
 })
+@Document(collection = "sync_conflicts")
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class SyncConflict {
+public class SyncConflict implements WritePreparer {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     @Column(nullable = false)
-    private Long mappingId;
+    private String mappingId;
 
-    private Long jobId;
+    private String jobId;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
@@ -73,4 +76,14 @@ public class SyncConflict {
     private Instant createdAt = Instant.now();
 
     private Instant resolvedAt;
+
+    @PrePersist
+    public void prepareForWrite() {
+        if (Ids.isUnset(id)) {
+            id = Ids.newId();
+        }
+        if (createdAt == null) {
+            createdAt = Instant.now();
+        }
+    }
 }

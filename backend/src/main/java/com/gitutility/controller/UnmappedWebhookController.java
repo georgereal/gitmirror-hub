@@ -22,7 +22,7 @@ public class UnmappedWebhookController {
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> deleteEvent(@PathVariable Long id) {
+    public ResponseEntity<Void> deleteEvent(@PathVariable String id) {
         unmappedWebhookEventRepository.deleteById(id);
         return ResponseEntity.noContent().build();
     }

@@ -73,14 +73,14 @@ class PullRequestBulkReconcileTest {
         lenient().when(scmProviderFacade.parseRepoFullName(contains("mirror_vscode")))
                 .thenReturn("georgereal/mirror_vscode");
         lenient().when(scmProviderFacade.getAdapterForUrl(any())).thenReturn(githubAdapter);
-        lenient().when(storageTieringService.resolveRepoDirectory(anyLong(), any())).thenReturn(null);
+        lenient().when(storageTieringService.resolveRepoDirectory(anyString(), any())).thenReturn(null);
         lenient().when(jobExecutionStateService.loadStageProgressByJobId(any())).thenReturn(
                 com.gitutility.model.dto.JobStageProgress.empty());
     }
 
     private RepoMapping pair() {
         return RepoMapping.builder()
-                .id(5L)
+                .id("5")
                 .repoAUrl("https://github.com/microsoft/vscode")
                 .repoBUrl("https://github.com/georgereal/mirror_vscode")
                 .build();
@@ -91,8 +91,8 @@ class PullRequestBulkReconcileTest {
         String mirrorBody = PrMirrorSupport.buildMirroredBody(
                 "microsoft/vscode", 100L, "alice", "https://github.com/microsoft/vscode/pull/100", "hello");
         PrMapping existing = PrMapping.builder()
-                .id(1L)
-                .mappingId(5L)
+                .id("1")
+                .mappingId("5")
                 .sourcePrNumber(100L)
                 .targetPrNumber(9L)
                 .headBranch("feature")
@@ -107,8 +107,8 @@ class PullRequestBulkReconcileTest {
 
         RepoMapping mapping = pair();
         mapping.setLastPrListCompletedAt(Instant.parse("2026-09-07T12:00:00Z"));
-        when(repoMappingRepository.findById(5L)).thenReturn(Optional.of(mapping));
-        when(prMappingRepository.findByMappingId(5L)).thenReturn(List.of(existing));
+        when(repoMappingRepository.findById("5")).thenReturn(Optional.of(mapping));
+        when(prMappingRepository.findByMappingId("5")).thenReturn(List.of(existing));
         when(githubAdapter.listOpenPullRequestsPage(eq("microsoft/vscode"), isNull(), anyInt()))
                 .thenReturn(new PrListPage(List.of(
                         SyncDiffReport.PrSyncDetail.builder()
@@ -126,7 +126,7 @@ class PullRequestBulkReconcileTest {
         when(githubAdapter.listRecentlyClosedPullRequestsPage(eq("microsoft/vscode"), isNull(), anyInt()))
                 .thenReturn(PrListPage.empty());
 
-        int result = service.syncOpenPullRequests(5L,
+        int result = service.syncOpenPullRequests("5",
                 "https://github.com/microsoft/vscode",
                 "https://github.com/georgereal/mirror_vscode");
 
@@ -135,7 +135,7 @@ class PullRequestBulkReconcileTest {
         verify(githubAdapter, times(1)).listOpenPullRequestsPage(eq("microsoft/vscode"), isNull(), anyInt());
         verify(githubAdapter, never()).listOpenPullRequestsPage(eq("microsoft/vscode"), eq("NEXT"), anyInt());
         verify(githubAdapter).listRecentlyClosedPullRequestsPage(eq("microsoft/vscode"), isNull(), anyInt());
-        verify(pairCatchupLedger).recordPrListCompleted(5L);
+        verify(pairCatchupLedger).recordPrListCompleted("5");
     }
 
     @Test
@@ -143,8 +143,8 @@ class PullRequestBulkReconcileTest {
         String mirrorBody = PrMirrorSupport.buildMirroredBody(
                 "microsoft/vscode", 100L, "alice", "https://github.com/microsoft/vscode/pull/100", "hello");
         PrMapping existing = PrMapping.builder()
-                .id(1L)
-                .mappingId(5L)
+                .id("1")
+                .mappingId("5")
                 .sourcePrNumber(100L)
                 .targetPrNumber(9L)
                 .headBranch("feature")
@@ -157,8 +157,8 @@ class PullRequestBulkReconcileTest {
                 .lastPushedAt(Instant.now())
                 .build();
 
-        when(repoMappingRepository.findById(5L)).thenReturn(Optional.of(pair()));
-        when(prMappingRepository.findByMappingId(5L)).thenReturn(List.of(existing));
+        when(repoMappingRepository.findById("5")).thenReturn(Optional.of(pair()));
+        when(prMappingRepository.findByMappingId("5")).thenReturn(List.of(existing));
         when(githubAdapter.listOpenPullRequestsPage(eq("microsoft/vscode"), isNull(), anyInt()))
                 .thenReturn(new PrListPage(List.of(
                         SyncDiffReport.PrSyncDetail.builder()
@@ -173,7 +173,7 @@ class PullRequestBulkReconcileTest {
                                 .build()
                 ), null, false, 1));
 
-        int result = service.syncOpenPullRequests(5L,
+        int result = service.syncOpenPullRequests("5",
                 "https://github.com/microsoft/vscode",
                 "https://github.com/georgereal/mirror_vscode");
 
@@ -182,7 +182,7 @@ class PullRequestBulkReconcileTest {
         verify(githubAdapter, never()).updatePullRequest(anyString(), anyLong(), anyString(), anyString());
         verify(githubAdapter, never()).createPullRequest(anyString(), anyString(), anyString(), anyString(), anyString());
         verify(githubAdapter, never()).closePullRequest(anyString(), anyLong());
-        verify(pairCatchupLedger).recordPrListCompleted(5L);
+        verify(pairCatchupLedger).recordPrListCompleted("5");
     }
 
     @Test
@@ -190,8 +190,8 @@ class PullRequestBulkReconcileTest {
         String oldBody = PrMirrorSupport.buildMirroredBody(
                 "microsoft/vscode", 100L, "alice", "https://github.com/microsoft/vscode/pull/100", "old");
         PrMapping existing = PrMapping.builder()
-                .id(1L)
-                .mappingId(5L)
+                .id("1")
+                .mappingId("5")
                 .sourcePrNumber(100L)
                 .targetPrNumber(9L)
                 .headBranch("feature")
@@ -204,8 +204,8 @@ class PullRequestBulkReconcileTest {
                 .lastPushedAt(Instant.now())
                 .build();
 
-        when(repoMappingRepository.findById(5L)).thenReturn(Optional.of(pair()));
-        when(prMappingRepository.findByMappingId(5L)).thenReturn(List.of(existing));
+        when(repoMappingRepository.findById("5")).thenReturn(Optional.of(pair()));
+        when(prMappingRepository.findByMappingId("5")).thenReturn(List.of(existing));
         when(githubAdapter.listOpenPullRequestsPage(eq("microsoft/vscode"), isNull(), anyInt()))
                 .thenReturn(new PrListPage(List.of(
                         SyncDiffReport.PrSyncDetail.builder()
@@ -228,7 +228,7 @@ class PullRequestBulkReconcileTest {
                 .thenReturn(true);
         when(prMappingRepository.save(any(PrMapping.class))).thenAnswer(i -> i.getArgument(0));
 
-        int result = service.syncOpenPullRequests(5L,
+        int result = service.syncOpenPullRequests("5",
                 "https://github.com/microsoft/vscode",
                 "https://github.com/georgereal/mirror_vscode");
 
@@ -242,8 +242,8 @@ class PullRequestBulkReconcileTest {
     @Test
     void bulkSyncClosesReplicaWhenOriginNoLongerOpen() {
         PrMapping existing = PrMapping.builder()
-                .id(1L)
-                .mappingId(5L)
+                .id("1")
+                .mappingId("5")
                 .sourcePrNumber(100L)
                 .targetPrNumber(9L)
                 .headBranch("feature")
@@ -255,14 +255,14 @@ class PullRequestBulkReconcileTest {
                 .lastPushedBody("body")
                 .build();
 
-        when(repoMappingRepository.findById(5L)).thenReturn(Optional.of(pair()));
-        when(prMappingRepository.findByMappingId(5L)).thenReturn(List.of(existing));
-        when(prMappingRepository.findByMappingIdAndSourcePrNumber(5L, 100L)).thenReturn(Optional.of(existing));
+        when(repoMappingRepository.findById("5")).thenReturn(Optional.of(pair()));
+        when(prMappingRepository.findByMappingId("5")).thenReturn(List.of(existing));
+        when(prMappingRepository.findByMappingIdAndSourcePrNumber("5", 100L)).thenReturn(Optional.of(existing));
         when(githubAdapter.listOpenPullRequestsPage(eq("microsoft/vscode"), isNull(), anyInt()))
                 .thenReturn(new PrListPage(List.of(), null, false, 0));
         when(prMappingRepository.save(any(PrMapping.class))).thenAnswer(i -> i.getArgument(0));
 
-        int result = service.syncOpenPullRequests(5L,
+        int result = service.syncOpenPullRequests("5",
                 "https://github.com/microsoft/vscode",
                 "https://github.com/georgereal/mirror_vscode");
 

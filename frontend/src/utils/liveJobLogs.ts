@@ -113,7 +113,7 @@ export function overlayLiveProgress(
   return prepareAuditDisplayLogs([
     ...next,
     {
-      id: -1,
+      id: '-1',
       jobId: progress.jobId,
       level: 'INFO',
       message: liveMessage,

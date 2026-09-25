@@ -22,7 +22,7 @@ import java.util.concurrent.locks.ReentrantLock;
 @Service
 public class RepoDirLockService {
 
-    private final Map<Long, ReentrantLock> locks = new ConcurrentHashMap<>();
+    private final Map<String, ReentrantLock> locks = new ConcurrentHashMap<>();
 
     /**
      * Returns the lock for the given mapping. Everything currently mutating this
@@ -30,7 +30,7 @@ public class RepoDirLockService {
      * Null mapping ids are tolerated (coalesced onto one fallback lock) instead of
      * throwing, mirroring defensive behavior elsewhere in the consumer path.
      */
-    public ReentrantLock lockFor(Long mappingId) {
-        return locks.computeIfAbsent(mappingId != null ? mappingId : -1L, k -> new ReentrantLock());
+    public ReentrantLock lockFor(String mappingId) {
+        return locks.computeIfAbsent(mappingId != null ? mappingId : "-unassigned", k -> new ReentrantLock());
     }
 }

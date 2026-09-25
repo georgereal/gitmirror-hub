@@ -41,7 +41,7 @@ public class StorageTieringService {
     @Value("${git-utility.storage.retention-hours:72}")
     private int retentionHours;
 
-    private final Map<Long, Instant> lastAccessTimes = new ConcurrentHashMap<>();
+    private final Map<String, Instant> lastAccessTimes = new ConcurrentHashMap<>();
 
     @PostConstruct
     public void init() {
@@ -83,7 +83,7 @@ public class StorageTieringService {
     /**
      * Resolves the bare repository path on disk based on the configured StorageTier.
      */
-    public File resolveRepoDirectory(Long mappingId, StorageTier tier) {
+    public File resolveRepoDirectory(String mappingId, StorageTier tier) {
         if (tier == null) {
             tier = StorageTier.AUTO_LRU;
         }
@@ -141,7 +141,7 @@ public class StorageTieringService {
             long maxBytes = maxDiskQuotaMb * 1024 * 1024;
 
             List<RepoMapping> allMappings = repoMappingRepository.findAll();
-            Map<Long, RepoMapping> mappingMap = new HashMap<>();
+            Map<String, RepoMapping> mappingMap = new HashMap<>();
             for (RepoMapping m : allMappings) {
                 mappingMap.put(m.getId(), m);
             }
@@ -153,8 +153,8 @@ public class StorageTieringService {
             // Sort files by last access time ascending (oldest first)
             List<File> candidates = new ArrayList<>(Arrays.asList(files));
             candidates.sort(Comparator.comparingLong(f -> {
-                Long mId = parseMappingIdFromFilename(f.getName());
-                Instant lastAccess = lastAccessTimes.get(mId);
+                String mId = parseMappingIdFromFilename(f.getName());
+                Instant lastAccess = mId != null ? lastAccessTimes.get(mId) : null;
                 return lastAccess != null ? lastAccess.toEpochMilli() : f.lastModified();
             }));
 
@@ -164,7 +164,7 @@ public class StorageTieringService {
                     break;
                 }
 
-                Long mId = parseMappingIdFromFilename(file.getName());
+                String mId = parseMappingIdFromFilename(file.getName());
                 RepoMapping mapping = mappingMap.get(mId);
 
                 // HOT_PERSISTENT repos are never evicted
@@ -228,13 +228,10 @@ public class StorageTieringService {
                 .build();
     }
 
-    private Long parseMappingIdFromFilename(String name) {
-        try {
-            String num = name.replace("pair-", "").replace(".git", "");
-            return Long.parseLong(num);
-        } catch (Exception e) {
-            return -1L;
-        }
+    /** Extracts the mapping id from a {@code pair-{mappingId}.git} directory name; null when malformed. */
+    private String parseMappingIdFromFilename(String name) {
+        String num = name.replace("pair-", "").replace(".git", "");
+        return num.isBlank() ? null : num;
     }
 
     private long calculateDirectorySize(File dir) {

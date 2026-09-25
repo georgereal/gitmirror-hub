@@ -92,12 +92,19 @@ public class RefOriginService {
     }
 
     /** Public upstream (A) → private mirror (B) disaster-recovery topology. */
+    /**
+     * Source can only be read anonymously. A GitHub App or PAT on the source is not this case,
+     * even when that repository is public and the destination is private.
+     */
     public static boolean isPublicToPrivateBackupTopology(RepoMapping mapping) {
         if (mapping == null) {
             return false;
         }
-        return mapping.getSourceVisibility() == RepoVisibility.PUBLIC
-                && mapping.getTargetVisibility() == RepoVisibility.PRIVATE;
+        if (mapping.getSourceCredentialId() != null && !mapping.getSourceCredentialId().isBlank()) {
+            return false;
+        }
+        return Boolean.TRUE.equals(mapping.getSourcePublicRead())
+                || mapping.getSourceVisibility() == RepoVisibility.PUBLIC;
     }
 
     public static boolean isDeletedSha(String sha) {
@@ -131,7 +138,7 @@ public class RefOriginService {
         return PairSide.A;
     }
 
-    public PairSide originOf(Long mappingId, String branchOrRef) {
+    public PairSide originOf(String mappingId, String branchOrRef) {
         String ref = canonicalHeadRef(branchOrRef);
         if (mappingId == null || ref == null) {
             return null;
@@ -141,7 +148,7 @@ public class RefOriginService {
                 .orElse(null);
     }
 
-    public boolean isForkPrHead(Long mappingId, String branchOrRef) {
+    public boolean isForkPrHead(String mappingId, String branchOrRef) {
         if (mappingId == null) {
             return false;
         }
@@ -161,7 +168,7 @@ public class RefOriginService {
         return false;
     }
 
-    public Set<String> forkPrHeadBranches(Long mappingId) {
+    public Set<String> forkPrHeadBranches(String mappingId) {
         Set<String> names = new HashSet<>();
         if (mappingId == null) {
             return names;
@@ -178,7 +185,7 @@ public class RefOriginService {
      * First successful push of a head from {@code side} records origination.
      * Synthetic fork-PR dest heads are never recorded as originated on the replica.
      */
-    public void recordIfAbsent(Long mappingId, String branchOrRef, PairSide side) {
+    public void recordIfAbsent(String mappingId, String branchOrRef, PairSide side) {
         String ref = canonicalHeadRef(branchOrRef);
         if (mappingId == null || ref == null || !ref.startsWith("refs/heads/") || side == null) {
             return;
@@ -249,14 +256,14 @@ public class RefOriginService {
      * Replica events (inbound side is not the origin) must not overwrite or delete origin.
      * Unknown origin is allowed through so dest-originated branches can be recorded on first push.
      */
-    public boolean isReplicaEvent(Long mappingId, String branchOrRef, PairSide inbound) {
+    public boolean isReplicaEvent(String mappingId, String branchOrRef, PairSide inbound) {
         PairSide origin = originOf(mappingId, branchOrRef);
         return origin != null && inbound != null && origin != inbound;
     }
 
     /**
-     * For public→private backup pairs, mirror-side (B) webhooks must not propagate novel or
-     * mirror-originated branches back to the public upstream.
+     * When the source is anonymous public read, mirror-side (B) webhooks must not propagate
+     * novel or mirror-originated branches back. A credential on the source does not take this path.
      */
     public boolean shouldBlockReplicaInboundWebhook(RepoMapping mapping, String branchOrRef, PairSide inbound) {
         if (mapping == null || inbound != PairSide.B || !isPublicToPrivateBackupTopology(mapping)) {

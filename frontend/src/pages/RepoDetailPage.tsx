@@ -22,7 +22,7 @@ export const RepoDetailPage: React.FC = () => {
   const loadRepoData = useCallback(async () => {
     if (!id) return;
     try {
-      const mappingId = parseInt(id, 10);
+      const mappingId = id;
       const [fetchedMappings, pairJobsPage, globalRecentJobs] = await Promise.all([
         getMappings(),
         getJobs(0, 50, undefined, mappingId).catch(() => ({ content: [] as SyncJob[], totalElements: 0, totalPages: 0 })),
@@ -33,12 +33,12 @@ export const RepoDetailPage: React.FC = () => {
       if (found) {
         setMapping(found);
       }
-      const map = new Map<number, SyncJob>();
+      const map = new Map<string, SyncJob>();
       (pairJobsPage.content || []).forEach((j) => map.set(j.id, j));
       (globalRecentJobs || []).forEach((j) => {
         if (j.mappingId === mappingId) map.set(j.id, j);
       });
-      setRecentJobs(Array.from(map.values()).sort((a, b) => b.id - a.id));
+      setRecentJobs(Array.from(map.values()).sort((a, b) => b.id.localeCompare(a.id)));
     } catch (e) {
       console.error('Failed to load repo detail:', e);
     } finally {
@@ -54,7 +54,7 @@ export const RepoDetailPage: React.FC = () => {
     const cleanup = initWebSocket((data) => {
       if (data.type === 'JOB_UPDATE' && data.job) {
         const job = data.job as SyncJob;
-        if (id && job.mappingId === parseInt(id, 10)) {
+        if (id && job.mappingId === id) {
           setRecentJobs((prev) => {
             const exists = prev.some((j) => j.id === job.id);
             if (exists) {
@@ -75,7 +75,7 @@ export const RepoDetailPage: React.FC = () => {
       }
       if (data.type === 'JOB_PROGRESS' && data.jobId != null) {
         const progress = data as JobProgress;
-        if (!id || progress.mappingId == null || progress.mappingId === parseInt(id, 10)) {
+        if (!id || progress.mappingId == null || progress.mappingId === id) {
           setRecentJobs((jobs) => {
             const job = jobs.find((j) => j.id === progress.jobId);
             if (!job || isLiveSyncStatus(job.status)) {
@@ -100,7 +100,7 @@ export const RepoDetailPage: React.FC = () => {
       }
       if ((data.type === 'DIFF_PROGRESS' || data.type === 'DIFF_COMPLETE') && data.mappingId != null) {
         const progress = data as DiffInspectionProgress;
-        if (id && progress.mappingId === parseInt(id, 10)) {
+        if (id && progress.mappingId === id) {
           setDiffProgress(progress);
         }
       }
@@ -117,7 +117,7 @@ export const RepoDetailPage: React.FC = () => {
     setMapping(res);
   };
 
-  const handleTriggerSync = async (mappingId: number, branch?: string, overwriteFromSource = false, startFresh = false) => {
+  const handleTriggerSync = async (mappingId: string, branch?: string, overwriteFromSource = false, startFresh = false) => {
     try {
       await triggerManualSync(mappingId, branch || '*', 'A_TO_B', overwriteFromSource, startFresh);
       setTimeout(loadRepoData, 1500);
@@ -126,7 +126,7 @@ export const RepoDetailPage: React.FC = () => {
     }
   };
 
-  const handleDelete = async (mappingId: number) => {
+  const handleDelete = async (mappingId: string) => {
     try {
       await deleteMapping(mappingId);
       navigate('/repos');
@@ -162,6 +162,7 @@ export const RepoDetailPage: React.FC = () => {
       mapping={mapping}
       activeRepoTab={activeRepoTab}
       onUpdate={handleUpdate}
+      onMappingLoaded={setMapping}
       onTriggerSync={handleTriggerSync}
       onDelete={handleDelete}
       onBack={() => navigate('/repos')}

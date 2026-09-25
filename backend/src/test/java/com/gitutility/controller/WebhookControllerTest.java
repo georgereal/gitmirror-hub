@@ -67,7 +67,8 @@ class WebhookControllerTest {
                 releaseAndStatusSyncService,
                 unmappedWebhookEventRepository,
                 refOriginService,
-                new com.gitutility.service.RefInterestPolicy("agents/,dependabot/", 45_000L, true)
+                new com.gitutility.service.RefInterestPolicy("agents/,dependabot/", 45_000L, true),
+                null
         );
         webhookController = new WebhookController(
                 mappingRepository,
@@ -80,7 +81,7 @@ class WebhookControllerTest {
     @Test
     void testEnqueueValidPushWebhook() {
         RepoMapping mapping = RepoMapping.builder()
-                .id(1L)
+                .id("1")
                 .name("test-pair")
                 .repoAUrl("https://github.com/org/repo-a.git")
                 .repoBUrl("https://github.com/org/repo-b.git")
@@ -88,11 +89,11 @@ class WebhookControllerTest {
                 .syncDirection(SyncDirection.BIDIRECTIONAL)
                 .build();
 
-        when(mappingRepository.findById(1L)).thenReturn(Optional.of(mapping));
+        when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
         when(dedupLedgerService.isSystemGeneratedEcho(any(), eq("sha123456"))).thenReturn(false);
         when(syncJobRepository.save(any(SyncJob.class))).thenAnswer(i -> {
             SyncJob j = i.getArgument(0);
-            j.setId(101L);
+            j.setId("101");
             return j;
         });
 
@@ -116,7 +117,7 @@ class WebhookControllerTest {
                 """;
 
         ResponseEntity<?> response = webhookController.handleMappingSpecificWebhook(
-                1L, "push", null, payload
+                "1", "push", null, payload
         );
 
         assertEquals(HttpStatus.ACCEPTED, response.getStatusCode());
@@ -128,7 +129,7 @@ class WebhookControllerTest {
     @Test
     void testSkipWebhookWhenLoopEchoDetected() {
         RepoMapping mapping = RepoMapping.builder()
-                .id(1L)
+                .id("1")
                 .name("test-pair")
                 .repoAUrl("https://github.com/org/repo-a.git")
                 .repoBUrl("https://github.com/org/repo-b.git")
@@ -136,7 +137,7 @@ class WebhookControllerTest {
                 .syncDirection(SyncDirection.BIDIRECTIONAL)
                 .build();
 
-        when(mappingRepository.findById(1L)).thenReturn(Optional.of(mapping));
+        when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
         when(dedupLedgerService.isSystemGeneratedEcho(any(), eq("sha123456"))).thenReturn(true);
 
         String payload = """
@@ -150,7 +151,7 @@ class WebhookControllerTest {
                 """;
 
         ResponseEntity<?> response = webhookController.handleMappingSpecificWebhook(
-                1L, "push", null, payload
+                "1", "push", null, payload
         );
 
         assertEquals(HttpStatus.OK, response.getStatusCode());

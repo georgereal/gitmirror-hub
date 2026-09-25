@@ -20,14 +20,14 @@ import java.util.List;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class BulkMirrorResponse {
 
-    private Long submissionId;
+    private String submissionId;
 
     private List<Row> rows;
     private int createdQueuedCount;
     private int skippedCount;
     private int failedValidationCount;
 
-    public static BulkMirrorResponse of(Long submissionId, List<Row> rows) {
+    public static BulkMirrorResponse of(String submissionId, List<Row> rows) {
         List<Row> safe = rows != null ? rows : List.of();
         return BulkMirrorResponse.builder()
                 .submissionId(submissionId)
@@ -49,7 +49,7 @@ public class BulkMirrorResponse {
         private String destUrl;
         private Outcome outcome;
         private String reason;
-        private Long mappingId;
-        private Long jobId;
+        private String mappingId;
+        private String jobId;
     }
 }

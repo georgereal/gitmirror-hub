@@ -104,7 +104,7 @@ export const ObservabilityPage: React.FC = () => {
     return () => cleanup();
   }, []);
 
-  const handleRetryJob = async (jobId: number) => {
+  const handleRetryJob = async (jobId: string) => {
     try {
       await retryJob(jobId);
       await loadData();
@@ -113,7 +113,7 @@ export const ObservabilityPage: React.FC = () => {
     }
   };
 
-  const handleCancelJob = async (jobId: number) => {
+  const handleCancelJob = async (jobId: string) => {
     try {
       await cancelJob(jobId);
       await loadData();
@@ -122,7 +122,7 @@ export const ObservabilityPage: React.FC = () => {
     }
   };
 
-  const handlePauseJob = async (jobId: number) => {
+  const handlePauseJob = async (jobId: string) => {
     try {
       await pauseJob(jobId);
       await loadData();

@@ -12,13 +12,13 @@ export const BannerHero: React.FC<BannerHeroProps> = ({ onSyncFromGitHub }) => {
 
   return (
     <div className="relative overflow-hidden rounded-2xl border border-zinc-200/90 bg-white shadow-sm mb-8 transition-all">
-      <button
+      {/*<button
         onClick={() => setDismissed(true)}
         className="absolute top-4 right-4 p-1 text-zinc-400 hover:text-zinc-600 rounded-lg hover:bg-zinc-100 transition-colors z-10"
         title="Dismiss banner"
       >
         <X className="w-4 h-4" />
-      </button>
+      </button> */}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 items-center">
         {/* Left Side: Mock Pull Request / Mirror Sync Preview Card */}
@@ -34,7 +34,7 @@ export const BannerHero: React.FC<BannerHeroProps> = ({ onSyncFromGitHub }) => {
                 <span>Synchronized</span>
               </span>
               <span className="text-[11px] text-zinc-400 font-mono">
-                AMQP Queue: 0 backlog
+                Queue: 0 backlog
               </span>
             </div>
 
@@ -49,7 +49,7 @@ export const BannerHero: React.FC<BannerHeroProps> = ({ onSyncFromGitHub }) => {
 
             <div className="flex items-center space-x-2 pt-1">
               <span className="px-2.5 py-1 bg-zinc-800 text-zinc-300 text-[11px] font-mono rounded-md border border-zinc-700">
-                origin (GitHub)
+                source (GitHub)
               </span>
               <span className="text-zinc-500 text-xs">➔</span>
               <span className="px-2.5 py-1 bg-zinc-800 text-zinc-300 text-[11px] font-mono rounded-md border border-zinc-700">
@@ -95,7 +95,7 @@ export const BannerHero: React.FC<BannerHeroProps> = ({ onSyncFromGitHub }) => {
             </li>
             <li className="flex items-center space-x-2">
               <Check className="w-4 h-4 text-emerald-600 shrink-0" />
-              <span>Cloud message queue with Dead Letter Queue (DLQ) failover resilience</span>
+              <span>Message queue with Dead Letter Queue (DLQ) failover resilience</span>
             </li>
           </ul>
 

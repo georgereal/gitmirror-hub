@@ -53,7 +53,7 @@ class JobExecutionStateServiceTest {
 
     @Test
     void skipStageAdvancesResumeCursor() {
-        SyncJob job = SyncJob.builder().id(9L).status(SyncStatus.PAUSED).build();
+        SyncJob job = SyncJob.builder().id("9").status(SyncStatus.PAUSED).build();
         SyncPipelineState pipeline = SyncPipelineState.initial();
         pipeline.markDone(SyncPipelineState.FETCH_SOURCE, "done");
         pipeline.markCurrent(SyncPipelineState.INSPECT_DEST, "fetching");

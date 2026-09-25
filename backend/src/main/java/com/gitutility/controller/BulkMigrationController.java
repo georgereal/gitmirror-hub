@@ -28,7 +28,7 @@ public class BulkMigrationController {
     private final BulkSubmissionService bulkSubmissionService;
 
     @GetMapping("/{id}")
-    public ResponseEntity<BulkSubmission> getSubmission(@PathVariable Long id) {
+    public ResponseEntity<BulkSubmission> getSubmission(@PathVariable String id) {
         return bulkSubmissionRepository.findById(id)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
@@ -42,7 +42,7 @@ public class BulkMigrationController {
     /** Cancels queued + in-progress jobs of one submission. Skipped rows have no jobs and are untouched. */
     @PostMapping("/{id}/cancel")
     public ResponseEntity<Map<String, Object>> cancelSubmission(
-            @PathVariable Long id,
+            @PathVariable String id,
             @RequestBody(required = false) Map<String, Object> body) {
         Object reasonObj = body != null ? body.get("reason") : null;
         String reason = reasonObj != null ? reasonObj.toString()

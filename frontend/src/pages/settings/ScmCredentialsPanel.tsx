@@ -23,6 +23,7 @@ type FormState = {
   authMode: 'GITHUB_APP' | 'PERSONAL_ACCESS_TOKEN';
   hostUrl: string;
   appId: string;
+  enterpriseSlug: string;
   clientId: string;
   clientSecret: string;
   privateKeyPem: string;
@@ -36,6 +37,7 @@ const emptyForm = (provider: Props['provider']): FormState => ({
   authMode: 'GITHUB_APP',
   hostUrl: provider === 'GITHUB' ? 'https://github.com' : '',
   appId: '',
+  enterpriseSlug: '',
   clientId: '',
   clientSecret: '',
   privateKeyPem: '',
@@ -50,14 +52,14 @@ const inputClass =
 export const ScmCredentialsPanel: React.FC<Props> = ({ provider }) => {
   const [rows, setRows] = useState<ScmCredential[]>([]);
   const [loading, setLoading] = useState(true);
-  const [editingId, setEditingId] = useState<number | 'new' | null>(null);
+  const [editingId, setEditingId] = useState<string | 'new' | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm(provider));
   const [installs, setInstalls] = useState<ScmInstallationOption[]>([]);
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [testById, setTestById] = useState<Record<string, PermissionCheckReport>>({});
   const [copied, setCopied] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [testingId, setTestingId] = useState<number | null>(null);
+  const [testingId, setTestingId] = useState<string | null>(null);
   const [appClientSecret, setAppClientSecret] = useState('');
   const [savingAppSecret, setSavingAppSecret] = useState(false);
   const labelInputRef = useRef<HTMLInputElement>(null);
@@ -118,6 +120,7 @@ export const ScmCredentialsPanel: React.FC<Props> = ({ provider }) => {
       authMode: row.authMode,
       hostUrl: row.hostUrl || '',
       appId: row.appId || '',
+      enterpriseSlug: row.enterpriseSlug || '',
       clientId: row.clientId || '',
       clientSecret: '',
       privateKeyPem: '',
@@ -145,7 +148,7 @@ export const ScmCredentialsPanel: React.FC<Props> = ({ provider }) => {
     try {
       setInstalls(
         await previewScmInstallations({
-          credentialId: typeof editingId === 'number' ? editingId : undefined,
+          credentialId: editingId !== 'new' ? editingId : undefined,
           provider,
           hostUrl: isGhes ? form.hostUrl : 'https://github.com',
           appId: form.appId,
@@ -220,6 +223,7 @@ export const ScmCredentialsPanel: React.FC<Props> = ({ provider }) => {
         hostUrl: isGhes ? form.hostUrl : 'https://github.com',
         authMode: form.authMode,
         appId: form.authMode === 'GITHUB_APP' ? form.appId : undefined,
+        enterpriseSlug: form.authMode === 'GITHUB_APP' && !isGhes ? form.enterpriseSlug : undefined,
         clientId: form.authMode === 'GITHUB_APP' ? form.clientId || undefined : undefined,
         clientSecret: form.clientSecret || undefined,
         privateKeyPem: form.privateKeyPem || undefined,
@@ -247,7 +251,7 @@ export const ScmCredentialsPanel: React.FC<Props> = ({ provider }) => {
     }
   };
 
-  const remove = async (id: number) => {
+  const remove = async (id: string) => {
     if (!confirm('Delete this credential? Pairs that still reference it will block delete.')) return;
     try {
       await deleteScmCredential(id);
@@ -258,7 +262,7 @@ export const ScmCredentialsPanel: React.FC<Props> = ({ provider }) => {
     }
   };
 
-  const test = async (id: number) => {
+  const test = async (id: string) => {
     setTestingId(id);
     try {
       const report = await testScmCredential(id);
@@ -400,6 +404,25 @@ export const ScmCredentialsPanel: React.FC<Props> = ({ provider }) => {
                 />
               </div>
             </div>
+
+            {!isGhes && (
+              <div>
+                {fieldLabel(
+                  'Enterprise slug',
+                  <InfoTooltip
+                    title="Enterprise slug"
+                    whatIsIt="The slug in https://github.com/enterprises/SLUG. GitHub does not put this on an installation."
+                    howItWorks="Optional. Replica rulesets use it for an enterprise ruleset. Leave it empty to keep that scope off. GHES does not use this field."
+                  />
+                )}
+                <input
+                  className={inputClass}
+                  value={form.enterpriseSlug}
+                  onChange={(e) => setForm({ ...form, enterpriseSlug: e.target.value })}
+                  placeholder="acme-inc"
+                />
+              </div>
+            )}
 
             <div>
               {fieldLabel(
@@ -680,6 +703,12 @@ export const ScmCredentialsPanel: React.FC<Props> = ({ provider }) => {
             <span>
               <span className="text-zinc-400 font-semibold uppercase tracking-wider text-[10px] mr-1">App</span>
               <span className="font-mono text-zinc-800">{row.appId}</span>
+            </span>
+          )}
+          {isApp && !isGhes && row.enterpriseSlug && (
+            <span>
+              <span className="text-zinc-400 font-semibold uppercase tracking-wider text-[10px] mr-1">Enterprise</span>
+              <span className="font-mono text-zinc-800">{row.enterpriseSlug}</span>
             </span>
           )}
           {isGhes && row.hostUrl && (

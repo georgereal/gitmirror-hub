@@ -59,8 +59,8 @@ public class GitComparisonService {
     private static final long QUICK_DIFF_CACHE_TTL_MS = 45_000;
     private static final long BRANCH_LIST_CACHE_TTL_MS = 120_000;
 
-    private final ConcurrentHashMap<Long, CachedQuickDiff> quickDiffCache = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<Long, BranchListCache> branchListCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, CachedQuickDiff> quickDiffCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, BranchListCache> branchListCache = new ConcurrentHashMap<>();
 
     private record CachedQuickDiff(SyncDiffReport report, long expiresAtMs) {}
 
@@ -85,11 +85,11 @@ public class GitComparisonService {
             int tagAndNoteCount,
             int destTagCount) {}
 
-    public SyncDiffReport computeSyncDiff(Long mappingId) {
+    public SyncDiffReport computeSyncDiff(String mappingId) {
         return computeSyncDiff(mappingId, DiffInspectOptions.quick());
     }
 
-    public SyncDiffReport computeSyncDiff(Long mappingId, DiffInspectOptions options) {
+    public SyncDiffReport computeSyncDiff(String mappingId, DiffInspectOptions options) {
         DiffInspectOptions inspect = options != null ? options : DiffInspectOptions.quick();
         boolean quickInspect = !inspect.refresh() && !inspect.includeMetadata();
         long now = System.currentTimeMillis();
@@ -120,14 +120,14 @@ public class GitComparisonService {
         return report;
     }
 
-    public void invalidateQuickDiffCache(Long mappingId) {
+    public void invalidateQuickDiffCache(String mappingId) {
         if (mappingId != null) {
             quickDiffCache.remove(mappingId);
             branchListCache.remove(mappingId);
         }
     }
 
-    private SyncDiffReport computeSyncDiffUncached(Long mappingId, DiffInspectOptions inspect) {
+    private SyncDiffReport computeSyncDiffUncached(String mappingId, DiffInspectOptions inspect) {
         DiffInspectionProgressService.Session progress = diffInspectionProgressService.open(mappingId, inspect);
         try {
             return computeSyncDiffUncached(mappingId, inspect, progress);
@@ -136,7 +136,7 @@ public class GitComparisonService {
         }
     }
 
-    private SyncDiffReport computeSyncDiffUncached(Long mappingId, DiffInspectOptions inspect,
+    private SyncDiffReport computeSyncDiffUncached(String mappingId, DiffInspectOptions inspect,
                                                    DiffInspectionProgressService.Session progress) {
         RepoMapping mapping = mappingRepository.findById(mappingId)
                 .orElseThrow(() -> new IllegalArgumentException("Mapping not found for ID: " + mappingId));
@@ -1123,7 +1123,7 @@ public class GitComparisonService {
         return String.format("%.1f %sB", (double) bytes / (1L << (z * 10)), " KMGTPE".charAt(z));
     }
 
-    private File getOrCreateBareRepoDir(Long mappingId) {
+    private File getOrCreateBareRepoDir(String mappingId) {
         Path base = Paths.get(workspaceDir);
         try {
             if (!Files.exists(base)) {

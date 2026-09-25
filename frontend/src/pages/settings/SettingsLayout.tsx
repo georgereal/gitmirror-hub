@@ -1,70 +1,30 @@
 import React from 'react';
-import { NavLink, Outlet } from 'react-router';
-import { ShieldCheck, Cpu, HardDrive, Terminal, ToggleLeft } from 'lucide-react';
+import { Outlet, useLocation } from 'react-router';
+import { Database } from 'lucide-react';
+import { usePersistenceModule } from '../../hooks/usePersistenceModule';
+import { settingsNavItems } from './settingsNav';
 
 export const SettingsLayout: React.FC = () => {
-  const navItems = [
-    {
-      to: '/settings/providers',
-      label: 'SCM Providers & Auth',
-      description: 'GitHub App, PAT, and enabled SCM providers',
-      icon: ShieldCheck,
-    },
-    {
-      to: '/settings/feature-toggles',
-      label: 'Feature toggles',
-      description: 'Public repos, optional providers, product capability switches',
-      icon: ToggleLeft,
-    },
-    {
-      to: '/settings/system-engine',
-      label: 'System Engine & Circuit Breaker',
-      description: 'Self-healing probers, jittered backoff & concurrency limits',
-      icon: Cpu,
-    },
-    {
-      to: '/settings/storage',
-      label: 'Storage Tiers & NAS Mounts',
-      description: 'NVMe disk quotas, NAS/NFS mounts & LRU eviction',
-      icon: HardDrive,
-    },
-    {
-      to: '/settings/logging',
-      label: 'Enterprise Logging & SIEM',
-      description: 'Splunk HEC, Logstash/ELK, Syslog & dynamic log levels',
-      icon: Terminal,
-    },
-  ];
+  const { persistence, loading: persistenceLoading } = usePersistenceModule();
+  const { pathname } = useLocation();
+  const current = settingsNavItems.find((item) => pathname.startsWith(item.to)) ?? settingsNavItems[0];
 
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-base font-semibold text-zinc-900">Enterprise Settings & Infrastructure</h2>
-        <p className="text-xs text-zinc-500 mt-0.5">
-          Configure SCM provider integrations, feature toggles, storage tiers, retry resilience, and SIEM logging sinks.
+        <h2 className="text-base font-semibold text-zinc-900">{current.label}</h2>
+        <p className="text-xs text-zinc-500 mt-0.5">{current.description}</p>
+        <p className="mt-2 inline-flex items-start gap-1.5 text-[11px] text-zinc-600 bg-zinc-50 border border-zinc-200 rounded-lg px-2.5 py-1.5">
+          <Database className="w-3.5 h-3.5 text-zinc-500 shrink-0 mt-0.5" />
+          <span>
+            <span className="font-semibold text-zinc-900">
+              Store · {persistenceLoading ? '…' : persistence.displayName}
+            </span>
+            {!persistenceLoading && (
+              <span className="text-zinc-500"> — {persistence.description}</span>
+            )}
+          </span>
         </p>
-      </div>
-
-      <div className="flex border-b border-zinc-200 overflow-x-auto space-x-2">
-        {navItems.map((item) => {
-          const Icon = item.icon;
-          return (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              className={({ isActive }) =>
-                `flex items-center space-x-2 px-4 py-2.5 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${
-                  isActive
-                    ? 'border-zinc-900 text-zinc-900 font-semibold'
-                    : 'border-transparent text-zinc-500 hover:text-zinc-700'
-                }`
-              }
-            >
-              <Icon className="w-4 h-4" />
-              <span>{item.label}</span>
-            </NavLink>
-          );
-        })}
       </div>
 
       <Outlet />

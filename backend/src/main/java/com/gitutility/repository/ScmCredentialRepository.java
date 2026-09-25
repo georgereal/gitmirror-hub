@@ -1,14 +1,15 @@
 package com.gitutility.repository;
 
 import com.gitutility.model.entity.ScmCredential;
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.stereotype.Repository;
 
 import java.util.List;
 import java.util.Optional;
 
-@Repository
-public interface ScmCredentialRepository extends JpaRepository<ScmCredential, Long> {
+/**
+ * Store facade for SCM credentials (GitHub App installations / PATs).
+ * Exactly one provider-backed implementation is active: H2 ({@code repository.h2}) or MongoDB ({@code repository.mongo}).
+ */
+public interface ScmCredentialRepository {
 
     List<ScmCredential> findByProviderOrderByIdAsc(String provider);
 
@@ -21,4 +22,22 @@ public interface ScmCredentialRepository extends JpaRepository<ScmCredential, Lo
     Optional<ScmCredential> findByInstallationIdAndProvider(String installationId, String provider);
 
     long countByProvider(String provider);
+
+    ScmCredential save(ScmCredential entity);
+
+    List<ScmCredential> saveAll(Iterable<ScmCredential> entities);
+
+    Optional<ScmCredential> findById(String id);
+
+    boolean existsById(String id);
+
+    List<ScmCredential> findAll();
+
+    long count();
+
+    void delete(ScmCredential entity);
+
+    void deleteById(String id);
+
+    void deleteAll();
 }

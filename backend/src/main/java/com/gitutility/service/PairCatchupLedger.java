@@ -61,7 +61,7 @@ public class PairCatchupLedger {
         }
     }
 
-    public void recordGitSuccess(Long mappingId, GitSyncEngine.SyncResult result) {
+    public void recordGitSuccess(String mappingId, GitSyncEngine.SyncResult result) {
         if (mappingId == null || result == null || !result.success) {
             return;
         }
@@ -85,7 +85,7 @@ public class PairCatchupLedger {
         }
     }
 
-    public void recordPrListCompleted(Long mappingId) {
+    public void recordPrListCompleted(String mappingId) {
         if (mappingId == null) {
             return;
         }
@@ -99,7 +99,7 @@ public class PairCatchupLedger {
         }
     }
 
-    public void recordReleaseSyncCompleted(Long mappingId) {
+    public void recordReleaseSyncCompleted(String mappingId) {
         if (mappingId == null) {
             return;
         }
@@ -113,7 +113,7 @@ public class PairCatchupLedger {
         }
     }
 
-    public void recordInspectSuccess(Long mappingId, String sourceFingerprint, String destFingerprint,
+    public void recordInspectSuccess(String mappingId, String sourceFingerprint, String destFingerprint,
                                      List<GitLfsSyncService.LfsObject> verifiedLfs) {
         if (mappingId == null) {
             return;
@@ -186,7 +186,7 @@ public class PairCatchupLedger {
         return misses;
     }
 
-    public void recordForkMisses(Long mappingId, Set<Long> sourcePrNumbers) {
+    public void recordForkMisses(String mappingId, Set<Long> sourcePrNumbers) {
         if (mappingId == null || sourcePrNumbers == null || sourcePrNumbers.isEmpty()) {
             return;
         }
@@ -207,7 +207,7 @@ public class PairCatchupLedger {
         }
     }
 
-    public void clearForkMisses(Long mappingId, Set<Long> sourcePrNumbers) {
+    public void clearForkMisses(String mappingId, Set<Long> sourcePrNumbers) {
         if (mappingId == null || sourcePrNumbers == null || sourcePrNumbers.isEmpty()) {
             return;
         }

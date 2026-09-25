@@ -118,7 +118,7 @@ public class SystemEngineConfigAndCircuitBreakerTest {
     @Test
     void testSystemEngineConfigUpdateAndHotReload() {
         SystemEngineConfig initialConfig = SystemEngineConfig.builder()
-                .id(1L)
+                .id("1")
                 .localDir("/tmp/local-test")
                 .nasDir("/tmp/nas-test")
                 .maxDiskQuotaMb(20480L)

@@ -6,8 +6,8 @@ interface MirrorPairsViewProps {
   mappings: RepoMapping[];
   onAdd: () => void;
   onEdit: (mapping: RepoMapping) => void;
-  onDelete: (id: number) => void;
-  onTriggerSync: (id: number, branch?: string, direction?: string) => void;
+  onDelete: (id: string) => void;
+  onTriggerSync: (id: string, branch?: string, direction?: string) => void;
 }
 
 export const MirrorPairsView: React.FC<MirrorPairsViewProps> = ({
@@ -17,9 +17,9 @@ export const MirrorPairsView: React.FC<MirrorPairsViewProps> = ({
   onDelete,
   onTriggerSync,
 }) => {
-  const [triggeringId, setTriggeringId] = useState<number | null>(null);
+  const [triggeringId, setTriggeringId] = useState<string | null>(null);
 
-  const handleSyncClick = async (id: number) => {
+  const handleSyncClick = async (id: string) => {
     setTriggeringId(id);
     try {
       await onTriggerSync(id);

@@ -39,15 +39,15 @@ class StorageTieringTest {
 
     @Test
     void testResolveRepoDirectoryForTiers() {
-        File hotDir = storageTieringService.resolveRepoDirectory(1L, StorageTier.HOT_PERSISTENT);
+        File hotDir = storageTieringService.resolveRepoDirectory("1", StorageTier.HOT_PERSISTENT);
         assertTrue(hotDir.getAbsolutePath().contains("git-utility-mirrors-test"));
         assertTrue(hotDir.getName().equals("pair-1.git"));
 
-        File nasDir = storageTieringService.resolveRepoDirectory(2L, StorageTier.NAS_MOUNT);
+        File nasDir = storageTieringService.resolveRepoDirectory("2", StorageTier.NAS_MOUNT);
         assertTrue(nasDir.getAbsolutePath().contains("git-utility-nas-test"));
         assertTrue(nasDir.getName().equals("pair-2.git"));
 
-        File ephemeralDir = storageTieringService.resolveRepoDirectory(3L, StorageTier.EPHEMERAL_STREAM);
+        File ephemeralDir = storageTieringService.resolveRepoDirectory("3", StorageTier.EPHEMERAL_STREAM);
         assertTrue(ephemeralDir.getName().startsWith("git-ephemeral-pair-3-"));
 
         // Cleanup ephemeral test dir
@@ -57,9 +57,9 @@ class StorageTieringTest {
 
     @Test
     void testStorageStatusReporting() {
-        RepoMapping m1 = RepoMapping.builder().id(1L).name("pair-1").storageTier(StorageTier.HOT_PERSISTENT).build();
-        RepoMapping m2 = RepoMapping.builder().id(2L).name("pair-2").storageTier(StorageTier.NAS_MOUNT).build();
-        RepoMapping m3 = RepoMapping.builder().id(3L).name("pair-3").storageTier(StorageTier.EPHEMERAL_STREAM).build();
+        RepoMapping m1 = RepoMapping.builder().id("1").name("pair-1").storageTier(StorageTier.HOT_PERSISTENT).build();
+        RepoMapping m2 = RepoMapping.builder().id("2").name("pair-2").storageTier(StorageTier.NAS_MOUNT).build();
+        RepoMapping m3 = RepoMapping.builder().id("3").name("pair-3").storageTier(StorageTier.EPHEMERAL_STREAM).build();
 
         when(repoMappingRepository.findAll()).thenReturn(List.of(m1, m2, m3));
 

@@ -21,6 +21,7 @@ import org.eclipse.jgit.transport.FetchResult;
 import org.eclipse.jgit.transport.PushResult;
 import org.eclipse.jgit.transport.RefSpec;
 import org.eclipse.jgit.transport.RemoteRefUpdate;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -49,6 +50,7 @@ public class PullRequestSyncService {
     private final PairCatchupLedger pairCatchupLedger;
     private final ProviderRateMeter providerRateMeter;
     private final ExecutorService prCreateExecutor;
+    private PushBatchConcurrencyService pushBatchConcurrencyService;
 
     @Value("${git-utility.git.pr-fork-fetch-batch-size:32}")
     private int prForkFetchBatchSize;
@@ -110,22 +112,45 @@ public class PullRequestSyncService {
         this.prCreateExecutor = prCreateExecutor;
     }
 
+    @Autowired(required = false)
+    public void setPushBatchConcurrencyService(PushBatchConcurrencyService pushBatchConcurrencyService) {
+        this.pushBatchConcurrencyService = pushBatchConcurrencyService;
+    }
+
+    private void awaitRateLimitCooldown() {
+        if (pushBatchConcurrencyService == null) {
+            return;
+        }
+        try {
+            pushBatchConcurrencyService.awaitClear();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while waiting for rate-limit cooldown", e);
+        }
+    }
+
+    private void noteRateLimit(Throwable error) {
+        if (pushBatchConcurrencyService != null) {
+            pushBatchConcurrencyService.noteIfRateLimited(error);
+        }
+    }
+
     /**
      * Initial bulk synchronization of open Pull Requests from source to target.
      * Operates seamlessly across GitHub, GitHub Enterprise, Bitbucket, and GitLab via ScmProviderFacade.
      */
-    public int syncOpenPullRequests(Long mappingId, String sourceRepoUrl, String targetRepoUrl) {
+    public int syncOpenPullRequests(String mappingId, String sourceRepoUrl, String targetRepoUrl) {
         return syncOpenPullRequests(mappingId, sourceRepoUrl, targetRepoUrl, null);
     }
 
-    public int syncOpenPullRequests(Long mappingId, String sourceRepoUrl, String targetRepoUrl, Consumer<String> progress) {
+    public int syncOpenPullRequests(String mappingId, String sourceRepoUrl, String targetRepoUrl, Consumer<String> progress) {
         return syncOpenPullRequests(mappingId, sourceRepoUrl, targetRepoUrl, null, progress);
     }
 
-    public int syncOpenPullRequests(Long mappingId,
+    public int syncOpenPullRequests(String mappingId,
                                     String sourceRepoUrl,
                                     String targetRepoUrl,
-                                    Long jobId,
+                                    String jobId,
                                     Consumer<String> progress) {
         String sourceFullName = scmProviderFacade.parseRepoFullName(sourceRepoUrl);
         String targetFullName = scmProviderFacade.parseRepoFullName(targetRepoUrl);
@@ -134,6 +159,7 @@ public class PullRequestSyncService {
             log.debug("Skipping PR sync: could not parse repository names.");
             return 0;
         }
+        awaitRateLimitCooldown();
 
         ScmProviderAdapter sourceAdapter = scmProviderFacade.getAdapterForUrl(sourceRepoUrl);
         ScmProviderAdapter targetAdapter = scmProviderFacade.getAdapterForUrl(targetRepoUrl);
@@ -146,8 +172,10 @@ public class PullRequestSyncService {
 
         try {
             RepoMapping mapping = repoMappingRepository.findById(mappingId).orElse(null);
-            Long sourceCredId = credentialForUrl(mapping, sourceRepoUrl);
-            Long targetCredId = credentialForUrl(mapping, targetRepoUrl);
+            String sourceCredId = credentialForUrl(mapping, sourceRepoUrl);
+            String targetCredId = credentialForUrl(mapping, targetRepoUrl);
+            String sourceInstallId = installationForUrl(mapping, sourceRepoUrl);
+            String targetInstallId = installationForUrl(mapping, targetRepoUrl);
             File repoDir = resolveRepoDir(mappingId, mapping);
             if (repoDir != null && repoDir.exists()) {
                 BareRepoHousekeeping.prepareRepoDirectory(repoDir);
@@ -197,7 +225,7 @@ public class PullRequestSyncService {
                 checkJobControl(jobId);
 
                 PrListPage page;
-                try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(sourceCredId)) {
+                try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(sourceCredId, sourceInstallId)) {
                     page = sourceAdapter.listOpenPullRequestsPage(sourceFullName, cursor, pageSize);
                 }
                 if (!loggedTransport && progress != null) {
@@ -218,7 +246,7 @@ public class PullRequestSyncService {
                 }
                 totalMetadataUpdated += reconcileMappedOpenPrsOnPage(
                         mapping, page.items(), mappingIndex, sourceFullName, targetFullName,
-                        targetAdapter, targetCredId, progress);
+                        targetAdapter, targetCredId, targetInstallId, progress);
 
                 List<MutablePendingPr> pagePending = buildPendingFromPage(page.items(), mappingIndex);
                 if (progress != null) {
@@ -259,7 +287,7 @@ public class PullRequestSyncService {
                     totalSynced += flushPendingPullRequests(
                             mappingId, sourceFullName, targetFullName, targetRepoUrl, jobId,
                             targetAdapter, mapping, mappingIndex, pendingBuffer,
-                            progress, repoDir, targetCredId, forkBudget);
+                            progress, repoDir, targetCredId, targetInstallId, forkBudget);
                     pendingBuffer.clear();
                     stageProgress.setPrListCursor(cursor);
                     stageProgress.setPrListComplete(!hasNext);
@@ -280,7 +308,7 @@ public class PullRequestSyncService {
                 totalSynced += flushPendingPullRequests(
                         mappingId, sourceFullName, targetFullName, targetRepoUrl, jobId,
                         targetAdapter, mapping, mappingIndex, pendingBuffer,
-                        progress, repoDir, targetCredId, forkBudget);
+                        progress, repoDir, targetCredId, targetInstallId, forkBudget);
             }
 
             stageProgress.setPrListCursor(null);
@@ -291,7 +319,7 @@ public class PullRequestSyncService {
             if (deltaMode || stoppedEarlyForDelta) {
                 totalClosed = closeMappedPrsFromRecentlyClosed(
                         mapping, mappingId, sourceFullName, targetFullName, sourceAdapter, sourceCredId,
-                        deltaCutoff, pageSize, progress);
+                        sourceInstallId, deltaCutoff, pageSize, progress);
             } else {
                 totalClosed = closeMappedPrsMissingFromOpenList(
                         mapping, mappingId, sourceFullName, targetFullName, seenOpenSourceNumbers, progress);
@@ -371,7 +399,8 @@ public class PullRequestSyncService {
                                              String sourceFullName,
                                              String targetFullName,
                                              ScmProviderAdapter targetAdapter,
-                                             Long targetCredId,
+                                             String targetCredId,
+                                             String targetInstallId,
                                              Consumer<String> progress) {
         if (mapping == null || openPrs == null || openPrs.isEmpty() || mappingIndex == null) {
             return 0;
@@ -419,7 +448,7 @@ public class PullRequestSyncService {
             }
             boolean ok = applyOriginMetadataToReplica(
                     mapping, pm, title, mirrorBody, sourceFullName, targetFullName,
-                    targetAdapter, targetCredId, pr.getSourcePrNumber());
+                    targetAdapter, targetCredId, targetInstallId, pr.getSourcePrNumber());
             if (ok) {
                 updated++;
                 mappingIndex.replace(pm);
@@ -436,7 +465,7 @@ public class PullRequestSyncService {
      * After a complete open-PR listing, close replica rows whose origin PR is no longer open.
      */
     private int closeMappedPrsMissingFromOpenList(RepoMapping mapping,
-                                                  Long mappingId,
+                                                  String mappingId,
                                                   String sourceFullName,
                                                   String targetFullName,
                                                   Set<Long> seenOpenSourceNumbers,
@@ -488,11 +517,12 @@ public class PullRequestSyncService {
      * then close matching replica rows. Avoids treating unread open pages as closed.
      */
     private int closeMappedPrsFromRecentlyClosed(RepoMapping mapping,
-                                                 Long mappingId,
+                                                 String mappingId,
                                                  String sourceFullName,
                                                  String targetFullName,
                                                  ScmProviderAdapter sourceAdapter,
-                                                 Long sourceCredId,
+                                                 String sourceCredId,
+                                                 String sourceInstallId,
                                                  Instant cutoff,
                                                  int pageSize,
                                                  Consumer<String> progress) {
@@ -507,7 +537,7 @@ public class PullRequestSyncService {
         boolean loggedTransport = false;
         while (hasNext) {
             PrListPage page;
-            try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(sourceCredId)) {
+            try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(sourceCredId, sourceInstallId)) {
                 page = sourceAdapter.listRecentlyClosedPullRequestsPage(sourceFullName, cursor, pageSize);
             }
             if (page == null || page.items() == null || page.items().isEmpty()) {
@@ -580,7 +610,8 @@ public class PullRequestSyncService {
                                                  String sourceFullName,
                                                  String targetFullName,
                                                  ScmProviderAdapter targetAdapter,
-                                                 Long targetCredId,
+                                                 String targetCredId,
+                                                 String targetInstallId,
                                                  long originPrNumber) {
         Long replicaPrNum = pm.getTargetPrNumber();
         if (replicaPrNum == null || replicaPrNum <= 0 || targetFullName == null || targetAdapter == null) {
@@ -588,7 +619,7 @@ public class PullRequestSyncService {
         }
         long replicaPr = replicaPrNum;
         PullRequestSnapshot replica;
-        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(targetCredId)) {
+        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(targetCredId, targetInstallId)) {
             replica = targetAdapter.getPullRequest(targetFullName, replicaPr);
             if (replica != null && !replicaMatchesLastPush(pm, replica)) {
                 log.warn("PR metadata CAS miss on mapping {} replica PR #{} — origin title '{}' vs replica '{}'",
@@ -629,18 +660,19 @@ public class PullRequestSyncService {
         return pendingCount >= Math.max(1, batchSize);
     }
 
-    private int flushPendingPullRequests(Long mappingId,
+    private int flushPendingPullRequests(String mappingId,
                                          String sourceFullName,
                                          String targetFullName,
                                          String targetRepoUrl,
-                                         Long jobId,
+                                         String jobId,
                                          ScmProviderAdapter targetAdapter,
                                          RepoMapping mapping,
                                          PrMappingIndex mappingIndex,
                                          List<MutablePendingPr> pending,
                                          Consumer<String> progress,
                                          File repoDir,
-                                         Long targetCredId,
+                                         String targetCredId,
+                                         String targetInstallId,
                                          PrForkFetchBudget forkBudget) {
         if (pending == null || pending.isEmpty()) {
             return 0;
@@ -663,10 +695,10 @@ public class PullRequestSyncService {
         }
         return createPendingPullRequests(
                 mappingId, sourceFullName, targetFullName, targetRepoUrl, jobId,
-                targetAdapter, mappingIndex, pending, progress, targetCredId);
+                targetAdapter, mappingIndex, pending, progress, targetCredId, targetInstallId);
     }
 
-    private void checkJobControl(Long jobId) {
+    private void checkJobControl(String jobId) {
         if (jobId == null || jobCancellationService == null) {
             return;
         }
@@ -678,14 +710,14 @@ public class PullRequestSyncService {
         }
     }
 
-    private void persistPrListCheckpoint(Long jobId, JobStageProgress stageProgress) {
+    private void persistPrListCheckpoint(String jobId, JobStageProgress stageProgress) {
         if (jobId == null || jobExecutionStateService == null || stageProgress == null) {
             return;
         }
         jobExecutionStateService.persistProgress(jobId, null, stageProgress);
     }
 
-    private File resolveRepoDir(Long mappingId, RepoMapping mapping) {
+    private File resolveRepoDir(String mappingId, RepoMapping mapping) {
         if (mapping != null && storageTieringService != null) {
             return storageTieringService.resolveRepoDirectory(mappingId, mapping.getStorageTier());
         }
@@ -696,7 +728,7 @@ public class PullRequestSyncService {
                                          RepoMapping mapping,
                                          List<MutablePendingPr> pending,
                                          Consumer<String> progress,
-                                         Long mappingId,
+                                         String mappingId,
                                          String sourceFullName,
                                          String targetFullName,
                                          PrMappingIndex mappingIndex,
@@ -768,7 +800,7 @@ public class PullRequestSyncService {
             }
 
             if (prForkLazyMaterialize) {
-                int[] cacheCounts = cacheForkTipsBatched(git, repoDir, targetCreds, pending, progress, heartbeatStatus);
+                int[] cacheCounts = cacheForkTipsBatched(git, repoDir, targetCreds, mapping.getRepoBUrl(), pending, progress, heartbeatStatus);
                 int cached = cacheCounts[0];
                 int failed = cacheCounts[1];
                 if (forkBudget != null) {
@@ -1005,7 +1037,7 @@ public class PullRequestSyncService {
         }
 
         Map<String, ObjectId> pushed = pushRefSpecBatches(git, repoDir, "target", pushCreds, pushSpecs,
-                "missing PR bases", progress, heartbeatStatus);
+                "missing PR bases", pushRepoUrl, progress, heartbeatStatus);
         int ready = 0;
         Set<String> trackingUpdated = new HashSet<>();
         for (Map.Entry<String, List<MutablePendingPr>> entry : byDestRef.entrySet()) {
@@ -1072,7 +1104,7 @@ public class PullRequestSyncService {
      *
      * @return {@code [cached, missing]}
      */
-    private int[] cacheForkTipsBatched(Git git, File repoDir, CredentialsProvider targetCreds,
+    private int[] cacheForkTipsBatched(Git git, File repoDir, CredentialsProvider targetCreds, String destRepoUrl,
                                        List<MutablePendingPr> pending, Consumer<String> progress,
                                        java.util.concurrent.atomic.AtomicReference<String> heartbeatStatus) {
         int cached = 0;
@@ -1111,7 +1143,7 @@ public class PullRequestSyncService {
                         + " hidden fork object ref(s) to dest (DR cache)...");
             }
             pushRefSpecBatches(git, repoDir, "target", targetCreds, hiddenSpecs,
-                    "hidden fork object refs", progress, heartbeatStatus);
+                    "hidden fork object refs", destRepoUrl, progress, heartbeatStatus);
         }
         return new int[]{cached, failed};
     }
@@ -1147,7 +1179,7 @@ public class PullRequestSyncService {
         }
     }
 
-    private void persistForkObjectCachedStubs(Long mappingId,
+    private void persistForkObjectCachedStubs(String mappingId,
                                               String sourceFullName,
                                               String targetFullName,
                                               List<MutablePendingPr> pending,
@@ -1189,7 +1221,7 @@ public class PullRequestSyncService {
     /**
      * DR / operator path: promote a cached fork tip into {@code fork-pr-{n}} + dest GitHub PR.
      */
-    public Long materializeForkPrForDr(Long mappingId, long sourcePrNumber) {
+    public Long materializeForkPrForDr(String mappingId, long sourcePrNumber) {
         RepoMapping mapping = repoMappingRepository.findById(mappingId)
                 .orElseThrow(() -> new IllegalArgumentException("Mapping not found: " + mappingId));
         PrMapping stub = prMappingRepository.findByMappingIdAndSourcePrNumber(mappingId, sourcePrNumber)
@@ -1264,7 +1296,8 @@ public class PullRequestSyncService {
         String mirrorBody = PrMirrorSupport.buildMirroredBody(
                 sourceFullName, sourcePrNumber, null, null, stub.getTitle());
         Long targetPrNum;
-        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(mapping.getTargetCredentialId())) {
+        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(
+                mapping.getTargetCredentialId(), mapping.getTargetInstallationId())) {
             targetPrNum = targetAdapter.createPullRequest(
                     targetFullName, stub.getTitle() != null ? stub.getTitle() : ("Fork PR #" + sourcePrNumber),
                     mirrorBody, destBranch, base);
@@ -1272,6 +1305,7 @@ public class PullRequestSyncService {
         if (targetPrNum == null) {
             throw new IllegalStateException("Dest PR create returned null for fork PR #" + sourcePrNumber);
         }
+        noteCreatedPullRequest(mapping.getRepoBUrl(), targetPrNum);
         stub.setTargetPrNumber(targetPrNum);
         stub.setHeadBranch(destBranch);
         stub.setState("open");
@@ -1466,7 +1500,7 @@ public class PullRequestSyncService {
         }
 
         Map<String, ObjectId> pushed = pushRefSpecBatches(git, repoDir, "target", pushCreds, pushSpecs,
-                "missing same-repo heads", progress, heartbeatStatus);
+                "missing same-repo heads", pushRepoUrl, progress, heartbeatStatus);
         int materialized = 0;
         Set<String> trackingUpdated = new HashSet<>();
         for (Map.Entry<String, List<MutablePendingPr>> entry : byDestRef.entrySet()) {
@@ -1565,7 +1599,7 @@ public class PullRequestSyncService {
      */
     private Map<String, ObjectId> pushRefSpecBatches(Git git, File repoDir, String pushRemote,
                                                      CredentialsProvider pushCreds, List<RefSpec> specs,
-                                                     String label, Consumer<String> progress,
+                                                     String label, String echoRepoUrl, Consumer<String> progress,
                                                      java.util.concurrent.atomic.AtomicReference<String> heartbeatStatus) {
         Map<String, ObjectId> succeeded = new LinkedHashMap<>();
         if (specs == null || specs.isEmpty()) {
@@ -1585,6 +1619,7 @@ public class PullRequestSyncService {
                         + " (" + Math.min(offset + batch.size(), specs.size()) + "/" + specs.size() + " ref(s))");
             }
             try {
+                recordEchoForRefSpecs(git, echoRepoUrl, batch);
                 Iterable<PushResult> pushResults = git.push()
                         .setRemote(pushRemote)
                         .setRefSpecs(batch)
@@ -1621,16 +1656,17 @@ public class PullRequestSyncService {
         return succeeded;
     }
 
-    private int createPendingPullRequests(Long mappingId,
+    private int createPendingPullRequests(String mappingId,
                                           String sourceFullName,
                                           String targetFullName,
                                           String targetRepoUrl,
-                                          Long jobId,
+                                          String jobId,
                                           ScmProviderAdapter targetAdapter,
                                           PrMappingIndex mappingIndex,
                                           List<MutablePendingPr> pending,
                                           Consumer<String> progress,
-                                          Long targetCredId) {
+                                          String targetCredId,
+                                          String targetInstallId) {
         List<MutablePendingPr> ready = pending.stream()
                 .filter(item -> item.headReady && item.baseReady && !(item.pr.isFork() && prForkLazyMaterialize))
                 .toList();
@@ -1657,6 +1693,7 @@ public class PullRequestSyncService {
                         providerRateMeter.attachJob(jobId);
                     }
                     try {
+                        awaitRateLimitCooldown();
                         SyncDiffReport.PrSyncDetail pr = item.pr;
                         int done = evaluated.incrementAndGet();
                         if (progress != null && (done == 1 || done % 50 == 0 || done == ready.size())) {
@@ -1673,11 +1710,12 @@ public class PullRequestSyncService {
                                 pr.getSourcePrUrl(),
                                 pr.getBody());
                         Long targetPrNum;
-                        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(targetCredId)) {
+                        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(targetCredId, targetInstallId)) {
                             targetPrNum = targetAdapter.createPullRequest(
                                     targetFullName, pr.getTitle(), mirrorBody, item.resolvedHead, pr.getBaseBranch());
                         }
                         if (targetPrNum != null) {
+                            noteCreatedPullRequest(targetRepoUrl, targetPrNum);
                             suppressActionsAfterWrite(targetRepoUrl, jobId);
                             PrMapping created = PrMapping.builder()
                                     .mappingId(mappingId)
@@ -1711,6 +1749,9 @@ public class PullRequestSyncService {
                             }
                         }
                         return null;
+                    } catch (RuntimeException ex) {
+                        noteRateLimit(ex);
+                        throw ex;
                     } finally {
                         if (providerRateMeter != null) {
                             providerRateMeter.detachJob();
@@ -1725,6 +1766,7 @@ public class PullRequestSyncService {
             Thread.currentThread().interrupt();
             log.warn("PR mirror creation interrupted");
         } catch (ExecutionException e) {
+            noteRateLimit(e.getCause() != null ? e.getCause() : e);
             log.warn("PR mirror creation notice: {}", e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
         }
 
@@ -2108,6 +2150,39 @@ public class PullRequestSyncService {
         ledger.recordSystemPush(destRepoUrl, sha);
     }
 
+    private void noteCreatedPullRequest(String repoUrl, Long prNumber) {
+        if (dedupLedgerService != null && prNumber != null && prNumber > 0) {
+            dedupLedgerService.recordMirroredPullRequest(repoUrl, prNumber);
+        }
+    }
+
+    private void recordEchoForRefSpecs(Git git, String repoUrl, List<RefSpec> specs) {
+        if (dedupLedgerService == null || git == null || repoUrl == null || specs == null) {
+            return;
+        }
+        for (RefSpec spec : specs) {
+            if (spec == null) {
+                continue;
+            }
+            String source = spec.getSource();
+            if (source == null || source.isBlank() || source.contains("*")) {
+                String dest = spec.getDestination();
+                if (dest != null && !dest.isBlank() && !dest.contains("*")) {
+                    dedupLedgerService.recordSystemRefDelete(repoUrl, dest);
+                }
+                continue;
+            }
+            try {
+                Ref ref = git.getRepository().exactRef(source);
+                if (ref != null && ref.getObjectId() != null) {
+                    recordDestPushOnLedger(dedupLedgerService, repoUrl, ObjectId.toString(ref.getObjectId()));
+                }
+            } catch (Exception e) {
+                log.debug("Could not record echo SHA for {}: {}", source, e.getMessage());
+            }
+        }
+    }
+
     /**
      * Handles real-time pull_request webhook events.
      */
@@ -2133,6 +2208,11 @@ public class PullRequestSyncService {
         boolean isFork = headRepo != null && !headRepo.isBlank() && !headRepo.equalsIgnoreCase(inboundFullName);
         String authorLogin = PrMirrorSupport.authorLoginFromWebhook(prNode);
         String sourcePrUrl = PrMirrorSupport.sourcePrUrlFromWebhook(prNode);
+        if (inboundRepoUrl != null && dedupLedgerService != null
+                && dedupLedgerService.isMirroredPullRequest(inboundRepoUrl, eventPrNumber)) {
+            log.info("Skipping mirrored PR #{} echo on {}", eventPrNumber, inboundRepoUrl);
+            return;
+        }
 
         try {
             if (isOpenAction(action)) {
@@ -2187,10 +2267,12 @@ public class PullRequestSyncService {
             String mirrorBody = PrMirrorSupport.buildMirroredBody(
                     targetFullName, eventPrNumber, authorLogin, sourcePrUrl, body);
             Long aPrNum;
-            try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(mapping.getSourceCredentialId())) {
+            try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(
+                    mapping.getSourceCredentialId(), mapping.getSourceInstallationId())) {
                 aPrNum = sourceAdapter.createPullRequest(sourceFullName, title, mirrorBody, destHead, baseRef);
             }
             if (aPrNum != null) {
+                noteCreatedPullRequest(mapping.getRepoAUrl(), aPrNum);
                 suppressActionsAfterWrite(mapping.getRepoAUrl(), null);
                 prMappingRepository.save(PrMapping.builder()
                         .mappingId(mapping.getId())
@@ -2281,10 +2363,12 @@ public class PullRequestSyncService {
         String mirrorBody = PrMirrorSupport.buildMirroredBody(
                 sourceFullName, eventPrNumber, authorLogin, sourcePrUrl, body);
         Long targetPrNum;
-        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(mapping.getTargetCredentialId())) {
+        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(
+                mapping.getTargetCredentialId(), mapping.getTargetInstallationId())) {
             targetPrNum = targetAdapter.createPullRequest(targetFullName, title, mirrorBody, destHead, baseRef);
         }
         if (targetPrNum != null) {
+            noteCreatedPullRequest(mapping.getRepoBUrl(), targetPrNum);
             suppressActionsAfterWrite(mapping.getRepoBUrl(), null);
             prMappingRepository.save(PrMapping.builder()
                     .mappingId(mapping.getId())
@@ -2446,7 +2530,7 @@ public class PullRequestSyncService {
         prMappingRepository.save(pm);
     }
 
-    private Optional<PrMapping> findExistingPr(Long mappingId, PairSide inbound, long eventPrNumber,
+    private Optional<PrMapping> findExistingPr(String mappingId, PairSide inbound, long eventPrNumber,
                                                String headRef, String baseRef) {
         Optional<PrMapping> existing = inbound == PairSide.B
                 ? prMappingRepository.findByMappingIdAndTargetPrNumber(mappingId, eventPrNumber)
@@ -2498,12 +2582,26 @@ public class PullRequestSyncService {
     }
 
     private CredentialsProvider gitCreds(RepoMapping mapping, String url, String token) {
-        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(credentialForUrl(mapping, url))) {
+        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(
+                credentialForUrl(mapping, url), installationForUrl(mapping, url))) {
             return scmProviderFacade.getGitCredentials(url, token);
         }
     }
 
-    private static Long credentialForUrl(RepoMapping mapping, String url) {
+    private static String installationForUrl(RepoMapping mapping, String url) {
+        if (mapping == null || url == null) {
+            return null;
+        }
+        if (RepoMappingService.sameRepo(url, mapping.getRepoAUrl())) {
+            return mapping.getSourceInstallationId();
+        }
+        if (RepoMappingService.sameRepo(url, mapping.getRepoBUrl())) {
+            return mapping.getTargetInstallationId();
+        }
+        return null;
+    }
+
+    private static String credentialForUrl(RepoMapping mapping, String url) {
         if (mapping == null || url == null) {
             return null;
         }
@@ -2537,7 +2635,7 @@ public class PullRequestSyncService {
                 || "rejected".equals(a) || "fulfilled".equals(a);
     }
 
-    private void suppressActionsAfterWrite(String repoUrl, Long jobId) {
+    private void suppressActionsAfterWrite(String repoUrl, String jobId) {
         if (actionsTriggerSuppressionService == null || repoUrl == null) {
             return;
         }

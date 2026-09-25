@@ -17,17 +17,36 @@ public class CreateRepoRequest {
     private String accountType;
     @Builder.Default
     private Boolean isPrivate = true;
+    /**
+     * {@code public}, {@code private}, or {@code internal}. When set, this wins over {@link #isPrivate}.
+     * GitHub accepts {@code visibility} on create; internal is an organization visibility.
+     */
+    private String visibility;
     private String description;
 
     public boolean isPrivateRepo() {
+        if (visibility != null && !visibility.isBlank()) {
+            return !"public".equalsIgnoreCase(visibility.trim());
+        }
         return isPrivate == null || isPrivate;
+    }
+
+    /** Lower-case visibility sent to the SCM create API. */
+    public String resolvedVisibility() {
+        if (visibility != null && !visibility.isBlank()) {
+            String v = visibility.trim().toLowerCase(java.util.Locale.ROOT);
+            if ("public".equals(v) || "private".equals(v) || "internal".equals(v)) {
+                return v;
+            }
+        }
+        return isPrivateRepo() ? "private" : "public";
     }
 
     public String getOrg() {
         return owner;
     }
 
-    private Long credentialId;
+    private String credentialId;
 
     public void inferIdentityFromUrl() {
         if (repoUrl == null || repoUrl.isBlank()) {

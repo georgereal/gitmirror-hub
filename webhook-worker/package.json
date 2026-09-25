@@ -4,8 +4,8 @@
   "description": "Ultra-lightweight, resilient Cloudflare Worker webhook gateway for GitMirror Hub",
   "main": "src/index.ts",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "dev": "node scripts/use-env.mjs dev",
+    "deploy": "node scripts/use-env.mjs deploy",
     "tail": "wrangler tail",
     "typecheck": "tsc --noEmit"
   },

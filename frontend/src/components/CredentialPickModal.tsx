@@ -11,10 +11,10 @@ interface CredentialPickModalProps {
   title?: string;
   reason?: string;
   provider?: 'GITHUB' | 'GITHUB_ENTERPRISE';
-  initialCredentialId?: number;
+  initialCredentialId?: string;
   confirmLabel?: string;
   onCancel: () => void;
-  onConfirm: (credentialId: number) => void;
+  onConfirm: (credentialId: string) => void;
 }
 
 export const CredentialPickModal: React.FC<CredentialPickModalProps> = ({
@@ -28,7 +28,7 @@ export const CredentialPickModal: React.FC<CredentialPickModalProps> = ({
   onConfirm,
 }) => {
   const [credentials, setCredentials] = useState<ScmCredential[]>([]);
-  const [selectedId, setSelectedId] = useState<number | ''>('');
+  const [selectedId, setSelectedId] = useState<string | ''>('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,7 +41,7 @@ export const CredentialPickModal: React.FC<CredentialPickModalProps> = ({
         // GitHub App credentials grant the richest permissions — prefer them over PATs.
         const enabled = rows
           .filter((r) => r.enabled)
-          .sort((a, b) => (a.authMode === 'GITHUB_APP' ? 0 : 1) - (b.authMode === 'GITHUB_APP' ? 0 : 1) || a.id - b.id);
+          .sort((a, b) => (a.authMode === 'GITHUB_APP' ? 0 : 1) - (b.authMode === 'GITHUB_APP' ? 0 : 1) || a.id.localeCompare(b.id));
         setCredentials(enabled);
         const preferred =
           initialCredentialId != null && enabled.some((c) => c.id === initialCredentialId)
@@ -91,7 +91,7 @@ export const CredentialPickModal: React.FC<CredentialPickModalProps> = ({
           ) : (
             <select
               value={selectedId}
-              onChange={(e) => setSelectedId(e.target.value ? Number(e.target.value) : '')}
+              onChange={(e) => setSelectedId(e.target.value)}
               className="w-full bg-white border border-zinc-200 rounded-lg px-3 py-2.5 text-xs text-zinc-800 focus:outline-none focus:border-zinc-400"
               autoFocus
             >
@@ -117,7 +117,7 @@ export const CredentialPickModal: React.FC<CredentialPickModalProps> = ({
             disabled={selectedId === '' || loading}
             onClick={() => {
               if (selectedId === '') return;
-              onConfirm(Number(selectedId));
+              onConfirm(selectedId);
             }}
             className="inline-flex items-center space-x-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-40"
           >

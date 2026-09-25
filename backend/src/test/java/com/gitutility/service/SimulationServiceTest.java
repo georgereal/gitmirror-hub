@@ -2,6 +2,7 @@ package com.gitutility.service;
 
 import com.gitutility.messaging.SyncEventBus;
 import com.gitutility.messaging.none.NoneSyncEventBus;
+import com.gitutility.messaging.webhook.WebhookBusControls;
 import com.gitutility.model.dto.SimulationConfigRequest;
 import com.gitutility.model.dto.SyntheticWebhookRequest;
 import com.gitutility.model.entity.RepoMapping;
@@ -42,6 +43,8 @@ class SimulationServiceTest {
     private SyncEventBus syncEventBus;
     @Mock
     private QueueProducerService queueProducerService;
+    @Mock
+    private ObjectProvider<WebhookBusControls> webhookBusControls;
 
     private SimulationService simulationService;
 
@@ -54,7 +57,8 @@ class SimulationServiceTest {
                 syncJobRepository,
                 webSocketNotificationService,
                 syncEventBus,
-                queueProducerService
+                queueProducerService,
+                webhookBusControls
         );
     }
 
@@ -100,7 +104,8 @@ class SimulationServiceTest {
                 syncJobRepository,
                 webSocketNotificationService,
                 mock(NoneSyncEventBus.class),
-                queueProducerService
+                queueProducerService,
+                webhookBusControls
         );
 
         assertTrue(noneSim.isListenerRunning());
@@ -150,21 +155,21 @@ class SimulationServiceTest {
     @Test
     void testEmitSyntheticWebhook() {
         RepoMapping mapping = RepoMapping.builder()
-                .id(1L)
+                .id("1")
                 .name("test-pair")
                 .repoAUrl("https://github.com/a/repo-a.git")
                 .repoBUrl("https://github.com/b/repo-b.git")
                 .build();
 
-        when(mappingRepository.findById(1L)).thenReturn(Optional.of(mapping));
+        when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
         when(syncJobRepository.save(any(SyncJob.class))).thenAnswer(invocation -> {
             SyncJob job = invocation.getArgument(0);
-            job.setId(99L);
+            job.setId("99");
             return job;
         });
 
         SyntheticWebhookRequest req = SyntheticWebhookRequest.builder()
-                .mappingId(1L)
+                .mappingId("1")
                 .branch("feature/test-queue")
                 .commitSha("abcdef123")
                 .commitMessage("test commit")
@@ -174,7 +179,7 @@ class SimulationServiceTest {
         SyncJob emittedJob = simulationService.emitSyntheticWebhook(req);
 
         assertNotNull(emittedJob);
-        assertEquals(99L, emittedJob.getId());
+        assertEquals("99", emittedJob.getId());
         assertEquals(SyncStatus.QUEUED, emittedJob.getStatus());
         assertEquals(TriggerType.SYNTHETIC, emittedJob.getTriggerType());
         assertEquals("abcdef123", emittedJob.getCommitSha());

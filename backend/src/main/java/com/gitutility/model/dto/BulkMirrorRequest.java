@@ -36,9 +36,11 @@ public class BulkMirrorRequest {
 
     /** Option 1 only: destination owner/org, credential and visibility for created repos. */
     private String destOwner;
-    private Long destCredentialId;
+    private String destCredentialId;
     private String destInstallationId;
     private Boolean destPrivate;
+    /** Option 1 / selective create: PUBLIC, PRIVATE, or INTERNAL. Wins over {@link #destPrivate}. */
+    private RepoVisibility destVisibility;
 
     /** Soft guard: bounds the synchronous HTTP request (probing), NOT concurrent execution. */
     public static final int DEFAULT_MAX_ITEMS = 1000;
@@ -52,7 +54,7 @@ public class BulkMirrorRequest {
     public static class BulkItem {
         private String sourceUrl;
         private String sourceProvider;
-        private Long sourceCredentialId;
+        private String sourceCredentialId;
         private String sourceInstallationId;
         private RepoVisibility sourceVisibility;
         private Boolean sourcePublicRead;
@@ -62,8 +64,10 @@ public class BulkMirrorRequest {
 
         /** Option 2: existing destination clone URL; null for Option 1. */
         private String destUrl;
-        private Long destCredentialId;
+        private String destCredentialId;
         private String destInstallationId;
+        /** Visibility of an existing destination, when the picker reported it. */
+        private RepoVisibility destVisibility;
 
         /** Option 2 only: operator's decision on a destination that already has commits. */
         private Boolean includeNonEmptyDest;

@@ -58,27 +58,27 @@ class BulkSubmissionServiceTest {
                 realCancellation);
 
         failedMapping = RepoMapping.builder()
-                .id(1L).name("a").bulkSubmissionId(7L).targetCredentialId(3L)
+                .id("1").name("a").bulkSubmissionId("7").targetCredentialId("3")
                 .repoAUrl("https://github.com/acme/a.git").repoBUrl("https://github.com/target/a.git")
                 .build();
         sibling = RepoMapping.builder()
-                .id(2L).name("b").bulkSubmissionId(7L).targetCredentialId(3L)
+                .id("2").name("b").bulkSubmissionId("7").targetCredentialId("3")
                 .repoAUrl("https://github.com/acme/b.git").repoBUrl("https://github.com/target/b.git")
                 .build();
         otherCredMapping = RepoMapping.builder()
-                .id(3L).name("c").bulkSubmissionId(7L).targetCredentialId(9L)
+                .id("3").name("c").bulkSubmissionId("7").targetCredentialId("9")
                 .repoAUrl("https://github.com/acme/c.git").repoBUrl("https://github.com/target2/c.git")
                 .build();
 
-        lenient().when(mappingRepository.findByBulkSubmissionId(7L))
+        lenient().when(mappingRepository.findByBulkSubmissionId("7"))
                 .thenReturn(List.of(failedMapping, sibling, otherCredMapping));
     }
 
     @Test
     void accessFailureStopsQueuedSiblingsOfSameSubmissionAndCredential() {
-        SyncJob queuedSibling = SyncJob.builder().id(22L).mappingId(2L).pairName("b").status(SyncStatus.QUEUED).build();
-        when(syncJobRepository.findByStatusAndMappingId(SyncStatus.QUEUED, 2L)).thenReturn(List.of(queuedSibling));
-        when(syncJobRepository.findByStatusAndMappingId(SyncStatus.QUEUED, 3L)).thenReturn(List.of());
+        SyncJob queuedSibling = SyncJob.builder().id("22").mappingId("2").pairName("b").status(SyncStatus.QUEUED).build();
+        when(syncJobRepository.findByStatusAndMappingId(SyncStatus.QUEUED, "2")).thenReturn(List.of(queuedSibling));
+        when(syncJobRepository.findByStatusAndMappingId(SyncStatus.QUEUED, "3")).thenReturn(List.of());
 
         int cancelled = service.stopRemainingQueuedOnAccessFailure(failedMapping, "Destination creation failed (access) — batch stopped");
 
@@ -86,9 +86,9 @@ class BulkSubmissionServiceTest {
         assertEquals(SyncStatus.CANCELLED, queuedSibling.getStatus());
         assertTrue(queuedSibling.getErrorMessage().contains("batch stopped"));
         // The failed mapping itself is untouched (its own job is handled by the engine)
-        verify(syncJobRepository, never()).findByStatusAndMappingId(SyncStatus.QUEUED, 1L);
+        verify(syncJobRepository, never()).findByStatusAndMappingId(SyncStatus.QUEUED, "1");
         // Other credentials keep their queued jobs (they may not share the access problem)
-        verify(syncJobRepository, never()).findByStatusAndMappingId(SyncStatus.QUEUED, 3L);
+        verify(syncJobRepository, never()).findByStatusAndMappingId(SyncStatus.QUEUED, "3");
     }
 
     @Test
@@ -100,20 +100,20 @@ class BulkSubmissionServiceTest {
 
     @Test
     void cancelSubmissionCancelsQueuedJobsAndFlagsInProgress() {
-        BulkSubmission submission = BulkSubmission.builder().id(7L).mode("CREATE_DEST").itemCount(3).build();
-        when(bulkSubmissionRepository.findById(7L)).thenReturn(Optional.of(submission));
-        when(syncJobService.cancelQueuedJobs(1L)).thenReturn(2);
-        when(syncJobService.cancelQueuedJobs(2L)).thenReturn(0);
-        when(syncJobService.cancelQueuedJobs(3L)).thenReturn(0);
-        SyncJob inProgress = SyncJob.builder().id(31L).mappingId(3L).pairName("c").status(SyncStatus.IN_PROGRESS).build();
-        when(syncJobRepository.findByStatusAndMappingId(SyncStatus.IN_PROGRESS, 3L)).thenReturn(List.of(inProgress));
+        BulkSubmission submission = BulkSubmission.builder().id("7").mode("CREATE_DEST").itemCount(3).build();
+        when(bulkSubmissionRepository.findById("7")).thenReturn(Optional.of(submission));
+        when(syncJobService.cancelQueuedJobs("1")).thenReturn(2);
+        when(syncJobService.cancelQueuedJobs("2")).thenReturn(0);
+        when(syncJobService.cancelQueuedJobs("3")).thenReturn(0);
+        SyncJob inProgress = SyncJob.builder().id("31").mappingId("3").pairName("c").status(SyncStatus.IN_PROGRESS).build();
+        when(syncJobRepository.findByStatusAndMappingId(SyncStatus.IN_PROGRESS, "3")).thenReturn(List.of(inProgress));
 
-        int cancelled = service.cancelSubmission(7L, "Cancelled by operator (bulk submission)");
+        int cancelled = service.cancelSubmission("7", "Cancelled by operator (bulk submission)");
 
         assertEquals(3, cancelled);
         ArgumentCaptor<BulkSubmission> captor = ArgumentCaptor.forClass(BulkSubmission.class);
         verify(bulkSubmissionRepository).save(captor.capture());
         assertNotNull(captor.getValue().getCancelledAt());
-        assertTrue(realCancellation.isCancelRequested(31L));
+        assertTrue(realCancellation.isCancelRequested("31"));
 	}
 }

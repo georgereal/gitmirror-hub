@@ -5,14 +5,14 @@ package com.gitutility.service;
  */
 public class JobPausedException extends RuntimeException {
 
-    private final Long jobId;
+    private final String jobId;
 
-    public JobPausedException(Long jobId) {
+    public JobPausedException(String jobId) {
         super("Job #" + jobId + " paused by operator");
         this.jobId = jobId;
     }
 
-    public Long getJobId() {
+    public String getJobId() {
         return jobId;
     }
 }

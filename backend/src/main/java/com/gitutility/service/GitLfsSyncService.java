@@ -16,6 +16,7 @@ import org.eclipse.jgit.revwalk.RevObject;
 import org.eclipse.jgit.revwalk.RevTree;
 import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.treewalk.TreeWalk;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
@@ -46,6 +47,7 @@ public class GitLfsSyncService {
     private final ProviderRateMeter providerRateMeter;
     private final ExecutorService lfsDiscoveryExecutor;
     private final ExecutorService lfsTransferExecutor;
+    private PushBatchConcurrencyService pushBatchConcurrencyService;
 
     @Value("${git-utility.git.lfs-batch-size:50}")
     private int lfsBatchSize;
@@ -66,6 +68,29 @@ public class GitLfsSyncService {
         this.providerRateMeter = providerRateMeter;
         this.lfsDiscoveryExecutor = lfsDiscoveryExecutor;
         this.lfsTransferExecutor = lfsTransferExecutor;
+    }
+
+    @Autowired(required = false)
+    public void setPushBatchConcurrencyService(PushBatchConcurrencyService pushBatchConcurrencyService) {
+        this.pushBatchConcurrencyService = pushBatchConcurrencyService;
+    }
+
+    private void awaitRateLimitCooldown() {
+        if (pushBatchConcurrencyService == null) {
+            return;
+        }
+        try {
+            pushBatchConcurrencyService.awaitClear();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while waiting for rate-limit cooldown", e);
+        }
+    }
+
+    private void noteRateLimit(Throwable error) {
+        if (pushBatchConcurrencyService != null) {
+            pushBatchConcurrencyService.noteIfRateLimited(error);
+        }
     }
 
     private static final Pattern LFS_POINTER_PATTERN =
@@ -248,6 +273,7 @@ public class GitLfsSyncService {
         boolean anyResponse = false;
         for (List<LfsObject> batch : batches) {
             batchIndex++;
+            awaitRateLimitCooldown();
             if (listener != null) {
                 listener.onProgress("verify", "destination batch " + batchIndex + "/" + batches.size());
             }
@@ -307,7 +333,7 @@ public class GitLfsSyncService {
     public List<LfsObject> discoverLfsPointers(Repository repository,
                                                LfsProgressListener listener,
                                                BooleanSupplier cancelCheck,
-                                               Long jobId) {
+                                               String jobId) {
         return discoverLfsPointers(repository, Set.of(), listener, cancelCheck, jobId).objects();
     }
 
@@ -315,7 +341,7 @@ public class GitLfsSyncService {
                                                   Set<String> previouslyScannedTips,
                                                   LfsProgressListener listener,
                                                   BooleanSupplier cancelCheck,
-                                                  Long jobId) {
+                                                  String jobId) {
         Set<ObjectId> uniqueCommits;
         try {
             uniqueCommits = BareRepoHousekeeping.uniqueBranchTipObjectIds(repository);
@@ -360,12 +386,38 @@ public class GitLfsSyncService {
         return new LfsDiscoveryResult(new ArrayList<>(found), scannedHex);
     }
 
+    /**
+     * Pointers introduced by commits reachable from {@code afterSha} and not from {@code beforeSha}.
+     * A deleted ref (zero {@code afterSha}) transfers nothing.
+     */
+    public List<LfsObject> discoverPointersBetween(Repository repository, String beforeSha, String afterSha) {
+        if (repository == null || afterSha == null || afterSha.isBlank() || RefOriginService.isDeletedSha(afterSha)) {
+            return List.of();
+        }
+        ObjectId after;
+        try {
+            after = ObjectId.fromString(afterSha.trim());
+        } catch (Exception e) {
+            return List.of();
+        }
+        Set<ObjectId> uninteresting = new LinkedHashSet<>();
+        if (beforeSha != null && !beforeSha.isBlank() && !RefOriginService.isDeletedSha(beforeSha)) {
+            try {
+                uninteresting.add(ObjectId.fromString(beforeSha.trim()));
+            } catch (Exception ignored) {
+                // A new branch has no parent tip to exclude.
+            }
+        }
+        return new ArrayList<>(scanReachableBlobsForLfsPointers(
+                repository, Set.of(after), uninteresting, null, null, null));
+    }
+
     private Set<LfsObject> scanReachableBlobsForLfsPointers(Repository repository,
                                                             Set<ObjectId> startTips,
                                                             Set<ObjectId> uninterestingTips,
                                                             LfsProgressListener listener,
                                                             BooleanSupplier cancelCheck,
-                                                            Long jobId) {
+                                                            String jobId) {
         Set<LfsObject> found = new LinkedHashSet<>();
         if (repository == null || startTips == null || startTips.isEmpty()) {
             return found;
@@ -512,7 +564,7 @@ public class GitLfsSyncService {
                                        List<LfsObject> objects,
                                        LfsProgressListener listener,
                                        BooleanSupplier cancelCheck,
-                                       Long jobId) {
+                                       String jobId) {
         return syncLfsObjects(sourceRepoUrl, targetRepoUrl, objects, listener, cancelCheck, jobId, null, null);
     }
 
@@ -524,7 +576,7 @@ public class GitLfsSyncService {
                                        List<LfsObject> objects,
                                        LfsProgressListener listener,
                                        BooleanSupplier cancelCheck,
-                                       Long jobId,
+                                       String jobId,
                                        String sourceTokenOverride,
                                        String targetTokenOverride) {
         return syncLfsObjects(sourceRepoUrl, targetRepoUrl, objects, listener, cancelCheck, jobId,
@@ -536,7 +588,7 @@ public class GitLfsSyncService {
                                        List<LfsObject> objects,
                                        LfsProgressListener listener,
                                        BooleanSupplier cancelCheck,
-                                       Long jobId,
+                                       String jobId,
                                        String sourceTokenOverride,
                                        String targetTokenOverride,
                                        Consumer<String> onTransferSuccess) {
@@ -571,6 +623,7 @@ public class GitLfsSyncService {
         try {
             for (List<LfsObject> batch : batches) {
                 throwIfCancelled(cancelCheck, jobId);
+                awaitRateLimitCooldown();
                 batchIndex++;
                 if (listener != null) {
                     listener.onProgress("transfer",
@@ -614,6 +667,7 @@ public class GitLfsSyncService {
                                             if (providerRateMeter != null && jobId != null) {
                                                 providerRateMeter.attachJob(jobId);
                                             }
+                                            awaitRateLimitCooldown();
                                             try {
                                                 return transferLfsBlob(downloadUrl, downloadAction, uploadUrl, uploadAction);
                                             } finally {
@@ -737,7 +791,7 @@ public class GitLfsSyncService {
         return batches;
     }
 
-    private static void throwIfCancelled(BooleanSupplier cancelCheck, Long jobId) {
+    private static void throwIfCancelled(BooleanSupplier cancelCheck, String jobId) {
         if (cancelCheck != null && cancelCheck.getAsBoolean()) {
             throw new JobCancelledException(jobId);
         }
@@ -768,6 +822,7 @@ public class GitLfsSyncService {
             ResponseEntity<String> response = restTemplate.exchange(URI.create(batchUrl), HttpMethod.POST, entity, String.class);
             return objectMapper.readTree(response.getBody());
         } catch (Exception e) {
+            noteRateLimit(e);
             log.debug("LFS Batch API call ({}) failed: {}", operation, e.getMessage());
             return null;
         }
@@ -814,6 +869,7 @@ public class GitLfsSyncService {
             });
             return true;
         } catch (Exception e) {
+            noteRateLimit(e);
             log.warn("Failed to stream LFS blob: {}", e.getMessage());
             return false;
         }

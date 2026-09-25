@@ -21,7 +21,7 @@ public class PairMirrorSnapshotService {
     private final GitComparisonService gitComparisonService;
     private final PairDiffSnapshotService pairDiffSnapshotService;
 
-    public void recordGitMirrorProgress(Long mappingId, Long jobId, GitSyncEngine.SyncResult result) {
+    public void recordGitMirrorProgress(String mappingId, String jobId, GitSyncEngine.SyncResult result) {
         if (mappingId == null || result == null || !result.success) {
             return;
         }

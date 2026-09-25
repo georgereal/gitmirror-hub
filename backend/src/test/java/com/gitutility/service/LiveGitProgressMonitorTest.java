@@ -10,7 +10,7 @@ class LiveGitProgressMonitorTest {
     void endTaskWritesCompletionMessageToAuditConsumer() {
         StringBuilder audit = new StringBuilder();
         LiveGitProgressMonitor monitor = new LiveGitProgressMonitor(
-                1L, 2L, "push",
+                "1", "2", "push",
                 null,
                 (phase, msg) -> audit.append(msg)
         );

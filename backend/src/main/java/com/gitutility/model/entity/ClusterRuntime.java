@@ -1,5 +1,6 @@
 package com.gitutility.model.entity;
 
+import org.springframework.data.mongodb.core.mapping.Document;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -12,20 +13,21 @@ import lombok.NoArgsConstructor;
 import java.time.Instant;
 
 /**
- * Singleton cluster control-plane row (id = 1) shared by all Hub pods.
+ * Singleton cluster control-plane row (id = {@value #SINGLETON_ID}) shared by all Hub pods.
  */
 @Entity
 @Table(name = "cluster_runtime")
+@Document(collection = "cluster_runtime")
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
 public class ClusterRuntime {
 
-    public static final long SINGLETON_ID = 1L;
+    public static final String SINGLETON_ID = "singleton";
 
     @Id
-    private Long id;
+    private String id;
 
     @Column(nullable = false)
     @Builder.Default

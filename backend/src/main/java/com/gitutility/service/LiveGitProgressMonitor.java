@@ -18,8 +18,8 @@ public class LiveGitProgressMonitor implements ProgressMonitor {
     public static final long THROTTLE_MS = 400;
     public static final long ETA_MIN_ELAPSED_MS = 2000;
 
-    private final Long jobId;
-    private final Long mappingId;
+    private final String jobId;
+    private final String mappingId;
     private final String operation;
     private final String remoteRole;
     private final String remoteLabel;
@@ -38,16 +38,16 @@ public class LiveGitProgressMonitor implements ProgressMonitor {
     int objectsReceived;
     private volatile String lastProgressMessage = "";
 
-    public LiveGitProgressMonitor(Long jobId,
-                                  Long mappingId,
+    public LiveGitProgressMonitor(String jobId,
+                                  String mappingId,
                                   String operation,
                                   WebSocketNotificationService webSocketNotificationService,
                                   BiConsumer<String, String> onPhaseChange) {
         this(jobId, mappingId, operation, null, null, webSocketNotificationService, onPhaseChange, null, null, null, null);
     }
 
-    public LiveGitProgressMonitor(Long jobId,
-                                  Long mappingId,
+    public LiveGitProgressMonitor(String jobId,
+                                  String mappingId,
                                   String operation,
                                   String remoteRole,
                                   String remoteLabel,
@@ -59,8 +59,8 @@ public class LiveGitProgressMonitor implements ProgressMonitor {
                 onPhaseChange, pipelineSupplier, trafficSupplier, null, null);
     }
 
-    public LiveGitProgressMonitor(Long jobId,
-                                  Long mappingId,
+    public LiveGitProgressMonitor(String jobId,
+                                  String mappingId,
                                   String operation,
                                   String remoteRole,
                                   String remoteLabel,

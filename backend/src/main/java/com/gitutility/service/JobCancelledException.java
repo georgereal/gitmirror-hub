@@ -5,14 +5,14 @@ package com.gitutility.service;
  */
 public class JobCancelledException extends RuntimeException {
 
-    private final Long jobId;
+    private final String jobId;
 
-    public JobCancelledException(Long jobId) {
+    public JobCancelledException(String jobId) {
         super("Job #" + jobId + " cancelled by operator");
         this.jobId = jobId;
     }
 
-    public Long getJobId() {
+    public String getJobId() {
         return jobId;
     }
 }

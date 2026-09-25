@@ -10,7 +10,7 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class SyntheticWebhookRequest {
-    private Long mappingId;
+    private String mappingId;
     private String sourceRepo;
     private String branch;
     private String commitSha;

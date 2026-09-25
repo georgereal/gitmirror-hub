@@ -289,7 +289,7 @@ class GitSyncEngineResumeTest {
     @Test
     void progressMonitorHonorsCancelCheck() {
         LiveGitProgressMonitor monitor = new LiveGitProgressMonitor(
-                1L, 3L, "fetch", null, null);
+                "1", "3", "fetch", null, null);
         assertFalse(monitor.isCancelled());
         java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
         monitor.setCancelCheck(cancelled::get);

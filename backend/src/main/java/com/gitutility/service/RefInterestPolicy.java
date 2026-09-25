@@ -29,7 +29,7 @@ public class RefInterestPolicy {
 
     private final List<String> ephemeralPrefixes;
     private final long coalesceWindowMs;
-    private final ConcurrentHashMap<Long, AtomicLong> lastIncrementalEnqueueMs = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, AtomicLong> lastIncrementalEnqueueMs = new ConcurrentHashMap<>();
 
     @Getter
     private final boolean coalesceEnabled;
@@ -153,7 +153,7 @@ public class RefInterestPolicy {
      *
      * @return true if this enqueue should proceed
      */
-    public boolean tryAcceptIncrementalEnqueue(Long mappingId, String branch) {
+    public boolean tryAcceptIncrementalEnqueue(String mappingId, String branch) {
         if (!coalesceEnabled || coalesceWindowMs <= 0 || mappingId == null) {
             return true;
         }
@@ -171,7 +171,7 @@ public class RefInterestPolicy {
         return true;
     }
 
-    private void touchEnqueue(Long mappingId) {
+    private void touchEnqueue(String mappingId) {
         lastIncrementalEnqueueMs.computeIfAbsent(mappingId, id -> new AtomicLong(0L))
                 .set(System.currentTimeMillis());
     }

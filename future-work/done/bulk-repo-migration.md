@@ -1,8 +1,7 @@
-# Future Plan: Bulk Repo Migration (Multi-Pair Submission from the Add Repo Pair Modal)
+# Done: Bulk Repo Migration (Multi-Pair Submission from the Add Repo Pair Modal)
 
-> **Status:** Reviewed — design decisions resolved; ready for implementation  
-> **Target Milestone:** V1.x — Bulk operations  
-> **Risk Level:** Medium (batch rate limits on SCM APIs; at-job-start remote repo creation is a new write path inside the sync engine)
+> **Status:** Complete.  
+> **Shipped:** Bulk tab in the Add Repo Pair modal, multi-select picker, `POST /api/v1/mappings/bulk`, submission records, `POST /api/v1/bulk/{id}/cancel`, and the Bulk tab parallelism hint (`Rabbit lane · up to N consumers` / `In-process threads · M`, linking to System Engine).
 
 ---
 
@@ -131,4 +130,4 @@ Branch pattern (`*`), sync direction (BIDIRECTIONAL default), trunk conflict pol
 ---
 
 ## 7. Docs
-Per repo doc-sync rules, `ARCHITECTURE.md` / `REPO_MAP.md` / `INSTRUCTIONS.md` are updated **at the commit milestone** (new endpoint, new column, adapter method, bulk concurrency notes) — not during implementation.
+[`REPO_MAP.md`](../../REPO_MAP.md) lists `BulkMigrationController`, `BulkMirrorService`, `BulkSubmissionService`, the bulk tab components, and `POST /api/v1/mappings/bulk` plus `GET/POST /api/v1/bulk`. Bulk jobs use the existing messaging lanes, so queue topology in `ARCHITECTURE.md` is unchanged.

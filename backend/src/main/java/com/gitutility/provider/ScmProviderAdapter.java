@@ -289,4 +289,52 @@ public interface ScmProviderAdapter {
     default void invalidateTokenCache() {
         // Default no-op
     }
+
+    /**
+     * Creates or updates {@code gitmirror-replica-readonly} on a GitHub or GHES repository.
+     * {@code appId} is the GitHub App id used as the ruleset bypass actor.
+     * {@code enforcement} is {@code active} or {@code disabled}. Returns the ruleset id, or 0 when
+     * unlocking a repo that has no ruleset yet.
+     */
+    default long ensureReplicaReadonlyRuleset(String repoFullName, long appId, String enforcement) {
+        throw new UnsupportedOperationException(
+                "Repository rulesets are available on GitHub and GitHub Enterprise Server only");
+    }
+
+    /**
+     * Creates or updates a read-only ruleset at repository, organization, or enterprise scope.
+     * {@code enforcement} on the spec is {@code active} or {@code disabled}.
+     */
+    default long ensureReadonlyRuleset(ReadonlyRulesetSpec spec) {
+        throw new UnsupportedOperationException(
+                "Repository rulesets are available on GitHub and GitHub Enterprise Server only");
+    }
+
+    /** Lists every ruleset on one repository. Does not create or rewrite rules. */
+    default java.util.List<GitHubRulesetClient.ListedRuleset> listRepositoryRulesets(String repoFullName) {
+        throw new UnsupportedOperationException(
+                "Repository rulesets are available on GitHub and GitHub Enterprise Server only");
+    }
+
+    /** Changes enforcement on an existing ruleset and leaves its rules in place. */
+    default void setRepositoryRulesetEnforcement(String repoFullName, long rulesetId, String enforcement) {
+        throw new UnsupportedOperationException(
+                "Repository rulesets are available on GitHub and GitHub Enterprise Server only");
+    }
+
+    /**
+     * Reads whether the ruleset named by {@code spec} exists and how GitHub is enforcing it.
+     */
+    default RulesetPresence lookupReadonlyRuleset(ReadonlyRulesetSpec spec) {
+        String name = spec == null ? null : spec.rulesetName();
+        return RulesetPresence.unknown(name,
+                "Repository rulesets are available on GitHub and GitHub Enterprise Server only");
+    }
+
+    /**
+     * @return null when this token can list enterprise rulesets; otherwise the reason it cannot.
+     */
+    default String probeEnterpriseRulesets(String enterpriseSlug) {
+        return "Enterprise rulesets are a GitHub.com API.";
+    }
 }

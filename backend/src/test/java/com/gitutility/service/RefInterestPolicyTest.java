@@ -39,7 +39,7 @@ class RefInterestPolicyTest {
 
     @Test
     void enqueueSkipsEphemeralEvenWhenPatternIsStar() {
-        RepoMapping mapping = RepoMapping.builder().id(1L).branchPattern("*").build();
+        RepoMapping mapping = RepoMapping.builder().id("1").branchPattern("*").build();
         assertFalse(policy.shouldEnqueuePushWebhook(mapping, "agents/log-analysis"));
         assertTrue(policy.shouldEnqueuePushWebhook(mapping, "main"));
         assertTrue(policy.shouldEnqueuePushWebhook(mapping, "feature/x"));
@@ -47,7 +47,7 @@ class RefInterestPolicyTest {
 
     @Test
     void enqueueHonorsBranchPatternAllowlist() {
-        RepoMapping mapping = RepoMapping.builder().id(1L).branchPattern("main,release/*").build();
+        RepoMapping mapping = RepoMapping.builder().id("1").branchPattern("main,release/*").build();
         assertTrue(policy.shouldEnqueuePushWebhook(mapping, "main"));
         assertTrue(policy.shouldEnqueuePushWebhook(mapping, "release/2.0"));
         assertFalse(policy.shouldEnqueuePushWebhook(mapping, "feature/x"));
@@ -65,14 +65,14 @@ class RefInterestPolicyTest {
 
     @Test
     void coalesceDropsRapidNonTrunkButNotMain() {
-        assertTrue(policy.tryAcceptIncrementalEnqueue(5L, "feature/a"));
-        assertFalse(policy.tryAcceptIncrementalEnqueue(5L, "feature/b"));
-        assertTrue(policy.tryAcceptIncrementalEnqueue(5L, "main"));
+        assertTrue(policy.tryAcceptIncrementalEnqueue("5", "feature/a"));
+        assertFalse(policy.tryAcceptIncrementalEnqueue("5", "feature/b"));
+        assertTrue(policy.tryAcceptIncrementalEnqueue("5", "main"));
     }
 
     @Test
     void prWebhookSkipsEphemeralHeads() {
-        RepoMapping mapping = RepoMapping.builder().id(1L).branchPattern("*").build();
+        RepoMapping mapping = RepoMapping.builder().id("1").branchPattern("*").build();
         assertFalse(policy.shouldHandlePrWebhook(mapping, "agents/pr-head"));
         assertTrue(policy.shouldHandlePrWebhook(mapping, "feature/pr-head"));
     }

@@ -34,9 +34,9 @@ interface JobLogModalProps {
   job: SyncJob | null;
   progress?: JobProgress | null;
   onClose: () => void;
-  onRetry: (id: number) => void;
-  onCancel?: (id: number) => void | Promise<void>;
-  onPause?: (id: number) => void | Promise<void>;
+  onRetry: (id: string) => void;
+  onCancel?: (id: string) => void | Promise<void>;
+  onPause?: (id: string) => void | Promise<void>;
   onJobUpdated?: (job: SyncJob) => void;
 }
 

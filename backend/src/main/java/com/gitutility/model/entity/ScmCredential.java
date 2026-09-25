@@ -1,6 +1,10 @@
 package com.gitutility.model.entity;
 
+import com.gitutility.persistence.Ids;
+import com.gitutility.security.Encrypted;
 import com.gitutility.security.EncryptedStringConverter;
+import org.springframework.data.mongodb.core.mapping.Document;
+import com.gitutility.persistence.store.WritePreparer;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -15,15 +19,15 @@ import java.time.Instant;
  */
 @Entity
 @Table(name = "scm_credentials")
+@Document(collection = "scm_credentials")
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class ScmCredential {
+public class ScmCredential implements WritePreparer {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     @Column(nullable = false, length = 120)
     private String label;
@@ -44,10 +48,12 @@ public class ScmCredential {
     private String clientId;
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 2000)
     private String clientSecret;
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 10000)
     private String privateKeyPem;
 
@@ -70,6 +76,13 @@ public class ScmCredential {
     /** {@code Organization} or {@code User}. */
     private String accountType;
 
+    /**
+     * GitHub Enterprise Cloud slug for {@code /enterprises/{slug}/rulesets}.
+     * Empty on GHES, where org rulesets are the top of the tree.
+     */
+    @Column(length = 120)
+    private String enterpriseSlug;
+
     /** {@code all} or {@code selected}. */
     private String repositorySelection;
 
@@ -77,10 +90,12 @@ public class ScmCredential {
     private String botLogin;
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 2000)
     private String webhookSecret;
 
     @Convert(converter = EncryptedStringConverter.class)
+    @Encrypted
     @Column(length = 2000)
     private String patToken;
 
@@ -92,7 +107,10 @@ public class ScmCredential {
 
     @PrePersist
     @PreUpdate
-    protected void onUpdate() {
+    public void prepareForWrite() {
+        if (Ids.isUnset(id)) {
+            id = Ids.newId();
+        }
         this.updatedAt = Instant.now();
     }
 

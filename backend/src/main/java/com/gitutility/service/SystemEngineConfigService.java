@@ -23,11 +23,9 @@ public class SystemEngineConfigService {
     private final QueueConsumerService queueConsumerService;
     private final EnterpriseLoggingService enterpriseLoggingService;
 
-    @Value("${git-utility.storage.local-dir:/tmp/git-utility-mirrors}")
-    private String defaultLocalDir;
-
-    @Value("${git-utility.storage.nas-dir:/tmp/git-utility-nas-mirrors}")
-    private String defaultNasDir;
+    /** Paths previously seeded from code defaults. They are not an operator choice. */
+    private static final String BUILTIN_LOCAL_DIR = "/tmp/git-utility-mirrors";
+    private static final String BUILTIN_NAS_DIR = "/tmp/git-utility-nas-mirrors";
 
     @Value("${git-utility.storage.max-disk-quota-mb:51200}")
     private long defaultMaxDiskQuotaMb;
@@ -65,7 +63,8 @@ public class SystemEngineConfigService {
 
     @PostConstruct
     public void init() {
-        getOrCreateConfig();
+        SystemEngineConfig config = syncStoragePathsFromEnv(getOrCreateConfig());
+        applyHotReload(config);
     }
 
     @Transactional
@@ -73,8 +72,8 @@ public class SystemEngineConfigService {
         return configRepository.findTopByOrderByIdAsc().orElseGet(() -> {
             log.info("Seeding initial SystemEngineConfig in database");
             SystemEngineConfig config = SystemEngineConfig.builder()
-                    .localDir(defaultLocalDir)
-                    .nasDir(defaultNasDir)
+                    .localDir(orEmpty(explicitEnv("GIT_STORAGE_LOCAL_DIR", "GIT_WORKSPACE_DIR")))
+                    .nasDir(orEmpty(explicitEnv("GIT_STORAGE_NAS_DIR")))
                     .maxDiskQuotaMb(defaultMaxDiskQuotaMb)
                     .maxCachedRepos(defaultMaxCachedRepos)
                     .retentionHours(defaultRetentionHours)
@@ -101,10 +100,10 @@ public class SystemEngineConfigService {
     public SystemEngineConfigResponse updateConfig(SystemEngineConfigRequest req) {
         SystemEngineConfig config = getOrCreateConfig();
 
-        if (req.getLocalDir() != null && !req.getLocalDir().isBlank()) {
+        if (req.getLocalDir() != null) {
             config.setLocalDir(req.getLocalDir().trim());
         }
-        if (req.getNasDir() != null && !req.getNasDir().isBlank()) {
+        if (req.getNasDir() != null) {
             config.setNasDir(req.getNasDir().trim());
         }
         if (req.getMaxDiskQuotaMb() != null && req.getMaxDiskQuotaMb() > 0) {
@@ -222,6 +221,66 @@ public class SystemEngineConfigService {
         if (enterpriseLoggingService != null) {
             enterpriseLoggingService.updateLoggingConfig(config);
         }
+    }
+
+    /**
+     * An explicit storage env var is written onto the config row so the settings page loads it
+     * from the database. A missing env leaves a blank path, including when the row still holds
+     * the old built-in {@code /tmp} default.
+     */
+    private SystemEngineConfig syncStoragePathsFromEnv(SystemEngineConfig config) {
+        boolean changed = false;
+        String envLocal = explicitEnv("GIT_STORAGE_LOCAL_DIR", "GIT_WORKSPACE_DIR");
+        if (envLocal != null) {
+            if (!envLocal.equals(config.getLocalDir())) {
+                config.setLocalDir(envLocal);
+                changed = true;
+            }
+        } else if (config.getLocalDir() == null || config.getLocalDir().isBlank()
+                || BUILTIN_LOCAL_DIR.equals(config.getLocalDir().trim())) {
+            if (config.getLocalDir() != null && !config.getLocalDir().isEmpty()) {
+                config.setLocalDir("");
+                changed = true;
+            }
+        }
+        String envNas = explicitEnv("GIT_STORAGE_NAS_DIR");
+        if (envNas != null) {
+            if (!envNas.equals(config.getNasDir())) {
+                config.setNasDir(envNas);
+                changed = true;
+            }
+        } else if (config.getNasDir() == null || config.getNasDir().isBlank()
+                || BUILTIN_NAS_DIR.equals(config.getNasDir().trim())) {
+            if (config.getNasDir() != null && !config.getNasDir().isEmpty()) {
+                config.setNasDir("");
+                changed = true;
+            }
+        }
+        if (!changed) {
+            return config;
+        }
+        config.setUpdatedAt(Instant.now());
+        log.info("Stored storage paths from environment: local='{}', nas='{}'",
+                config.getLocalDir(), config.getNasDir());
+        return configRepository.save(config);
+    }
+
+    private static String orEmpty(String value) {
+        return value == null ? "" : value;
+    }
+
+    /** First non-blank environment variable among {@code names}. Null when none are set. */
+    private static String explicitEnv(String... names) {
+        if (names == null) {
+            return null;
+        }
+        for (String name : names) {
+            String value = System.getenv(name);
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
+        }
+        return null;
     }
 
     private SystemEngineConfigResponse toResponse(SystemEngineConfig config) {

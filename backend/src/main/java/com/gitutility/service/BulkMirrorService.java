@@ -47,6 +47,8 @@ public class BulkMirrorService {
 
     public static final String MODE_CREATE_DEST = "CREATE_DEST";
     public static final String MODE_USE_EXISTING = "USE_EXISTING";
+    /** Per row: blank destUrl creates at job start; destUrl maps an existing repository. */
+    public static final String MODE_SELECTIVE = "SELECTIVE";
 
     private final RepoMappingRepository mappingRepository;
     private final BulkSubmissionRepository bulkSubmissionRepository;
@@ -71,16 +73,18 @@ public class BulkMirrorService {
             throw new IllegalArgumentException("Bulk submission requires at least one repository item.");
         }
         String mode = request.getMode() == null ? "" : request.getMode().trim().toUpperCase();
-        if (!MODE_CREATE_DEST.equals(mode) && !MODE_USE_EXISTING.equals(mode)) {
-            throw new IllegalArgumentException("mode must be CREATE_DEST or USE_EXISTING");
+        if (!MODE_CREATE_DEST.equals(mode) && !MODE_USE_EXISTING.equals(mode) && !MODE_SELECTIVE.equals(mode)) {
+            throw new IllegalArgumentException("mode must be CREATE_DEST, USE_EXISTING, or SELECTIVE");
         }
         if (request.getItems().size() > maxItems) {
             throw new IllegalArgumentException(
                     "Bulk submission exceeds the soft request guard of " + maxItems
                             + " items (git-utility.bulk.max-items). Execution itself is uncapped — submit in waves.");
         }
-        if (MODE_CREATE_DEST.equals(mode) && request.getDestCredentialId() == null) {
-            throw new IllegalArgumentException("CREATE_DEST requires a destination credential.");
+        boolean anyCreate = MODE_CREATE_DEST.equals(mode)
+                || (MODE_SELECTIVE.equals(mode) && request.getItems().stream().anyMatch(BulkMirrorService::isCreateRow));
+        if (anyCreate && (request.getDestCredentialId() == null || request.getDestCredentialId().isBlank())) {
+            throw new IllegalArgumentException("Creating destinations requires a destination credential.");
         }
 
         BulkSubmission submission = bulkSubmissionRepository.save(BulkSubmission.builder()
@@ -105,12 +109,13 @@ public class BulkMirrorService {
         return response;
     }
 
-    private List<BulkMirrorResponse.Row> process(BulkMirrorRequest request, String mode, Long submissionId) {
+    private List<BulkMirrorResponse.Row> process(BulkMirrorRequest request, String mode, String submissionId) {
         List<RepoMapping> existingMappings = mappingRepository.findAll();
         Set<String> seenSources = new HashSet<>();
         Set<String> seenDestinations = new HashSet<>();
         Map<Integer, BulkMirrorResponse.Row> rows = new LinkedHashMap<>();
         Map<Integer, String> destUrls = new LinkedHashMap<>();
+        Set<Integer> createRows = new HashSet<>();
         List<Integer> candidates = new ArrayList<>();
 
         // Phase A/B: per-row basic validation, dedupe, destination URL + collision checks
@@ -128,9 +133,10 @@ public class BulkMirrorService {
                 continue;
             }
 
+            boolean createRow = MODE_CREATE_DEST.equals(mode) || (MODE_SELECTIVE.equals(mode) && isCreateRow(item));
             String destUrl;
             try {
-                destUrl = MODE_CREATE_DEST.equals(mode)
+                destUrl = createRow
                         ? buildCreateDestUrl(request, item, sourceUrl)
                         : item.getDestUrl() == null ? "" : item.getDestUrl().trim();
             } catch (IllegalArgumentException e) {
@@ -139,7 +145,7 @@ public class BulkMirrorService {
             }
             String destKey = RepoMappingService.normalizeRepoKey(destUrl);
             if (destUrl.isBlank() || destKey.isEmpty()) {
-                rows.put(i, MODE_CREATE_DEST.equals(mode)
+                rows.put(i, createRow
                         ? fail("Destination owner/name could not be resolved — check the destination credential and owner")
                         : skip("Missing destination repository URL"));
                 continue;
@@ -153,6 +159,9 @@ public class BulkMirrorService {
                 continue;
             }
             destUrls.put(i, destUrl);
+            if (createRow) {
+                createRows.add(i);
+            }
 
             // Existing-pair collisions (user decision: warn + skip, never silently map)
             String collision = findCollision(existingMappings, sourceKey, destKey);
@@ -164,10 +173,13 @@ public class BulkMirrorService {
         }
 
         // Phase C: destination probes in bounded chunks (the only rate-limit guard at submission)
-        if (MODE_CREATE_DEST.equals(mode)) {
-            probeCreateDest(request, candidates, rows, destUrls);
-        } else {
-            probeUseExisting(request, candidates, rows, destUrls);
+        List<Integer> createCandidates = candidates.stream().filter(createRows::contains).toList();
+        List<Integer> existingCandidates = candidates.stream().filter(i -> !createRows.contains(i)).toList();
+        if (!createCandidates.isEmpty()) {
+            probeCreateDest(request, createCandidates, rows, destUrls);
+        }
+        if (!existingCandidates.isEmpty()) {
+            probeUseExisting(request, existingCandidates, rows, destUrls);
         }
 
         // Phase D: create pairs + enqueue bootstrap full-mirror jobs
@@ -182,7 +194,7 @@ public class BulkMirrorService {
                 continue;
             }
             BulkMirrorRequest.BulkItem item = request.getItems().get(i);
-            ordered.add(createPair(request, mode, submissionId, item, destUrls.get(i)));
+            ordered.add(createPair(request, mode, submissionId, item, destUrls.get(i), createRows.contains(i)));
         }
         return ordered;
     }
@@ -286,12 +298,27 @@ public class BulkMirrorService {
         return out;
     }
 
+    private static boolean isCreateRow(BulkMirrorRequest.BulkItem item) {
+        return item == null || item.getDestUrl() == null || item.getDestUrl().isBlank();
+    }
+
+    private static RepoVisibility resolvedDestVisibility(BulkMirrorRequest request) {
+        if (request.getDestVisibility() != null) {
+            return request.getDestVisibility();
+        }
+        if (request.getDestPrivate() != null && !request.getDestPrivate()) {
+            return RepoVisibility.PUBLIC;
+        }
+        return RepoVisibility.PRIVATE;
+    }
+
     /** Creates the mapping and enqueues the bootstrap full-mirror job for one accepted row. */
-    private BulkMirrorResponse.Row createPair(BulkMirrorRequest request, String mode, Long submissionId,
-                                              BulkMirrorRequest.BulkItem item, String destUrl) {
+    private BulkMirrorResponse.Row createPair(BulkMirrorRequest request, String mode, String submissionId,
+                                              BulkMirrorRequest.BulkItem item, String destUrl, boolean createDest) {
         String sourceUrl = item.getSourceUrl().trim();
-        boolean createDest = MODE_CREATE_DEST.equals(mode);
         try {
+            boolean publicOnly = item.getSourceVisibility() == RepoVisibility.PUBLIC
+                    && (item.getSourceCredentialId() == null || item.getSourceCredentialId().isBlank());
             RepoMapping mapping = RepoMapping.builder()
                     .name(ensureUniqueName(deriveRepoName(sourceUrl, createDest ? item.getDestName() : null)))
                     .repoAUrl(sourceUrl)
@@ -305,15 +332,13 @@ public class BulkMirrorService {
                     .sourceCredentialId(item.getSourceCredentialId())
                     .sourceInstallationId(item.getSourceInstallationId())
                     .sourceVisibility(item.getSourceVisibility())
-                    .sourcePublicRead(item.getSourceVisibility() == RepoVisibility.PUBLIC
-                            ? Boolean.TRUE : item.getSourcePublicRead())
+                    .sourcePublicRead(publicOnly ? Boolean.TRUE : Boolean.FALSE)
                     .targetProvider(resolveProvider(destUrl))
                     .targetCredentialId(createDest ? request.getDestCredentialId() : item.getDestCredentialId())
                     .targetInstallationId(createDest ? request.getDestInstallationId() : item.getDestInstallationId())
                     .targetVisibility(createDest
-                            ? (request.getDestPrivate() == null || request.getDestPrivate()
-                               ? RepoVisibility.PRIVATE : RepoVisibility.PUBLIC)
-                            : RepoVisibility.UNKNOWN)
+                            ? resolvedDestVisibility(request)
+                            : (item.getDestVisibility() != null ? item.getDestVisibility() : RepoVisibility.UNKNOWN))
                     .destinationAutoCreate(createDest)
                     .bulkSubmissionId(submissionId)
                     .build();
@@ -324,7 +349,7 @@ public class BulkMirrorService {
             scmCredentialService.requireBoundIfGithub(mapping);
 
             RepoMapping saved = mappingRepository.save(mapping);
-            Long jobId = null;
+            String jobId = null;
             if (saved.isActive()) {
                 try {
                     jobId = repoMappingService.triggerInitialBootstrapSync(saved).getId();
@@ -367,7 +392,7 @@ public class BulkMirrorService {
         return credentialHost(request.getDestCredentialId()) + "/" + owner.trim() + "/" + name + ".git";
     }
 
-    private String credentialHost(Long credentialId) {
+    private String credentialHost(String credentialId) {
         if (credentialId == null) {
             return "https://github.com";
         }

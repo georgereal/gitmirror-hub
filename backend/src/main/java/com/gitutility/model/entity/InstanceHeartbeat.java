@@ -1,5 +1,6 @@
 package com.gitutility.model.entity;
 
+import org.springframework.data.mongodb.core.mapping.Document;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -14,6 +15,7 @@ import java.time.Instant;
 
 @Entity
 @Table(name = "instance_heartbeats")
+@Document(collection = "instance_heartbeats")
 @Data
 @Builder
 @NoArgsConstructor
@@ -21,6 +23,9 @@ import java.time.Instant;
 public class InstanceHeartbeat {
 
     @Id
+    // Spring Data MongoDB ignores the JPA @Id above; this annotation makes instanceId the Mongo _id,
+    // so findById(instanceId) resolves the heartbeat by its natural key (matching the H2 primary key).
+    @org.springframework.data.annotation.Id
     @Column(name = "instance_id", length = 255)
     private String instanceId;
 

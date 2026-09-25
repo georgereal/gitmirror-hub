@@ -101,12 +101,8 @@ To decouple ingestion and ensure **100% webhook uptime with 0ms cold-start**:
 ```bash
 cd webhook-worker
 npm install
-# Set your RabbitMQ / CloudAMQP credentials in wrangler.toml and Cloudflare secrets
-npx wrangler secret put RABBITMQ_USER
-npx wrangler secret put RABBITMQ_PASSWORD
-npx wrangler secret put WEBHOOK_SECRET            # GitHub HMAC secret
-npx wrangler secret put BITBUCKET_WEBHOOK_SECRET  # Bitbucket HMAC secret (optional)
-npm run deploy
+cp .env.example .env   # gitignored; fill in the CloudAMQP host, vhost, user, and password
+npm run deploy         # uploads .env to Cloudflare as secrets
 ```
 
 See [`webhook-worker/README.md`](webhook-worker/README.md) for detailed configuration.

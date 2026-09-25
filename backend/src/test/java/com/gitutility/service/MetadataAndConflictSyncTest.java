@@ -87,8 +87,8 @@ class MetadataAndConflictSyncTest {
     @Test
     void testSimulationSyncSucceeds() throws Exception {
         SyncEventMessage event = SyncEventMessage.builder()
-                .jobId(1L)
-                .mappingId(1L)
+                .jobId("1")
+                .mappingId("1")
                 .pairName("demo-pair")
                 .sourceRepoUrl("https://example.com/source.git")
                 .targetRepoUrl("https://example.com/target.git")

@@ -36,7 +36,7 @@ class ProviderRateMeterJobTrafficTest {
 
     @Test
     void copyToPersistsRunAveragesAndCallVolumeSeriesWithoutQuotaRemaining() throws Exception {
-        meter.bindJob(42L);
+        meter.bindJob("42");
         intercept("https://api.github.com/repos/acme/app/contents");
         intercept("https://api.github.com/graphql");
         meter.recordGraphqlPoints(7);
@@ -45,7 +45,7 @@ class ProviderRateMeterJobTrafficTest {
         meter.recordTransferBytes(1_024, 2_048, 512);
 
         SyncJob job = new SyncJob();
-        job.setId(42L);
+        job.setId("42");
         meter.copyTo(job);
 
         assertEquals(1, job.getRestCallCount());
@@ -67,7 +67,7 @@ class ProviderRateMeterJobTrafficTest {
 
     @Test
     void snapshotSeriesIsAMapForLiveWebSocket() throws Exception {
-        meter.bindJob(7L);
+        meter.bindJob("7");
         intercept("https://api.github.com/rate_limit");
         Map<String, Object> snap = meter.snapshotMap();
         assertNotNull(snap);
@@ -89,7 +89,7 @@ class ProviderRateMeterJobTrafficTest {
 
     @Test
     void lfsBatchAndMediaHttpCountSeparatelyFromRest() throws Exception {
-        meter.bindJob(9L);
+        meter.bindJob("9");
         intercept("https://api.github.com/repos/acme/app/info/lfs/objects/batch");
         intercept("https://github.com/acme/app.git/info/lfs/objects/batch");
         intercept("https://media.githubusercontent.com/lfs-objects/abc");
@@ -104,14 +104,14 @@ class ProviderRateMeterJobTrafficTest {
 
     @Test
     void workerAttachAttributesHttpToSameJobMeter() throws Exception {
-        meter.bindJob(11L);
+        meter.bindJob("11");
         intercept("https://api.github.com/repos/acme/app/pulls/1");
 
         CountDownLatch done = new CountDownLatch(1);
         AtomicReference<Exception> error = new AtomicReference<>();
         Thread worker = new Thread(() -> {
             try {
-                meter.attachJob(11L);
+                meter.attachJob("11");
                 intercept("https://api.github.com/repos/acme/app/pulls");
             } catch (Exception e) {
                 error.set(e);
@@ -125,7 +125,7 @@ class ProviderRateMeterJobTrafficTest {
         assertNull(error.get());
 
         SyncJob job = new SyncJob();
-        job.setId(11L);
+        job.setId("11");
         meter.copyTo(job);
         assertEquals(2, job.getRestCallCount());
     }

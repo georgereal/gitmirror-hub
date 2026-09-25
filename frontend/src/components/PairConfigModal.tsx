@@ -5,23 +5,28 @@ import {
 } from 'lucide-react';
 import { RepoMapping, SyncDirection, StorageTier, PermissionCheckReport, GitHubRepoOption, TrunkConflictPolicy, ScmCredential, ScmInstallationOption } from '../types';
 import { testRepoConnection, createRemoteRepository, listScmCredentials, listScmInstallations } from '../services/api';
-import type { BulkMirrorResponse } from '../services/api';
 import { RepoPickerModal } from './RepoPickerModal';
 import { CredentialPickModal } from './CredentialPickModal';
 import { BulkMigrationTab } from './BulkMigrationTab';
 import { InfoTooltip } from './InfoTooltip';
 import { findRepoCollision } from '../utils/repoUrl';
-import { shouldWarnBidirectionalBackup } from '../utils/mirrorTopology';
+import { isPublicOnlyAccess, visibilityFromReport, visibilityPresentation, type RepoVisibilityState } from '../utils/repoVisibility';
 import { useFeatureFlags } from '../hooks/useFeatureFlags';
 
-const isGithubCloudUrl = (url: string) => (url || '').toLowerCase().includes('github.com');
-
-const formatCredentialLabel = (c: ScmCredential | undefined, fallbackId?: number) => {
+const formatCredentialLabel = (
+  c: ScmCredential | undefined,
+  fallbackId?: string,
+  installationLogin?: string
+) => {
   if (!c) {
     return fallbackId != null ? `credential #${fallbackId}` : 'credential';
   }
   const kind = c.authMode === 'GITHUB_APP' ? 'App' : 'PAT';
-  const account = c.accountLogin ? ` · ${c.accountLogin}` : '';
+  const account = installationLogin
+    ? ` · @${installationLogin}`
+    : c.accountLogin
+      ? ` · ${c.accountLogin}`
+      : '';
   return `${c.label}${account} (${kind})`;
 };
 
@@ -33,13 +38,6 @@ const deriveRepoNameFromUrl = (url: string) => {
     /* ignore */
   }
   return '';
-};
-
-/** Jackson+Lombok historically emitted {@code private} instead of {@code isPrivate}. */
-const reportIsPrivate = (res: PermissionCheckReport | null | undefined) => {
-  if (!res) return false;
-  if (res.isPrivate === true) return true;
-  return (res as { private?: boolean }).private === true;
 };
 
 const repoAccessDetailChecks = (checks?: string[]) =>
@@ -57,7 +55,7 @@ interface PairConfigModalProps {
   onSave: (data: Partial<RepoMapping>) => Promise<void>;
   existingMappings?: RepoMapping[];
   /** Called after a successful bulk submission so the parent can refresh its list. */
-  onBulkSubmitted?: (response: { submissionId: number; createdQueuedCount: number }) => Promise<void> | void;
+  onBulkSubmitted?: (response: { submissionId: string; createdQueuedCount: number }) => Promise<void> | void;
 }
 
 export const PairConfigModal: React.FC<PairConfigModalProps> = ({
@@ -72,7 +70,6 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
   const publicReposEnabled = flags.publicReposEnabled;
   const isEditMode = Boolean(mapping && mapping.id);
   const [activeTab, setActiveTab] = useState<'SINGLE' | 'BULK'>('SINGLE');
-  const [bulkResult, setBulkResult] = useState<BulkMirrorResponse | null>(null);
   const [repoAUrl, setRepoAUrl] = useState('');
   const [repoBUrl, setRepoBUrl] = useState('');
   const [branchPattern, setBranchPattern] = useState('*');
@@ -89,15 +86,17 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
   const [reportB, setReportB] = useState<PermissionCheckReport | null>(null);
   const [creatingRepoB, setCreatingRepoB] = useState(false);
   const [createFeedback, setCreateFeedback] = useState<string | null>(null);
-  const [visibilityA, setVisibilityA] = useState<'UNKNOWN' | 'PUBLIC' | 'PRIVATE'>('UNKNOWN');
-  const [visibilityB, setVisibilityB] = useState<'UNKNOWN' | 'PUBLIC' | 'PRIVATE'>('UNKNOWN');
+  const [visibilityA, setVisibilityA] = useState<RepoVisibilityState>('UNKNOWN');
+  const [visibilityB, setVisibilityB] = useState<RepoVisibilityState>('UNKNOWN');
 
   // Lazy Repository Picker modal state
   const [pickerTarget, setPickerTarget] = useState<'A' | 'B' | null>(null);
-  const [sourceCredentialId, setSourceCredentialId] = useState<number | undefined>(undefined);
-  const [targetCredentialId, setTargetCredentialId] = useState<number | undefined>(undefined);
+  const [sourceCredentialId, setSourceCredentialId] = useState<string | undefined>(undefined);
+  const [targetCredentialId, setTargetCredentialId] = useState<string | undefined>(undefined);
   const [sourceInstallationId, setSourceInstallationId] = useState<string | undefined>(undefined);
   const [targetInstallationId, setTargetInstallationId] = useState<string | undefined>(undefined);
+  const [sourceInstallationLogin, setSourceInstallationLogin] = useState<string | undefined>(undefined);
+  const [targetInstallationLogin, setTargetInstallationLogin] = useState<string | undefined>(undefined);
   const [credPickTarget, setCredPickTarget] = useState<'A' | 'B' | null>(null);
   /** Side confirmed via Add repo (auto access check). */
   const [sourceReady, setSourceReady] = useState(false);
@@ -113,6 +112,7 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
   const [createDestOwner, setCreateDestOwner] = useState('');
   const [createNameTouched, setCreateNameTouched] = useState(false);
   const [createPanelOpen, setCreatePanelOpen] = useState(false);
+  const [createVisibility, setCreateVisibility] = useState<'private' | 'public' | 'internal'>('private');
   const [createInstallOptions, setCreateInstallOptions] = useState<ScmInstallationOption[]>([]);
   const [createOwnerLoading, setCreateOwnerLoading] = useState(false);
 
@@ -128,21 +128,22 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
   const githubCredentials = useMemo(
     () => credentialCatalog
       .filter((c) => c.provider === 'GITHUB' || c.provider === 'GITHUB_ENTERPRISE')
-      .sort((a, b) => (a.authMode === 'GITHUB_APP' ? 0 : 1) - (b.authMode === 'GITHUB_APP' ? 0 : 1) || a.id - b.id),
+      .sort((a, b) => (a.authMode === 'GITHUB_APP' ? 0 : 1) - (b.authMode === 'GITHUB_APP' ? 0 : 1) || a.id.localeCompare(b.id)),
     [credentialCatalog]
   );
 
   const sourceCredentialLabel = formatCredentialLabel(
     githubCredentials.find((c) => c.id === sourceCredentialId),
-    sourceCredentialId
+    sourceCredentialId,
+    sourceInstallationLogin
   );
   const destCredentialLabel = formatCredentialLabel(
     githubCredentials.find((c) => c.id === targetCredentialId),
-    targetCredentialId
+    targetCredentialId,
+    targetInstallationLogin
   );
 
   const destWriteRequired = syncDirection !== 'UNIDIRECTIONAL_B_TO_A';
-  const destAllowsAnonymous = publicReposEnabled && !destWriteRequired;
 
   useEffect(() => {
     if (mapping) {
@@ -152,20 +153,14 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
       setSyncDirection(mapping.syncDirection || 'BIDIRECTIONAL');
       setTrunkConflictPolicy(mapping.trunkConflictPolicy || 'ISOLATE');
       setActive(mapping.active ?? true);
-      setVisibilityA(
-        !publicReposEnabled && mapping.sourceVisibility === 'PUBLIC'
-          ? 'PRIVATE'
-          : mapping.sourceVisibility || 'UNKNOWN'
-      );
-      setVisibilityB(
-        !publicReposEnabled && mapping.targetVisibility === 'PUBLIC'
-          ? 'PRIVATE'
-          : mapping.targetVisibility || 'UNKNOWN'
-      );
+      setVisibilityA(mapping.sourceVisibility || 'UNKNOWN');
+      setVisibilityB(mapping.targetVisibility || 'UNKNOWN');
       setSourceCredentialId(mapping.sourceCredentialId ?? undefined);
       setTargetCredentialId(mapping.targetCredentialId ?? undefined);
       setSourceInstallationId(mapping.sourceInstallationId ?? undefined);
       setTargetInstallationId(mapping.targetInstallationId ?? undefined);
+      setSourceInstallationLogin(undefined);
+      setTargetInstallationLogin(undefined);
       setSourcePublicRead(mapping.sourcePublicRead ?? undefined);
       setSourceAccessAnonymous(
         publicReposEnabled
@@ -195,6 +190,8 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
       setTargetCredentialId(undefined);
       setSourceInstallationId(undefined);
       setTargetInstallationId(undefined);
+      setSourceInstallationLogin(undefined);
+      setTargetInstallationLogin(undefined);
       setSourcePublicRead(undefined);
       setSourceAccessAnonymous(false);
       setDestAccessAnonymous(false);
@@ -308,18 +305,7 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
       setSourceAccessAnonymous(false);
       setDestAccessAnonymous(false);
     }
-    if (!publicReposEnabled && visibilityA === 'PUBLIC') {
-      setVisibilityA('PRIVATE');
-      setSourcePublicRead(undefined);
-      setSourceReady(false);
-      setReportA(null);
-    }
-    if (!publicReposEnabled && visibilityB === 'PUBLIC') {
-      setVisibilityB('PRIVATE');
-      setDestReady(false);
-      setReportB(null);
-    }
-  }, [publicReposEnabled, visibilityA, visibilityB]);
+  }, [publicReposEnabled]);
 
   useEffect(() => {
     if (destWriteRequired && destAccessAnonymous) {
@@ -327,40 +313,20 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
     }
   }, [destWriteRequired, destAccessAnonymous]);
 
+  const sourcePublicOnly = isPublicOnlyAccess(visibilityA, sourceCredentialId, reportA?.accessMode)
+    && (sourceReady || Boolean(reportA?.valid));
+
+  useEffect(() => {
+    if (sourcePublicOnly && syncDirection !== 'UNIDIRECTIONAL_A_TO_B') {
+      setSyncDirection('UNIDIRECTIONAL_A_TO_B');
+    }
+  }, [sourcePublicOnly, syncDirection]);
+
   const collisionA = useMemo(() => findRepoCollision(repoAUrl, existingMappings, mapping?.id), [repoAUrl, existingMappings, mapping?.id]);
   const collisionB = useMemo(() => findRepoCollision(repoBUrl, existingMappings, mapping?.id), [repoBUrl, existingMappings, mapping?.id]);
   const hasCollision = Boolean(collisionA || collisionB);
 
   if (!isOpen) return null;
-
-  // Bulk migration tab (add mode only): a self-contained submission flow inside the same modal.
-  if (activeTab === 'BULK' && !isEditMode) {
-    return (
-      <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
-        <div className="bg-white border border-zinc-200 rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col my-auto max-h-[90vh]">
-          <div className="px-6 py-4 border-b border-zinc-100 flex items-center justify-between shrink-0">
-            <div>
-              <h3 className="text-sm font-semibold text-zinc-900">Add New Mirror Repository</h3>
-              <p className="text-xs text-zinc-500">Mirror many repositories in one submission</p>
-            </div>
-            <button onClick={onClose} className="p-1.5 text-zinc-400 hover:text-zinc-700 rounded-lg hover:bg-zinc-100 transition-colors">
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-          <BulkMigrationTab
-            existingMappings={existingMappings}
-            githubCredentials={githubCredentials}
-            publicReposEnabled={publicReposEnabled}
-            onClose={onClose}
-            onSubmitted={async (response) => {
-              setBulkResult(response);
-              await onBulkSubmitted?.(response);
-            }}
-          />
-        </div>
-      </div>
-    );
-  }
 
   const deriveRepoName = (url: string) => deriveRepoNameFromUrl(url) || `repo-${Date.now()}`;
 
@@ -446,83 +412,86 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
     return suggestions;
   };
 
-  const applySourceReport = (res: PermissionCheckReport, usedCredentialId?: number) => {
+  const applySourceReport = (res: PermissionCheckReport, usedCredentialId?: string) => {
     setReportA(res);
+    const publicFallback = res.accessMode === 'PUBLIC';
+    if (publicFallback) {
+      setSourceCredentialId(undefined);
+      setSourceInstallationId(undefined);
+      setSourceInstallationLogin(undefined);
+      setSourceAccessAnonymous(true);
+    } else {
+      const cred = res.credentialId || usedCredentialId;
+      if (cred) setSourceCredentialId(cred);
+      if (res.installationId) setSourceInstallationId(res.installationId);
+      if (res.installationLogin) setSourceInstallationLogin(res.installationLogin);
+      setSourceAccessAnonymous(false);
+    }
     if (!res.valid) {
       setSourceReady(false);
       setAlsoPublicHintA(false);
       return;
     }
+    setVisibilityA(visibilityFromReport(res));
+    setSourcePublicRead(publicFallback);
     setSourceReady(true);
-
-    if (reportIsPrivate(res)) {
-      setVisibilityA('PRIVATE');
-      setSourcePublicRead(false);
-      setAlsoPublicHintA(false);
-    } else if (publicReposEnabled) {
-      setVisibilityA('PUBLIC');
-      setSourcePublicRead(true);
-      // App/PAT access on a public repo — keep Access; surface optional hint.
-      // Skip the hint when the backend fell back to public read because the credential failed.
-      setAlsoPublicHintA(usedCredentialId != null && res.accessMode !== 'PUBLIC');
-    } else {
-      setVisibilityA('PRIVATE');
-      setSourcePublicRead(false);
-      setAlsoPublicHintA(false);
-    }
-
-    if (usedCredentialId != null) {
-      setSourceCredentialId(usedCredentialId);
-      setSourceAccessAnonymous(false);
-    } else {
-      setSourceCredentialId(undefined);
-      setSourceInstallationId(undefined);
-      setSourceAccessAnonymous(true);
-    }
+    setAlsoPublicHintA(false);
+    if (publicFallback) setSyncDirection('UNIDIRECTIONAL_A_TO_B');
   };
 
-  const applyDestReport = (res: PermissionCheckReport, usedCredentialId?: number) => {
+  const applyDestReport = (res: PermissionCheckReport, usedCredentialId?: string) => {
+    if (res.accessMode === 'PUBLIC') {
+      setTargetCredentialId(undefined);
+      setTargetInstallationId(undefined);
+      setTargetInstallationLogin(undefined);
+      setReportB({
+        ...res,
+        valid: false,
+        message: 'This destination is only publicly readable. Sync needs a credential that can write.',
+        errors: [
+          ...(res.errors || []),
+          'Public-only destinations are not accepted — the mirror cannot push to them.',
+        ],
+      });
+      setDestReady(false);
+      setAlsoPublicHintB(false);
+      return;
+    }
+    const cred = res.credentialId || usedCredentialId;
+    if (cred) setTargetCredentialId(cred);
+    if (res.installationId) setTargetInstallationId(res.installationId);
+    if (res.installationLogin) setTargetInstallationLogin(res.installationLogin);
+    setDestAccessAnonymous(false);
     setReportB(res);
     if (!res.valid) {
       setDestReady(false);
       setAlsoPublicHintB(false);
       return;
     }
+    setVisibilityB(visibilityFromReport(res));
     setDestReady(true);
-
-    if (reportIsPrivate(res)) {
-      setVisibilityB('PRIVATE');
-      setAlsoPublicHintB(false);
-    } else if (publicReposEnabled) {
-      setVisibilityB('PUBLIC');
-      // Skip the hint when the backend fell back to public read because the credential failed.
-      setAlsoPublicHintB(usedCredentialId != null && res.accessMode !== 'PUBLIC');
-    } else {
-      setVisibilityB('PRIVATE');
-      setAlsoPublicHintB(false);
-    }
-
-    if (usedCredentialId != null) {
-      setTargetCredentialId(usedCredentialId);
-      setDestAccessAnonymous(false);
-    } else {
-      setTargetCredentialId(undefined);
-      setDestAccessAnonymous(true);
-    }
+    setAlsoPublicHintB(false);
   };
 
   const runSourceCheck = async (
-    credentialId?: number,
+    credentialId?: string,
     knownPrivate?: boolean,
-    publishReport = true
+    publishReport = true,
+    installationId?: string | null
   ) => {
+    const install = installationId === null
+      ? undefined
+      : installationId !== undefined
+        ? installationId
+        : sourceInstallationId;
     setTestingA(true);
     try {
       const res = await testRepoConnection({
         repoUrl: repoAUrl,
         requiredAccess: 'READ',
-        knownPrivate: knownPrivate ?? visibilityA === 'PRIVATE',
+        knownPrivate: false,
         credentialId,
+        installationId: install || undefined,
       });
       if (publishReport) applySourceReport(res, credentialId);
       return res;
@@ -548,18 +517,23 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
   };
 
   const runDestCheck = async (
-    credentialId?: number,
-    knownPrivate?: boolean,
-    publishReport = true
+    credentialId?: string,
+    publishReport = true,
+    installationId?: string | null
   ) => {
-    const writeRequired = syncDirection !== 'UNIDIRECTIONAL_B_TO_A';
+    const install = installationId === null
+      ? undefined
+      : installationId !== undefined
+        ? installationId
+        : targetInstallationId;
     setTestingB(true);
     try {
       const res = await testRepoConnection({
         repoUrl: repoBUrl,
-        requiredAccess: writeRequired ? 'WRITE' : 'READ',
-        knownPrivate: knownPrivate ?? (visibilityB === 'PRIVATE' || writeRequired),
+        requiredAccess: 'WRITE',
+        knownPrivate: true,
         credentialId,
+        installationId: install || undefined,
       });
       if (publishReport) applyDestReport(res, credentialId);
       return res;
@@ -584,76 +558,50 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
     }
   };
 
-  /**
-   * Add repo (source): uses Access choice only.
-   * Credential selected → check with that App/PAT (even if repo is public).
-   * Anonymous → only when explicitly opted in.
-   */
   const handleAddSourceRepo = async () => {
     if (!repoAUrl) return;
     setReportA(null);
     setSourceReady(false);
     setAlsoPublicHintA(false);
-
-    if (sourceAccessAnonymous && publicReposEnabled) {
-      await runSourceCheck(undefined, false);
+    const lower = repoAUrl.toLowerCase();
+    if (lower.includes('github.com') || lower.includes('github.')) {
+      setCredPickTarget('A');
       return;
     }
-
-    if (sourceCredentialId == null) {
-      if (isGithubCloudUrl(repoAUrl)) {
-        setCredPickTarget('A');
-        return;
-      }
-      await runSourceCheck(undefined, visibilityA === 'PRIVATE');
-      return;
-    }
-
-    await runSourceCheck(sourceCredentialId, visibilityA === 'PRIVATE');
+    await runSourceCheck(sourceCredentialId, false);
   };
 
-  /**
-   * Add repo (destination): Access credential for write; anonymous only for B→A opt-in.
-   */
   const handleAddDestRepo = async () => {
     if (!repoBUrl) return;
     setReportB(null);
     setDestReady(false);
     setAlsoPublicHintB(false);
-    const writeRequired = syncDirection !== 'UNIDIRECTIONAL_B_TO_A';
-
-    if (destAccessAnonymous && destAllowsAnonymous) {
-      await runDestCheck(undefined, false);
+    const lower = repoBUrl.toLowerCase();
+    if (lower.includes('github.com') || lower.includes('github.')) {
+      setCredPickTarget('B');
       return;
     }
-
-    if (targetCredentialId == null) {
-      if (isGithubCloudUrl(repoBUrl) || writeRequired) {
-        setCredPickTarget('B');
-        return;
-      }
-      await runDestCheck(undefined, visibilityB === 'PRIVATE' || writeRequired);
-      return;
-    }
-
-    await runDestCheck(targetCredentialId, visibilityB === 'PRIVATE' || writeRequired);
+    await runDestCheck(targetCredentialId);
   };
 
-  const handleCredentialPicked = async (credentialId: number) => {
+  const handleCredentialPicked = async (credentialId: string) => {
     const target = credPickTarget;
     setCredPickTarget(null);
     if (target === 'A') {
       setSourceCredentialId(credentialId);
+      setSourceInstallationId(undefined);
+      setSourceInstallationLogin(undefined);
       setSourceAccessAnonymous(false);
-      await runSourceCheck(credentialId, visibilityA === 'PRIVATE');
+      await runSourceCheck(credentialId, false, true, null);
     } else if (target === 'B') {
       setTargetCredentialId(credentialId);
+      setTargetInstallationId(undefined);
+      setTargetInstallationLogin(undefined);
       setDestAccessAnonymous(false);
-      const writeRequired = syncDirection !== 'UNIDIRECTIONAL_B_TO_A';
       const cred = githubCredentials.find((c) => c.id === credentialId);
       if (cred?.accountLogin) setCreateDestOwner(cred.accountLogin);
       if (repoBUrl) {
-        await runDestCheck(credentialId, visibilityB === 'PRIVATE' || writeRequired);
+        await runDestCheck(credentialId, true, null);
       }
     }
   };
@@ -687,7 +635,8 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
     try {
       const created = await createRemoteRepository({
         repoUrl: cloneUrl,
-        isPrivate: true,
+        isPrivate: createVisibility !== 'public',
+        visibility: createVisibility,
         credentialId: targetCredentialId,
         owner,
         name,
@@ -695,9 +644,8 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
       });
       const finalUrl = created.cloneUrl || cloneUrl;
       setRepoBUrl(finalUrl);
-      setVisibilityB('PRIVATE');
       setDestAccessAnonymous(false);
-      setCreateFeedback(`Successfully created ${created.fullName || `${owner}/${name}`} (private).`);
+      setCreateFeedback(`Created ${created.fullName || `${owner}/${name}`} (${createVisibility}).`);
       setCreatePanelOpen(false);
       setTestingB(true);
       try {
@@ -706,6 +654,7 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
           requiredAccess: 'WRITE',
           knownPrivate: true,
           credentialId: targetCredentialId,
+          installationId: created.installationId || selectedInstall?.installationId,
         });
         applyDestReport(res, targetCredentialId);
       } finally {
@@ -722,23 +671,28 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
     e.preventDefault();
     if (hasCollision) return;
     if (!sourceReady || (reportA != null && !reportA.valid)) {
-      setSaveError('Add the source repository first (verifies public or credential access).');
+      setSaveError('Add the source repository first so visibility and access come from the provider.');
       return;
     }
     if (!destReady || (reportB != null && !reportB.valid)) {
-      setSaveError('Add the destination repository first (verifies write or public read access).');
+      setSaveError('Add the destination repository first so visibility and write access come from the provider.');
+      return;
+    }
+    if (sourcePublicOnly && syncDirection !== 'UNIDIRECTIONAL_A_TO_B') {
+      setSaveError('This source is public and not accessible with the credential — sync can only run source → destination.');
       return;
     }
     setSaving(true);
     setSaveError(null);
     try {
       const autoName = deriveRepoName(repoAUrl);
+      const publicFallback = isPublicOnlyAccess(visibilityA, sourceCredentialId, reportA?.accessMode);
       await onSave({
         name: autoName,
         repoAUrl,
         repoBUrl,
         branchPattern,
-        syncDirection,
+        syncDirection: publicFallback ? 'UNIDIRECTIONAL_A_TO_B' : syncDirection,
         trunkConflictPolicy,
         storageTier: mapping?.storageTier || 'AUTO_LRU',
         active,
@@ -746,11 +700,11 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
         targetProvider: detectProviderInfo(repoBUrl)?.provider,
         sourceVisibility: visibilityA,
         targetVisibility: visibilityB,
-        sourceCredentialId: sourceAccessAnonymous ? null : sourceCredentialId ?? null,
-        targetCredentialId: destAccessAnonymous ? null : targetCredentialId ?? null,
-        sourceInstallationId: sourceAccessAnonymous ? null : sourceInstallationId ?? null,
-        targetInstallationId: destAccessAnonymous ? null : targetInstallationId ?? null,
-        sourcePublicRead: visibilityA === 'PUBLIC' ? true : sourcePublicRead ?? null,
+        sourceCredentialId: publicFallback ? null : sourceCredentialId ?? null,
+        targetCredentialId: targetCredentialId ?? null,
+        sourceInstallationId: publicFallback ? null : sourceInstallationId ?? null,
+        targetInstallationId: targetInstallationId ?? null,
+        sourcePublicRead: publicFallback,
       });
       onClose();
     } catch (err: any) {
@@ -768,7 +722,7 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
   return (
     <>
       <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
-        <div className="bg-white border border-zinc-200 rounded-2xl w-full max-w-xl shadow-2xl overflow-hidden flex flex-col my-auto max-h-[90vh]">
+        <div className="bg-white border border-zinc-200 rounded-2xl w-full max-w-5xl shadow-2xl overflow-hidden flex flex-col my-auto max-h-[90vh]">
           {/* Header */}
           <div className="px-6 py-4 border-b border-zinc-100 flex items-center justify-between shrink-0">
             <div>
@@ -802,7 +756,17 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
             </div>
           )}
 
-          {/* Form Body */}
+          {activeTab === 'BULK' && !isEditMode ? (
+            <BulkMigrationTab
+              existingMappings={existingMappings}
+              githubCredentials={githubCredentials}
+              publicReposEnabled={publicReposEnabled}
+              onClose={onClose}
+              onSubmitted={async (response) => {
+                await onBulkSubmitted?.(response);
+              }}
+            />
+          ) : (
           <form onSubmit={handleSubmit} className="p-6 space-y-4 text-xs overflow-y-auto flex-1">
             {/* Source Repository Card */}
             <div className="p-4 rounded-xl bg-zinc-50/70 border border-zinc-200/80 space-y-2.5">
@@ -837,6 +801,7 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                     setSourceReady(false);
                     setSourcePublicRead(undefined);
                     setSourceInstallationId(undefined);
+                    setSourceInstallationLogin(undefined);
                     setAlsoPublicHintA(false);
                   }}
                   placeholder="https://github.com/owner/source-repo.git or gitlab.com/..."
@@ -853,120 +818,29 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                   <span>{testingA ? 'Adding...' : sourceReady && reportA?.valid ? 'Re-check' : 'Add repo'}</span>
                 </button>
               </div>
-              {sourceReady && reportA?.valid && (
-                <div className="space-y-0.5 text-[10px]">
-                  <p className="text-emerald-700 font-medium">
-                    Added
-                    {` · Visibility ${visibilityA === 'PUBLIC' ? 'Public' : visibilityA === 'PRIVATE' ? 'Private' : 'Auto'}`}
-                    {sourceAccessAnonymous
-                      ? ' · Access anonymous HTTPS'
-                      : sourceCredentialId != null
-                        ? reportA?.valid && reportA.accessMode === 'PUBLIC'
-                          ? ` · Access via ${sourceCredentialLabel} (public read fallback)`
-                          : ` · Access via ${sourceCredentialLabel}`
-                        : ' · Access authenticated'}
-                  </p>
-                  {alsoPublicHintA && (
-                    <p className="text-sky-700">
-                      Also publicly readable over anonymous HTTPS — Access stays on your App/PAT.
-                    </p>
-                  )}
-                </div>
-              )}
-              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[10px]">
-                <span className="text-zinc-500 font-medium">Visibility</span>
-                {((publicReposEnabled
-                  ? (['UNKNOWN', 'PUBLIC', 'PRIVATE'] as const)
-                  : (['UNKNOWN', 'PRIVATE'] as const)
-                )).map((v) => (
-                  <button
-                    key={v}
-                    type="button"
-                    onClick={() => {
-                      setVisibilityA(v);
-                      setSourceReady(false);
-                      setReportA(null);
-                      setAlsoPublicHintA(false);
-                      if (v === 'PUBLIC' && publicReposEnabled) {
-                        setSourcePublicRead(true);
-                      } else if (v === 'PRIVATE') {
-                        setSourcePublicRead(false);
-                      }
-                    }}
-                    className={`px-2 py-0.5 rounded-md border ${
-                      visibilityA === v ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-600 border-zinc-200'
-                    }`}
-                  >
-                    {v === 'UNKNOWN' ? 'Auto' : v === 'PUBLIC' ? 'Public' : 'Private'}
-                  </button>
-                ))}
-              </div>
-              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[10px]">
-                <span className="text-zinc-500 font-medium">Access</span>
-                {!sourceAccessAnonymous && githubCredentials.length <= 1 ? (
-                  <span className="text-zinc-800 font-medium">
-                    {githubCredentials.length === 0
-                      ? 'No GitHub credentials — add in Settings'
-                      : sourceCredentialLabel}
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="text-zinc-500 font-medium">Visibility</span>
+                  <span className={`px-2 py-0.5 rounded-md border font-medium ${visibilityPresentation(visibilityA, sourceReady).className}`}>
+                    {visibilityPresentation(visibilityA, sourceReady).text}
                   </span>
-                ) : !sourceAccessAnonymous ? (
-                  <select
-                    value={String(sourceCredentialId ?? '')}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setSourceReady(false);
-                      setReportA(null);
-                      setAlsoPublicHintA(false);
-                      if (v === '') return;
-                      setSourceAccessAnonymous(false);
-                      setSourceCredentialId(Number(v));
-                      const cred = githubCredentials.find((c) => c.id === Number(v));
-                      if (cred?.authMode !== 'GITHUB_APP') setSourceInstallationId(undefined);
-                    }}
-                    className="max-w-[220px] bg-white border border-zinc-200 rounded-md px-2 py-0.5 text-zinc-800"
-                  >
-                    {githubCredentials.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {formatCredentialLabel(c)}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <span className="text-sky-800 font-medium">Anonymous HTTPS</span>
-                )}
-                {publicReposEnabled && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const next = !sourceAccessAnonymous;
-                      setSourceAccessAnonymous(next);
-                      setSourceReady(false);
-                      setReportA(null);
-                      setAlsoPublicHintA(false);
-                      if (next) {
-                        setSourceCredentialId(undefined);
-                        setSourceInstallationId(undefined);
-                        setSourcePublicRead(true);
-                        if (visibilityA === 'UNKNOWN') setVisibilityA('PUBLIC');
-                      } else if (githubCredentials[0]) {
-                        setSourceCredentialId(githubCredentials[0].id);
-                      }
-                    }}
-                    className={`px-2 py-0.5 rounded-md border ${
-                      sourceAccessAnonymous
-                        ? 'bg-sky-700 text-white border-sky-700'
-                        : 'bg-white text-zinc-600 border-zinc-200'
-                    }`}
-                  >
-                    Anonymous
-                  </button>
-                )}
-                {githubCredentials.length >= 2 && !sourceAccessAnonymous && (
-                  <span className="text-zinc-400">Which Settings credential this side uses</span>
-                )}
-                {sourceAccessAnonymous && (
-                  <span className="text-zinc-400">Anonymous HTTPS (explicit)</span>
-                )}
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="text-zinc-500 font-medium">Access</span>
+                  <span className={`px-2 py-0.5 rounded-md border font-medium ${
+                    sourceReady && isPublicOnlyAccess(visibilityA, sourceCredentialId, reportA?.accessMode)
+                      ? 'bg-sky-50 text-sky-800 border-sky-200'
+                      : 'bg-white text-zinc-800 border-zinc-200'
+                  }`}>
+                    {!reportA
+                      ? 'Not checked'
+                      : !reportA.valid
+                        ? `Check failed${sourceInstallationLogin ? ` · @${sourceInstallationLogin}` : ''}`
+                        : isPublicOnlyAccess(visibilityA, sourceCredentialId, reportA?.accessMode)
+                          ? 'Public read — credential could not access'
+                          : sourceCredentialLabel}
+                  </span>
+                </span>
               </div>
 
               {reportA && (
@@ -1075,26 +949,24 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                       setCreateFeedback(null);
                       setCreatePanelOpen(true);
                     }}
-                    disabled={!canOpenCreatePrivate || destAccessAnonymous}
+                    disabled={!canOpenCreatePrivate}
                     title={
                       !canOpenCreatePrivate
                         ? 'Add a source repository first (name defaults from source)'
-                        : destAccessAnonymous
-                          ? 'Switch Access off Anonymous to create under an App/PAT'
-                          : 'Create a new private GitHub repo under Access'
+                        : 'Create a GitHub repository as private, public, or internal'
                     }
                     className="flex items-center space-x-1 text-zinc-600 hover:text-zinc-900 font-medium text-[11px] bg-white hover:bg-zinc-100 border border-zinc-200 px-2.5 py-1 rounded-md shadow-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     <Sparkles className="w-3 h-3 text-zinc-500" />
-                    <span>Create private…</span>
+                    <span>Create…</span>
                   </button>
                 </div>
               </div>
 
-              {createPanelOpen && !destAccessAnonymous && (
+              {createPanelOpen && (
                 <div className="p-2.5 bg-white border border-zinc-200 rounded-lg space-y-2">
                   <div className="flex items-center justify-between gap-2">
-                    <p className="font-medium text-[11px] text-zinc-800">Create private destination</p>
+                    <p className="font-medium text-[11px] text-zinc-800">Create destination</p>
                     <button
                       type="button"
                       onClick={() => {
@@ -1117,9 +989,9 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                         onChange={(e) => {
                           const v = e.target.value;
                           if (v === '') return;
-                          setTargetCredentialId(Number(v));
+                          setTargetCredentialId(v);
                           setDestAccessAnonymous(false);
-                          const cred = githubCredentials.find((c) => c.id === Number(v));
+                          const cred = githubCredentials.find((c) => c.id === v);
                           if (cred?.accountLogin) {
                             setCreateDestOwner(cred.accountLogin);
                           } else {
@@ -1187,10 +1059,29 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                     <span className="text-[10px] text-zinc-400">Defaults to source name — edit to rename.</span>
                   </label>
 
+                  <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                    <span className="text-zinc-500 font-medium">Visibility</span>
+                    {(['private', 'public', 'internal'] as const).map((v) => (
+                      <button
+                        key={v}
+                        type="button"
+                        disabled={v === 'public' && !publicReposEnabled}
+                        onClick={() => setCreateVisibility(v)}
+                        className={`px-2 py-0.5 rounded-md border capitalize ${
+                          createVisibility === v
+                            ? 'bg-zinc-900 text-white border-zinc-900'
+                            : 'bg-white text-zinc-600 border-zinc-200'
+                        } disabled:opacity-40`}
+                      >
+                        {v}
+                      </button>
+                    ))}
+                  </div>
+
                   <p className="text-[10px] text-zinc-500 font-mono">
                     {createDestOwner && createDestName.trim()
-                      ? `github.com/${createDestOwner}/${createDestName.trim()} · Private`
-                      : 'github.com/{owner}/{name} · Private'}
+                      ? `github.com/${createDestOwner}/${createDestName.trim()} · ${createVisibility}`
+                      : `github.com/{owner}/{name} · ${createVisibility}`}
                   </p>
 
                   {createPermissionBlocked ? (
@@ -1244,6 +1135,7 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                     setReportB(null);
                     setDestReady(false);
                     setTargetInstallationId(undefined);
+                    setTargetInstallationLogin(undefined);
                     setAlsoPublicHintB(false);
                   }}
                   placeholder="https://gitlab.com/owner/mirror-repo.git or github.com/..."
@@ -1260,127 +1152,29 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                   <span>{testingB ? 'Adding...' : destReady && reportB?.valid ? 'Re-check' : 'Add repo'}</span>
                 </button>
               </div>
-              {destReady && reportB?.valid && (
-                <div className="space-y-0.5 text-[10px]">
-                  <p className="text-emerald-700 font-medium">
-                    Added
-                    {` · Visibility ${visibilityB === 'PUBLIC' ? 'Public' : visibilityB === 'PRIVATE' ? 'Private' : 'Auto'}`}
-                    {destAccessAnonymous
-                      ? ' · Access anonymous HTTPS'
-                      : targetCredentialId != null
-                        ? reportB?.valid && reportB.accessMode === 'PUBLIC'
-                          ? ` · Access via ${destCredentialLabel} (public read fallback)`
-                          : ` · Access via ${destCredentialLabel}`
-                        : ' · Access authenticated'}
-                  </p>
-                  {reportB.emptyDestination && (
-                    <p className="text-amber-700">
-                      Destination is empty — first mirror will use bulk bootstrap (single-connection push).
-                    </p>
-                  )}
-                  {alsoPublicHintB && (
-                    <p className="text-sky-700">
-                      Also publicly readable over anonymous HTTPS — Access stays on your App/PAT.
-                    </p>
-                  )}
-                </div>
-              )}
-              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[10px]">
-                <span className="text-zinc-500 font-medium">Visibility</span>
-                {((publicReposEnabled
-                  ? (['UNKNOWN', 'PUBLIC', 'PRIVATE'] as const)
-                  : (['UNKNOWN', 'PRIVATE'] as const)
-                )).map((v) => (
-                  <button
-                    key={v}
-                    type="button"
-                    onClick={() => {
-                      setVisibilityB(v);
-                      setDestReady(false);
-                      setReportB(null);
-                      setAlsoPublicHintB(false);
-                    }}
-                    className={`px-2 py-0.5 rounded-md border ${
-                      visibilityB === v ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-600 border-zinc-200'
-                    }`}
-                  >
-                    {v === 'UNKNOWN' ? 'Auto' : v === 'PUBLIC' ? 'Public' : 'Private'}
-                  </button>
-                ))}
-              </div>
-              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[10px]">
-                <span className="text-zinc-500 font-medium">Access</span>
-                {!destAccessAnonymous && githubCredentials.length <= 1 ? (
-                  <span className="text-zinc-800 font-medium">
-                    {githubCredentials.length === 0
-                      ? 'No GitHub credentials — add in Settings'
-                      : destCredentialLabel}
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="text-zinc-500 font-medium">Visibility</span>
+                  <span className={`px-2 py-0.5 rounded-md border font-medium ${visibilityPresentation(visibilityB, destReady).className}`}>
+                    {visibilityPresentation(visibilityB, destReady).text}
                   </span>
-                ) : !destAccessAnonymous ? (
-                  <select
-                    value={String(targetCredentialId ?? '')}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setDestReady(false);
-                      setReportB(null);
-                      setAlsoPublicHintB(false);
-                      if (v === '') return;
-                      setDestAccessAnonymous(false);
-                      setTargetCredentialId(Number(v));
-                      const cred = githubCredentials.find((c) => c.id === Number(v));
-                      if (cred?.accountLogin) setCreateDestOwner(cred.accountLogin);
-                      if (cred?.authMode !== 'GITHUB_APP') setTargetInstallationId(undefined);
-                    }}
-                    className="max-w-[220px] bg-white border border-zinc-200 rounded-md px-2 py-0.5 text-zinc-800"
-                  >
-                    {githubCredentials.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {formatCredentialLabel(c)}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <span className="text-sky-800 font-medium">Anonymous HTTPS</span>
-                )}
-                {destAllowsAnonymous && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const next = !destAccessAnonymous;
-                      setDestAccessAnonymous(next);
-                      setDestReady(false);
-                      setReportB(null);
-                      setAlsoPublicHintB(false);
-                      if (next) {
-                        setTargetCredentialId(undefined);
-                        setTargetInstallationId(undefined);
-                        if (visibilityB === 'UNKNOWN') setVisibilityB('PUBLIC');
-                      } else if (githubCredentials[0]) {
-                        setTargetCredentialId(githubCredentials[0].id);
-                        if (githubCredentials[0].accountLogin) {
-                          setCreateDestOwner(githubCredentials[0].accountLogin);
-                        }
-                      }
-                    }}
-                    className={`px-2 py-0.5 rounded-md border ${
-                      destAccessAnonymous
-                        ? 'bg-sky-700 text-white border-sky-700'
-                        : 'bg-white text-zinc-600 border-zinc-200'
-                    }`}
-                  >
-                    Anonymous
-                  </button>
-                )}
-                {destWriteRequired && !destAccessAnonymous && (
-                  <span className="text-zinc-400">Write needs App/PAT</span>
-                )}
-                {githubCredentials.length >= 2 && !destAccessAnonymous && !destWriteRequired && (
-                  <span className="text-zinc-400">Which Settings credential this side uses</span>
-                )}
-                {destAccessAnonymous && (
-                  <span className="text-zinc-400">Anonymous HTTPS (B→A read)</span>
-                )}
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="text-zinc-500 font-medium">Access</span>
+                  <span className="px-2 py-0.5 rounded-md border border-zinc-200 bg-white font-medium text-zinc-800">
+                    {!reportB
+                      ? 'Not checked'
+                      : !reportB.valid
+                        ? `Check failed${targetInstallationLogin ? ` · @${targetInstallationLogin}` : ''}`
+                        : destCredentialLabel}
+                  </span>
+                </span>
               </div>
+              {destReady && reportB?.emptyDestination && (
+                <p className="text-[10px] text-amber-700">
+                  Destination is empty — first mirror will use bulk bootstrap (single-connection push).
+                </p>
+              )}
 
               {reportB && (
                 <div className="space-y-2">
@@ -1428,7 +1222,7 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
 
                   {!reportB.valid && (reportB.httpStatusCode === 404 || reportB.message.toLowerCase().includes('not found')) && (
                     <p className="text-[10px] text-zinc-500 px-0.5">
-                      Repo not found — use <span className="font-medium text-zinc-700">Create private…</span> beside Browse,
+                      Repo not found — use <span className="font-medium text-zinc-700">Create…</span> beside Browse,
                       or fix the URL and re-check.
                     </p>
                   )}
@@ -1449,20 +1243,18 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                   />
                 </div>
                 <select
-                  value={syncDirection}
+                  value={sourcePublicOnly ? 'UNIDIRECTIONAL_A_TO_B' : syncDirection}
                   onChange={(e) => setSyncDirection(e.target.value as SyncDirection)}
                   className="w-full bg-white border border-zinc-200 rounded-lg px-3 py-2 text-zinc-900 text-xs focus:outline-none focus:border-zinc-400"
                 >
-                  <option value="BIDIRECTIONAL">Bidirectional (A ⇄ B)</option>
+                  <option value="BIDIRECTIONAL" disabled={sourcePublicOnly}>Bidirectional (A ⇄ B)</option>
                   <option value="UNIDIRECTIONAL_A_TO_B">Unidirectional (A → B)</option>
-                  <option value="UNIDIRECTIONAL_B_TO_A">Unidirectional (B → A)</option>
+                  <option value="UNIDIRECTIONAL_B_TO_A" disabled={sourcePublicOnly}>Unidirectional (B → A)</option>
                 </select>
-                {shouldWarnBidirectionalBackup(visibilityA, visibilityB, syncDirection) && (
-                  <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] text-amber-900">
-                    <strong>Public → private backup detected.</strong> Bidirectional sync will reverse-propagate
-                    mirror-only changes (e.g. Dependabot) back to the public upstream. Use{' '}
-                    <span className="font-semibold">Unidirectional (A → B)</span> for backup mirrors.
-                  </div>
+                {sourcePublicOnly && (
+                  <p className="mt-2 text-[11px] text-sky-800">
+                    This source is public read only, with no credential for its events or writes. Sync can only run source → destination.
+                  </p>
                 )}
               </div>
 
@@ -1571,6 +1363,7 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
               </button>
             </div>
           </form>
+          )}
         </div>
       </div>
 
@@ -1585,12 +1378,10 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
               setReportA(null);
               setSourceReady(false);
               setAlsoPublicHintA(false);
-              setVisibilityA(selectedRepo.isPrivate || !publicReposEnabled ? 'PRIVATE' : 'PUBLIC');
-              // Browse always binds the picker credential — Visibility ≠ Access.
               setSourceCredentialId(selectedRepo.credentialId);
               setSourceAccessAnonymous(false);
               setSourceInstallationId(selectedRepo.installationId);
-              setSourcePublicRead(publicReposEnabled && !selectedRepo.isPrivate);
+              setSourceInstallationLogin(selectedRepo.owner);
               setPickerTarget(null);
               void (async () => {
                 setTestingA(true);
@@ -1598,18 +1389,17 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                   const res = await testRepoConnection({
                     repoUrl: selectedRepo.cloneUrl,
                     requiredAccess: 'READ',
-                    knownPrivate: !!selectedRepo.isPrivate,
+                    knownPrivate: false,
                     credentialId: selectedRepo.credentialId,
+                    installationId: selectedRepo.installationId,
                   });
                   applySourceReport(res, selectedRepo.credentialId);
-                  if (res.valid && selectedRepo.installationId) {
-                    setSourceInstallationId(selectedRepo.installationId);
-                  }
                 } catch (e: any) {
                   setReportA({
                     valid: false,
                     repoFullName: selectedRepo.cloneUrl,
                     isPrivate: !!selectedRepo.isPrivate,
+                    visibility: selectedRepo.visibility?.toUpperCase(),
                     httpStatusCode: 500,
                     message: e.message || 'Add repo failed',
                     passedChecks: [],
@@ -1626,24 +1416,21 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
               setReportB(null);
               setDestReady(false);
               setAlsoPublicHintB(false);
-              setVisibilityB(
-                selectedRepo.isPrivate || !publicReposEnabled ? 'PRIVATE' : 'PUBLIC'
-              );
               setTargetCredentialId(selectedRepo.credentialId);
               setDestAccessAnonymous(false);
               setTargetInstallationId(selectedRepo.installationId);
-              const browsedCred = githubCredentials.find((c) => c.id === selectedRepo.credentialId);
-              if (browsedCred?.accountLogin) setCreateDestOwner(browsedCred.accountLogin);
+              setTargetInstallationLogin(selectedRepo.owner);
+              if (selectedRepo.owner) setCreateDestOwner(selectedRepo.owner);
               setPickerTarget(null);
               void (async () => {
-                const writeRequired = syncDirection !== 'UNIDIRECTIONAL_B_TO_A';
                 setTestingB(true);
                 try {
                   const res = await testRepoConnection({
                     repoUrl: selectedRepo.cloneUrl,
-                    requiredAccess: writeRequired ? 'WRITE' : 'READ',
-                    knownPrivate: !!selectedRepo.isPrivate || writeRequired,
+                    requiredAccess: 'WRITE',
+                    knownPrivate: true,
                     credentialId: selectedRepo.credentialId,
+                    installationId: selectedRepo.installationId,
                   });
                   applyDestReport(res, selectedRepo.credentialId);
                 } catch (e: any) {
@@ -1651,6 +1438,7 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
                     valid: false,
                     repoFullName: selectedRepo.cloneUrl,
                     isPrivate: !!selectedRepo.isPrivate,
+                    visibility: selectedRepo.visibility?.toUpperCase(),
                     httpStatusCode: 500,
                     message: e.message || 'Add repo failed',
                     passedChecks: [],
@@ -1671,14 +1459,13 @@ export const PairConfigModal: React.FC<PairConfigModalProps> = ({
 
       <CredentialPickModal
         isOpen={credPickTarget != null}
-        title={credPickTarget === 'B' ? 'Destination GitHub credential' : 'Source GitHub credential'}
+        title={credPickTarget === 'B' ? 'Destination credential' : 'Source credential'}
         reason={
           credPickTarget === 'B'
-            ? 'Write or private destination access needs a GitHub App or PAT.'
-            : visibilityA === 'PRIVATE'
-              ? 'Private source selected — choose a GitHub App or PAT to verify access.'
-              : 'Public access failed. Choose a GitHub App or PAT to continue Add repo.'
+            ? 'Choose the credential used to find this destination and verify write access. Public-only access is not enough to sync.'
+            : 'Choose the credential used to find this source. If that credential cannot access the repository, public read is checked next.'
         }
+        confirmLabel="Check repository"
         initialCredentialId={credPickTarget === 'B' ? targetCredentialId : sourceCredentialId}
         onCancel={() => setCredPickTarget(null)}
         onConfirm={handleCredentialPicked}

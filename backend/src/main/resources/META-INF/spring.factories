@@ -1,0 +1,6 @@
+# Boot 4.1 SPI: EnvironmentPostProcessors (root-package interface). The modular per-interface
+# META-INF/spring/... files are NOT read for this SPI in Boot 4.1.
+org.springframework.boot.EnvironmentPostProcessor=\
+com.gitutility.messaging.MessagingEnvironmentPostProcessor,\
+com.gitutility.messaging.webhook.WebhookBusEnvironmentPostProcessor,\
+com.gitutility.persistence.PersistenceEnvironmentPostProcessor

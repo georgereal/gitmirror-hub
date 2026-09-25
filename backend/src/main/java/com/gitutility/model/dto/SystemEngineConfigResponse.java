@@ -12,7 +12,7 @@ import java.time.Instant;
 @NoArgsConstructor
 @AllArgsConstructor
 public class SystemEngineConfigResponse {
-    private Long id;
+    private String id;
     private String localDir;
     private String nasDir;
     private long maxDiskQuotaMb;

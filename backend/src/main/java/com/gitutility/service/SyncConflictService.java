@@ -33,21 +33,21 @@ public class SyncConflictService {
         this.actionsTriggerSuppressionService = actionsTriggerSuppressionService;
     }
 
-    public List<SyncConflict> listForMapping(Long mappingId) {
+    public List<SyncConflict> listForMapping(String mappingId) {
         if (mappingId == null) {
             return List.of();
         }
         return conflictRepository.findByMappingIdOrderByCreatedAtDesc(mappingId);
     }
 
-    public List<SyncConflict> listOpen(Long mappingId) {
+    public List<SyncConflict> listOpen(String mappingId) {
         if (mappingId == null) {
             return List.of();
         }
         return conflictRepository.findByMappingIdAndStatusOrderByCreatedAtDesc(mappingId, ConflictStatus.OPEN);
     }
 
-    public SyncConflict recordGitRefConflict(Long mappingId, Long jobId, ConflictKind kind,
+    public SyncConflict recordGitRefConflict(String mappingId, String jobId, ConflictKind kind,
                                              TrunkConflictPolicy policy, String refName,
                                              String sourceSha, String destSha, String isolatedBranch,
                                              String destRepo, String message) {
@@ -89,7 +89,7 @@ public class SyncConflictService {
         return conflictRepository.save(row);
     }
 
-    public SyncConflict recordMetadataConflict(Long mappingId, Long jobId, String refName,
+    public SyncConflict recordMetadataConflict(String mappingId, String jobId, String refName,
                                                String destRepo, String originTitle, String replicaTitle,
                                                String message) {
         if (mappingId == null) {
@@ -135,9 +135,9 @@ public class SyncConflictService {
                 + "- Destination tip (kept): `" + destShort + "`\n"
                 + "- Isolated branch: `" + isolated + "`\n\n"
                 + "Review and merge this PR to accept the incoming history, or close it to keep the destination tip.";
-        Long credId = credentialForDest(mapping, destRepoUrl);
+        String credId = credentialForDest(mapping, destRepoUrl);
         Long prNumber;
-        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(credId)) {
+        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(credId, installationForDest(mapping, destRepoUrl))) {
             prNumber = adapter.createPullRequest(fullName, title, body, isolated, base);
         }
         if (prNumber != null) {
@@ -160,7 +160,7 @@ public class SyncConflictService {
         return conflict;
     }
 
-    public Optional<SyncConflict> resolve(Long mappingId, Long conflictId) {
+    public Optional<SyncConflict> resolve(String mappingId, String conflictId) {
         if (mappingId == null || conflictId == null) {
             return Optional.empty();
         }
@@ -173,7 +173,7 @@ public class SyncConflictService {
                 });
     }
 
-    public Optional<SyncConflict> retryOpenPr(Long mappingId, Long conflictId, RepoMapping mapping, String destRepoUrl) {
+    public Optional<SyncConflict> retryOpenPr(String mappingId, String conflictId, RepoMapping mapping, String destRepoUrl) {
         if (mappingId == null || conflictId == null) {
             return Optional.empty();
         }
@@ -182,7 +182,7 @@ public class SyncConflictService {
                 .map(row -> openConflictPr(row, mapping, destRepoUrl));
     }
 
-    private static Long credentialForDest(RepoMapping mapping, String destRepoUrl) {
+    private static String credentialForDest(RepoMapping mapping, String destRepoUrl) {
         if (mapping == null || destRepoUrl == null) {
             return null;
         }
@@ -193,6 +193,19 @@ public class SyncConflictService {
             return mapping.getSourceCredentialId();
         }
         return mapping.getTargetCredentialId();
+    }
+
+    private static String installationForDest(RepoMapping mapping, String destRepoUrl) {
+        if (mapping == null || destRepoUrl == null) {
+            return null;
+        }
+        if (RepoMappingService.sameRepo(destRepoUrl, mapping.getRepoBUrl())) {
+            return mapping.getTargetInstallationId();
+        }
+        if (RepoMappingService.sameRepo(destRepoUrl, mapping.getRepoAUrl())) {
+            return mapping.getSourceInstallationId();
+        }
+        return mapping.getTargetInstallationId();
     }
 
     static String shortSha(String sha) {

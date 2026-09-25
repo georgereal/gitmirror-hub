@@ -6,10 +6,14 @@ import tools.jackson.databind.json.JsonMapper;
 import com.gitutility.model.dto.*;
 import com.gitutility.model.entity.GitHubAppConfig;
 import com.gitutility.model.enums.ScmProviderType;
+import com.gitutility.provider.GitHubRulesetClient;
+import com.gitutility.provider.ReadonlyRulesetSpec;
+import com.gitutility.provider.RulesetPresence;
 import com.gitutility.provider.GithubPullRequestJson;
 import com.gitutility.provider.GithubRestPagination;
 import com.gitutility.provider.PublicReadProbe;
 import com.gitutility.provider.ScmProviderAdapter;
+import com.gitutility.provider.ScmVisibility;
 import com.gitutility.provider.github.GithubGraphQlClient;
 import com.gitutility.repository.GitHubAppConfigRepository;
 import lombok.RequiredArgsConstructor;
@@ -75,7 +79,7 @@ public class GitHubEnterpriseProviderService implements ScmProviderAdapter {
     }
 
     private String getNormalizedHostUrl() {
-        Long credId = com.gitutility.service.ScmCredentialContext.currentId();
+        String credId = com.gitutility.service.ScmCredentialContext.currentId();
         if (credId != null && scmCredentialService != null) {
             try {
                 String host = scmCredentialService.require(credId).getHostUrl();
@@ -134,7 +138,7 @@ public class GitHubEnterpriseProviderService implements ScmProviderAdapter {
         if (scmCredentialService == null) {
             return null;
         }
-        Long id = com.gitutility.service.ScmCredentialContext.currentId();
+        String id = com.gitutility.service.ScmCredentialContext.currentId();
         if (id == null) {
             return null;
         }
@@ -246,15 +250,15 @@ public class GitHubEnterpriseProviderService implements ScmProviderAdapter {
             }
 
             String defaultBranch = "main";
-            boolean isPrivate = true;
+            String visibility = "PRIVATE";
             boolean emptyDestination = false;
             if (repoFullName != null && repoFullName.contains("/")) {
                 String repoUrl = host + "/api/v3/repos/" + repoFullName;
                 ResponseEntity<String> repoResp = restTemplate.exchange(URI.create(repoUrl), HttpMethod.GET, new HttpEntity<>(headers), String.class);
                 JsonNode repoNode = objectMapper.readTree(repoResp.getBody());
                 defaultBranch = repoNode.path("default_branch").asText("main");
-                isPrivate = repoNode.path("private").asBoolean(true);
-                passed.add("Repository Metadata Verified: " + repoFullName + " (default branch: " + defaultBranch + ")");
+                visibility = ScmVisibility.fromRepoNode(repoNode);
+                passed.add("Repository Metadata Verified: " + repoFullName + " (" + ScmVisibility.label(visibility) + ", default branch: " + defaultBranch + ")");
 
                 // Detect an empty destination so the UI can pre-announce the bulk mirror bootstrap path.
                 if (writeRequired) {
@@ -279,7 +283,8 @@ public class GitHubEnterpriseProviderService implements ScmProviderAdapter {
                     .httpStatusCode(200)
                     .repoFullName(repoFullName)
                     .defaultBranch(defaultBranch)
-                    .isPrivate(isPrivate)
+                    .isPrivate(ScmVisibility.isPrivateFlag(visibility))
+                    .visibility(visibility)
                     .emptyDestination(emptyDestination)
                     .accessMode("AUTHENTICATED")
                     .message("GHES credentials validated successfully.")
@@ -442,6 +447,74 @@ public class GitHubEnterpriseProviderService implements ScmProviderAdapter {
     }
 
     @Override
+    public long ensureReplicaReadonlyRuleset(String repoFullName, long appId, String enforcement) {
+        String host = getNormalizedHostUrl();
+        if (host == null || host.isBlank()) {
+            throw new IllegalStateException("GHES host URL is not configured for this credential.");
+        }
+        return GitHubRulesetClient.ensure(
+                restTemplate, objectMapper, host + "/api/v3",
+                getEffectiveGhesToken(null), repoFullName, appId, enforcement);
+    }
+
+    @Override
+    public long ensureReadonlyRuleset(ReadonlyRulesetSpec spec) {
+        if (ReadonlyRulesetSpec.KIND_ENTERPRISE.equals(spec.kind())) {
+            throw new IllegalStateException(
+                    "GHES has no enterprise ruleset API. Use an organization ruleset on the appliance.");
+        }
+        String host = getNormalizedHostUrl();
+        if (host == null || host.isBlank()) {
+            throw new IllegalStateException("GHES host URL is not configured for this credential.");
+        }
+        String collection = host + "/api/v3" + GitHubRulesetClient.collectionPath(spec);
+        String label = ReadonlyRulesetSpec.KIND_ORG.equals(spec.kind()) ? spec.orgLogin() : spec.repoFullName();
+        return GitHubRulesetClient.ensureNamed(
+                restTemplate, objectMapper, collection, getEffectiveGhesToken(null), spec, label);
+    }
+
+    @Override
+    public RulesetPresence lookupReadonlyRuleset(ReadonlyRulesetSpec spec) {
+        if (ReadonlyRulesetSpec.KIND_ENTERPRISE.equals(spec.kind())) {
+            return RulesetPresence.unknown(spec.rulesetName(),
+                    "GHES has no enterprise ruleset API. Use an organization ruleset on the appliance.");
+        }
+        String host = getNormalizedHostUrl();
+        if (host == null || host.isBlank()) {
+            return RulesetPresence.unknown(spec.rulesetName(), "GHES host URL is not configured for this credential.");
+        }
+        String collection = host + "/api/v3" + GitHubRulesetClient.collectionPath(spec);
+        return GitHubRulesetClient.lookup(
+                restTemplate, objectMapper, collection, getEffectiveGhesToken(null), spec.rulesetName());
+    }
+
+    @Override
+    public java.util.List<GitHubRulesetClient.ListedRuleset> listRepositoryRulesets(String repoFullName) {
+        String host = getNormalizedHostUrl();
+        if (host == null || host.isBlank()) {
+            throw new IllegalStateException("GHES host URL is not configured for this credential.");
+        }
+        String collection = host + "/api/v3/repos/" + repoFullName + "/rulesets";
+        return GitHubRulesetClient.listAll(restTemplate, objectMapper, collection, getEffectiveGhesToken(null));
+    }
+
+    @Override
+    public void setRepositoryRulesetEnforcement(String repoFullName, long rulesetId, String enforcement) {
+        String host = getNormalizedHostUrl();
+        if (host == null || host.isBlank()) {
+            throw new IllegalStateException("GHES host URL is not configured for this credential.");
+        }
+        String collection = host + "/api/v3/repos/" + repoFullName + "/rulesets";
+        GitHubRulesetClient.setEnforcement(
+                restTemplate, objectMapper, collection, getEffectiveGhesToken(null), rulesetId, enforcement);
+    }
+
+    @Override
+    public String probeEnterpriseRulesets(String enterpriseSlug) {
+        return "GHES has no enterprise ruleset API. Use an organization ruleset on the appliance.";
+    }
+
+    @Override
     public boolean createRemoteRepository(CreateRepoRequest req) {
         String host = getNormalizedHostUrl();
         String token = getEffectiveGhesToken(null);
@@ -449,7 +522,7 @@ public class GitHubEnterpriseProviderService implements ScmProviderAdapter {
 
         String owner = req.getOrg() != null ? req.getOrg().trim() : null;
         // Preflight: fail fast with actionable guidance when the App installation lacks Administration (write).
-        Long preflightCredId = com.gitutility.service.ScmCredentialContext.currentId();
+        String preflightCredId = com.gitutility.service.ScmCredentialContext.currentId();
         if (preflightCredId != null) {
             scmCredentialService.assertCanCreateRepository(preflightCredId, owner);
         }
@@ -459,14 +532,16 @@ public class GitHubEnterpriseProviderService implements ScmProviderAdapter {
             headers.setContentType(MediaType.APPLICATION_JSON);
 
             Map<String, Object> body = new HashMap<>();
+            String visibility = req.resolvedVisibility();
             body.put("name", req.getName());
             body.put("description", req.getDescription() != null ? req.getDescription() : "Mirrored by GitMirror Hub");
-            body.put("private", req.isPrivateRepo());
+            body.put("private", !"public".equals(visibility));
+            body.put("visibility", visibility);
             body.put("auto_init", false);
 
             boolean useOrg = owner != null && !owner.isBlank()
                     && !"User".equalsIgnoreCase(req.getAccountType());
-            Long credId = com.gitutility.service.ScmCredentialContext.currentId();
+            String credId = com.gitutility.service.ScmCredentialContext.currentId();
             if (useOrg && credId != null && scmCredentialService != null) {
                 try {
                     String t = scmCredentialService.require(credId).getAccountType();

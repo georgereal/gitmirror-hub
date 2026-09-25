@@ -13,11 +13,11 @@ import java.util.concurrent.ConcurrentHashMap;
 @Service
 public class JobCancellationService {
 
-    private final Set<Long> cancelRequested = ConcurrentHashMap.newKeySet();
-    private final Set<Long> pauseRequested = ConcurrentHashMap.newKeySet();
-    private final ConcurrentHashMap<Long, Thread> runningThreads = new ConcurrentHashMap<>();
+    private final Set<String> cancelRequested = ConcurrentHashMap.newKeySet();
+    private final Set<String> pauseRequested = ConcurrentHashMap.newKeySet();
+    private final ConcurrentHashMap<String, Thread> runningThreads = new ConcurrentHashMap<>();
 
-    public void requestCancel(Long jobId) {
+    public void requestCancel(String jobId) {
         if (jobId == null) {
             return;
         }
@@ -28,7 +28,7 @@ public class JobCancellationService {
         // JGit honors ProgressMonitor.isCancelled() on the next fetch/push tick.
     }
 
-    public void requestPause(Long jobId) {
+    public void requestPause(String jobId) {
         if (jobId == null) {
             return;
         }
@@ -36,25 +36,25 @@ public class JobCancellationService {
         cancelRequested.remove(jobId);
     }
 
-    public boolean isCancelRequested(Long jobId) {
+    public boolean isCancelRequested(String jobId) {
         return jobId != null && cancelRequested.contains(jobId);
     }
 
-    public boolean isPauseRequested(Long jobId) {
+    public boolean isPauseRequested(String jobId) {
         return jobId != null && pauseRequested.contains(jobId);
     }
 
-    public void registerRunning(Long jobId) {
+    public void registerRunning(String jobId) {
         registerRunning(jobId, Thread.currentThread());
     }
 
-    void registerRunning(Long jobId, Thread thread) {
+    void registerRunning(String jobId, Thread thread) {
         if (jobId != null && thread != null) {
             runningThreads.put(jobId, thread);
         }
     }
 
-    public void unregisterRunning(Long jobId) {
+    public void unregisterRunning(String jobId) {
         if (jobId != null) {
             runningThreads.remove(jobId);
             cancelRequested.remove(jobId);

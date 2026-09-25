@@ -15,8 +15,8 @@ export function normalizeRepoKey(url?: string | null): string {
 
 export function findRepoCollision(
   candUrl: string,
-  existingMappings: Array<{ id: number; name: string; repoAUrl: string; repoBUrl: string; active?: boolean }>,
-  currentMappingId?: number
+  existingMappings: Array<{ id: string; name: string; repoAUrl: string; repoBUrl: string; active?: boolean }>,
+  currentMappingId?: string
 ): { pairName: string; matchingField: 'Source' | 'Destination' } | null {
   const norm = normalizeRepoKey(candUrl);
   if (!norm) return null;

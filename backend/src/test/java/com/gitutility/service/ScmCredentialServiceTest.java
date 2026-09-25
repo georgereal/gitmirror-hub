@@ -54,7 +54,7 @@ class ScmCredentialServiceTest {
     @Test
     void patCredentialNeverMintsInstallToken() {
         ScmCredential cred = ScmCredential.builder()
-                .id(1L)
+                .id("1")
                 .label("tools-pat")
                 .provider("GITHUB")
                 .hostUrl("https://github.com")
@@ -72,7 +72,7 @@ class ScmCredentialServiceTest {
     @Test
     void appCredentialRequiresInstallationAndIgnoresPatField() {
         ScmCredential cred = ScmCredential.builder()
-                .id(2L)
+                .id("2")
                 .label("acme-app")
                 .provider("GITHUB")
                 .hostUrl("https://github.com")
@@ -91,7 +91,7 @@ class ScmCredentialServiceTest {
     @Test
     void searchKeepsReposWhenGithubReportsNoPullPermission() {
         ScmCredential cred = ScmCredential.builder()
-                .id(3L)
+                .id("3")
                 .label("tools-pat")
                 .provider("GITHUB")
                 .hostUrl("https://github.com")
@@ -99,7 +99,7 @@ class ScmCredentialServiceTest {
                 .patToken("ghp_x")
                 .enabled(true)
                 .build();
-        when(credentialRepository.findById(3L)).thenReturn(Optional.of(cred));
+        when(credentialRepository.findById("3")).thenReturn(Optional.of(cred));
         String body = """
                 [{"id":1,"full_name":"acme/test-repo","clone_url":"https://github.com/acme/test-repo.git",
                 "permissions":{"pull":false,"push":false}}]
@@ -107,7 +107,7 @@ class ScmCredentialServiceTest {
         when(restTemplate.exchange(any(URI.class), eq(HttpMethod.GET), any(), eq(String.class)))
                 .thenReturn(new ResponseEntity<>(body, HttpStatus.OK));
 
-        var res = service.searchRepositories(3L, "", 1, 15, "PULL");
+        var res = service.searchRepositories("3", "", 1, 15, "PULL");
         assertEquals(1, res.getTotalCount());
         assertEquals("acme/test-repo", res.getItems().get(0).getFullName());
     }
@@ -115,7 +115,7 @@ class ScmCredentialServiceTest {
     @Test
     void hmacSecretADoesNotAuthenticateSecretB() throws Exception {
         ScmCredential a = ScmCredential.builder()
-                .id(3L)
+                .id("3")
                 .label("a")
                 .provider("GITHUB")
                 .hostUrl("https://github.com")
@@ -139,7 +139,7 @@ class ScmCredentialServiceTest {
     @Test
     void ensureBoundIfUniqueBindsWhenExactlyOneGithubCredential() {
         ScmCredential cred = ScmCredential.builder()
-                .id(1L)
+                .id("1")
                 .label("only")
                 .provider("GITHUB")
                 .hostUrl("https://github.com")
@@ -157,15 +157,15 @@ class ScmCredentialServiceTest {
         when(mappingRepository.save(mapping)).thenReturn(mapping);
 
         assertTrue(service.ensureBoundIfUnique(mapping));
-        assertEquals(1L, mapping.getSourceCredentialId());
-        assertEquals(1L, mapping.getTargetCredentialId());
+        assertEquals("1", mapping.getSourceCredentialId());
+        assertEquals("1", mapping.getTargetCredentialId());
         verify(mappingRepository).save(mapping);
     }
 
     @Test
     void ensureBoundIfUniqueSkipsWhenMultipleGithubCredentials() {
-        ScmCredential a = ScmCredential.builder().id(1L).provider("GITHUB").enabled(true).build();
-        ScmCredential b = ScmCredential.builder().id(2L).provider("GITHUB").enabled(true).build();
+        ScmCredential a = ScmCredential.builder().id("1").provider("GITHUB").enabled(true).build();
+        ScmCredential b = ScmCredential.builder().id("2").provider("GITHUB").enabled(true).build();
         var mapping = new com.gitutility.model.entity.RepoMapping();
         mapping.setRepoAUrl("https://github.com/acme/src.git");
         mapping.setRepoBUrl("https://bitbucket.org/ws/dst.git");
@@ -196,7 +196,7 @@ class ScmCredentialServiceTest {
         mapping.setRepoAUrl("https://github.com/microsoft/vscode.git");
         mapping.setRepoBUrl("https://github.com/acme/mirror-vscode.git");
         mapping.setSourceVisibility(com.gitutility.model.enums.RepoVisibility.PUBLIC);
-        mapping.setTargetCredentialId(9L);
+        mapping.setTargetCredentialId("9");
         assertDoesNotThrow(() -> service.requireBoundIfGithub(mapping));
     }
 
@@ -208,7 +208,7 @@ class ScmCredentialServiceTest {
         mapping.setRepoAUrl("https://github.com/microsoft/vscode.git");
         mapping.setRepoBUrl("https://github.com/acme/mirror-vscode.git");
         mapping.setSourceVisibility(com.gitutility.model.enums.RepoVisibility.PUBLIC);
-        mapping.setTargetCredentialId(9L);
+        mapping.setTargetCredentialId("9");
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
                 () -> service.requireBoundIfGithub(mapping));
         assertTrue(ex.getMessage().toLowerCase().contains("public"));
@@ -248,7 +248,7 @@ class ScmCredentialServiceTest {
     @Test
     void findByInstallationMatchesIdsInJsonList() {
         ScmCredential cred = ScmCredential.builder()
-                .id(7L)
+                .id("7")
                 .label("multi")
                 .provider("GITHUB")
                 .hostUrl("https://github.com")
@@ -267,7 +267,7 @@ class ScmCredentialServiceTest {
     @Test
     void installationPermissionsExposeCreateRepoGate() throws Exception {
         ScmCredential cred = ScmCredential.builder()
-                .id(7L)
+                .id("7")
                 .label("acme-app")
                 .provider("GITHUB")
                 .hostUrl("https://github.com")
@@ -276,7 +276,7 @@ class ScmCredentialServiceTest {
                 .privateKeyPem(rsaPem())
                 .enabled(true)
                 .build();
-        when(credentialRepository.findById(7L)).thenReturn(Optional.of(cred));
+        when(credentialRepository.findById("7")).thenReturn(Optional.of(cred));
         String body = """
                 [
                   {"id":111,"account":{"login":"acme-org","type":"Organization"},"repository_selection":"selected",
@@ -292,7 +292,7 @@ class ScmCredentialServiceTest {
         when(restTemplate.exchange(any(URI.class), eq(HttpMethod.GET), any(), eq(String.class)))
                 .thenReturn(new ResponseEntity<>(body, HttpStatus.OK));
 
-        var installs = service.listInstallations(7L);
+        var installs = service.listInstallations("7");
         assertEquals(4, installs.size());
         assertEquals(Boolean.TRUE, installs.get(0).getCanCreateRepo());
         assertEquals(Boolean.FALSE, installs.get(1).getCanCreateRepo());
@@ -302,25 +302,25 @@ class ScmCredentialServiceTest {
 
         // Preflight blocks only on positive knowledge that the installation lacks administration:write.
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
-                () -> service.assertCanCreateRepository(7L, "other-user"));
+                () -> service.assertCanCreateRepository("7", "other-user"));
         assertTrue(ex.getMessage().contains("Administration"));
 
         // A permissions object without an administration key is also positive knowledge:
         // GitHub omits ungranted permissions, so this is exactly the fresh-App-without-Administration case.
         IllegalArgumentException noAdmin = assertThrows(IllegalArgumentException.class,
-                () -> service.assertCanCreateRepository(7L, "noadmin-user"));
+                () -> service.assertCanCreateRepository("7", "noadmin-user"));
         assertTrue(noAdmin.getMessage().contains("Administration"));
 
-        assertDoesNotThrow(() -> service.assertCanCreateRepository(7L, "acme-org"));
-        assertDoesNotThrow(() -> service.assertCanCreateRepository(7L, "unknown-org"));
+        assertDoesNotThrow(() -> service.assertCanCreateRepository("7", "acme-org"));
+        assertDoesNotThrow(() -> service.assertCanCreateRepository("7", "unknown-org"));
         // Legacy host without any permissions node stays unknown — GitHub remains the final arbiter.
-        assertDoesNotThrow(() -> service.assertCanCreateRepository(7L, "legacy-user"));
+        assertDoesNotThrow(() -> service.assertCanCreateRepository("7", "legacy-user"));
     }
 
     @Test
     void createRepoPreflightNeverBlocksPatCredentials() {
         ScmCredential cred = ScmCredential.builder()
-                .id(8L)
+                .id("8")
                 .label("pat")
                 .provider("GITHUB")
                 .hostUrl("https://github.com")
@@ -328,9 +328,9 @@ class ScmCredentialServiceTest {
                 .patToken("ghp_x")
                 .enabled(true)
                 .build();
-        when(credentialRepository.findById(8L)).thenReturn(Optional.of(cred));
+        when(credentialRepository.findById("8")).thenReturn(Optional.of(cred));
 
-        assertDoesNotThrow(() -> service.assertCanCreateRepository(8L, "acme-org"));
+        assertDoesNotThrow(() -> service.assertCanCreateRepository("8", "acme-org"));
         verifyNoInteractions(restTemplate);
     }
 

@@ -51,28 +51,60 @@ Under **Permissions → Repository permissions**, set at least:
 
 | Permission | Access | Why |
 | :--- | :--- | :--- |
+| **Administration** | **Read and write** | Repository rulesets (`gitmirror-replica-readonly`) and creating the destination repository. This is separate from organization Administration. |
 | **Contents** | **Read and write** | Clone / fetch / push refs (mirror traffic). *Subscribe to Push alone does not grant Git write.* |
-| **Metadata** | **Read-only** | Required for repo discovery |
-| **Pull requests** | **Read and write** | PR / review mirroring (if used) |
-| **Commit statuses** | **Read and write** | Status mirroring (if used) |
+| **Metadata** | **Read-only** | Required for repo discovery. GitHub keeps this on. |
+| **Pull requests** | **Read and write** | Incremental and full-mirror pull requests |
+| **Commit statuses** | **Read and write** | Commit status mirroring |
+| **Checks** | **Read and write** | Check run mirroring. An existing App must accept this permission on each installation. |
 | **Actions** | **Read and write** | Cancel mirror-triggered workflow runs (Hub “Suppress mirror-triggered Actions”) |
 | **Workflows** | **Read and write** | Required if the tree contains `.github/workflows`; otherwise pushes can fail with `REJECTED_OTHER_REASON` |
 
-Leave other permissions at **No access** unless you need them.
+Under **Organization permissions**, set **Administration** to **Read and write** when this App will lock an organization read-only from **Settings → Disaster recovery** or **Settings → Replica rulesets**. GitHub asks an org owner to accept that permission on each installation. Without it, Hub falls back to a repository ruleset.
 
-After changing permissions on an existing App, GitHub prompts you to **review / accept** the new permissions on each installation.
+Leave other permissions at **No access**. Hub does not use Issues, pull request reviews, or check suites.
+
+After changing permissions on an existing App, GitHub prompts you to **review / accept** the new permissions on each installation. **Checks** and organization **Administration** both require that accept step. Saving the App registration is not enough.
 
 ### 1.3 Subscribe to events
 
-Under **Subscribe to events**, enable:
+Under **Subscribe to events**, enable every row below. GitHub’s checkbox label is the first column. The Worker and Hub match the `X-GitHub-Event` header in the second column. A delivery for any other event is acknowledged and dropped (`200 ignored` at the Worker, or `ignored` at the Hub).
 
-| Event | Required? |
+| GitHub checkbox | `X-GitHub-Event` | What Hub does |
+| :--- | :--- | :--- |
+| **Push** | `push` | Incremental ref sync for the branches and tags in the payload. Also scans that commit range for Git LFS pointers when **Settings → Metadata sync → Git LFS** is on. There is no separate LFS webhook. |
+| **Create** | `create` | Branch or tag created outside a push payload. Hub turns it into a ref sync. |
+| **Delete** | `delete` | Branch or tag deleted outside a push payload. Hub deletes that ref on the other side. |
+| **Pull request** | `pull_request` | Incremental pull request sync (open, edit, close, merge). Gated by **Settings → Metadata sync → Pull requests**. |
+| **Release** | `release` | One release and its assets. A deleted or unpublished release is recorded as skipped. Gated by **Settings → Metadata sync → Releases and assets**. |
+| **Status** | `status` | One commit status, written on the opposite side of the pair. Gated by **Settings → Metadata sync → CI checks**. |
+
+**Check run is not in the Subscribe to events list.** With **Checks: Read and write**, GitHub subscribes the App to `check_run` and `check_suite` on its own, so neither name appears next to Push, Release, or Status. **Status** on that list is a commit status (`status`), not a check run. **Workflow job** and **Workflow run** are Actions, not the Checks API. Hub mirrors a completed `check_run`. If the destination has no Checks API, Hub writes a commit status instead. That path is gated by **Settings → Metadata sync → CI checks**. `check_suite` deliveries still arrive with the automatic subscription. Hub and the Worker ignore them.
+
+On a **repository webhook** (Settings → Webhooks → Let me select individual events), the same delivery is the checkbox **Check runs**. Select that. You can leave **Check suites** off there.
+
+Git ref push stays on even when every metadata switch is off. Turning a switch off skips that stage on a full mirror, ignores the matching webhook, and disables the pair-page button.
+
+Do **not** subscribe to these when the form shows a checkbox. Hub has no handler for them, and the Worker returns `200 ignored`:
+
+| Leave off | Why |
 | :--- | :--- |
-| **Push** | Yes — incremental mirror triggers |
-| **Pull request** | If you sync PR state via webhooks |
-| **Status** / check-related events | If you mirror CI status |
+| **Check suites** (repository webhook only) | `check_run` already carries each completed check. On a GitHub App this event is subscribed automatically with Checks write, and Hub ignores it. |
+| **Pull request review**, **Pull request review comment**, **Pull request review thread** | Reviews are out of scope. |
+| **Issues**, **Issue comment**, **Label**, **Milestone**, **Wiki** | Not mirrored. |
+| **Membership**, **Organization**, **Repository** | Not mirrored. Repository rulesets are written by Hub, not driven by these events. |
+| **Workflow run**, **Workflow job** | Actions suppression is a post-push cancel, not a webhook. |
 
-Save changes.
+`ping` is sent when you save the webhook. Both Workers answer `200` and do not enqueue it. You do not subscribe to ping.
+
+After you add events on an App that is already installed, redeploy the Cloudflare Worker that sits in front of Hub. A Worker built before these events were accepted still returns `200 ignored`, so Hub never sees the delivery. Restarting Hub does not change that filter.
+
+| Bus (`GIT_WEBHOOK_BUS_PROVIDER`) | Redeploy |
+| :--- | :--- |
+| `kafka` | `webhook-worker-kafka/` |
+| `rabbitmq` | `webhook-worker/` |
+
+Save the App, then accept any new installation permissions.
 
 ### 1.4 Webhook URL & secret
 
@@ -183,8 +215,11 @@ Details: [`INSTRUCTIONS.md`](INSTRUCTIONS.md) § “Preventing Actions from runn
 
 ### 1.9 Checklist
 
-- [ ] App created with Contents R/W (+ Metadata, Actions, Workflows as needed)
-- [ ] Events: Push (+ PR / status if used)
+- [ ] App created with Contents, Metadata, Pull requests, Commit statuses, Checks, Actions, and Workflows as in [§1.2](#12-repository-permissions)
+- [ ] Organization Administration read and write, if this App will apply org or enterprise read-only rulesets
+- [ ] Events: Push, Create, Delete, Pull request, Release, Status ([§1.3](#13-subscribe-to-events)). Check runs come from **Checks: Read and write**, not from a separate App checkbox.
+- [ ] Each installation has accepted Checks (and Administration, if used)
+- [ ] The Cloudflare Worker in front of this bus has been redeployed so those events are not dropped
 - [ ] Private key generated and stored only in Hub (encrypted)
 - [ ] App installed on destination org/repos; Installation ID recorded
 - [ ] Webhook URL + secret match Hub credential (+ Worker)
@@ -213,7 +248,7 @@ Fine-grained PATs work for smaller setups; App is preferred for Actions suppress
 2. Repository access: select the repos to mirror.
 3. Permissions: **Contents: Read and write** (plus PR/metadata as needed).
 4. Paste the token into a Hub credential card with auth mode **PAT**.
-5. Repository webhooks (not App webhooks) can point at Worker `/webhook/github/...` with a matching secret — see [`INSTRUCTIONS.md`](INSTRUCTIONS.md) Step 3 Option B.
+5. Repository webhooks (not App webhooks) can point at Worker `/webhook/github/...` with a matching secret — see [`INSTRUCTIONS.md`](INSTRUCTIONS.md) Step 3 Option B. Send the same events as [§1.3](#13-subscribe-to-events), not push alone. A PAT cannot apply organization rulesets; disaster-recovery locks for that credential fall back to the repository.
 
 ---
 
