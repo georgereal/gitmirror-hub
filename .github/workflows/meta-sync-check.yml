@@ -1,0 +1,14 @@
+name: meta-sync-check
+on:
+  push:
+    branches:
+      - test/meta-sync
+  pull_request:
+    branches:
+      - main
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Metadata sync probe
+        run: echo "metadata sync check"
