@@ -18,6 +18,9 @@ public class SystemEngineConfigResponse {
     private long maxDiskQuotaMb;
     private int maxCachedRepos;
     private int retentionHours;
+    private int unmappedWebhookTtlDays;
+    private int unmappedWebhookPurgeDays;
+    private int unmappedWebhookPurgeIntervalMinutes;
 
     private int maxConcurrentPushes;
     private int metadataSyncIntervalSeconds;

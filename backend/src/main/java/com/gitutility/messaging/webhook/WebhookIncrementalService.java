@@ -12,8 +12,8 @@ import com.gitutility.model.enums.TriggerType;
 import com.gitutility.repository.RepoMappingRepository;
 import com.gitutility.repository.SyncJobRepository;
 import com.gitutility.repository.UnmappedWebhookEventRepository;
-import com.gitutility.service.DedupLedgerService;
 import com.gitutility.service.FailoverPeerErrors;
+import com.gitutility.service.PairTipEchoService;
 import com.gitutility.service.FailoverService;
 import com.gitutility.service.PairLeaseBusyException;
 import com.gitutility.service.PairLeaseService;
@@ -38,7 +38,7 @@ import java.util.UUID;
 
 /**
  * Runs one normalized git event as an incremental mirror on the caller thread.
- * Echo suppression and conflicts stay in {@link DedupLedgerService} and {@code GitSyncEngine}.
+ * A push or delete is an echo only when {@link PairTipEchoService} sees that result on the other repo.
  */
 @Service
 @ConditionalOnExpression("'${git-utility.webhook-bus.provider:off}' == 'kafka' or '${git-utility.webhook-bus.provider:off}' == 'rabbitmq'")
@@ -52,7 +52,7 @@ public class WebhookIncrementalService {
     private final RepoMappingRepository mappingRepository;
     private final SyncJobRepository syncJobRepository;
     private final UnmappedWebhookEventRepository unmappedWebhookEventRepository;
-    private final DedupLedgerService dedupLedgerService;
+    private final UnmappedWebhookRetention unmappedWebhookRetention;
     private final RefOriginService refOriginService;
     private final RefInterestPolicy refInterestPolicy;
     private final QueueConsumerService queueConsumerService;
@@ -62,6 +62,7 @@ public class WebhookIncrementalService {
 
     private WebhookIngestionService webhookIngestionService;
     private FailoverService failoverService;
+    private PairTipEchoService pairTipEchoService;
 
     @Autowired(required = false)
     public void setWebhookIngestionService(@Lazy WebhookIngestionService webhookIngestionService) {
@@ -73,6 +74,11 @@ public class WebhookIncrementalService {
         this.failoverService = failoverService;
     }
 
+    @Autowired(required = false)
+    public void setPairTipEchoService(PairTipEchoService pairTipEchoService) {
+        this.pairTipEchoService = pairTipEchoService;
+    }
+
     @Value("${git-utility.queue.max-retry-attempts:3}")
     private int maxAttempts;
 
@@ -82,7 +88,7 @@ public class WebhookIncrementalService {
             return;
         }
         try {
-            dispatch(event);
+            dispatch(event, true);
         } catch (RuntimeException e) {
             throw e;
         } catch (Exception e) {
@@ -90,7 +96,26 @@ public class WebhookIncrementalService {
         }
     }
 
-    private void dispatch(IncrementalGitEvent event) throws Exception {
+    /**
+     * Runs a stored poison event on this process. A failure stays on the caller’s row.
+     * This path does not publish the event back onto the bus.
+     *
+     * @return null when the event was applied or intentionally skipped; otherwise why it stayed poison
+     */
+    public String replay(IncrementalGitEvent event) {
+        if (event == null || event.getRepoUrl() == null || event.getRepoUrl().isBlank()) {
+            return "Missing repoUrl";
+        }
+        try {
+            dispatch(event, false);
+            return null;
+        } catch (Exception e) {
+            String message = e.getMessage();
+            return message == null || message.isBlank() ? e.getClass().getSimpleName() : message;
+        }
+    }
+
+    private void dispatch(IncrementalGitEvent event, boolean fromBus) throws Exception {
         String eventType = event.getEventType() == null ? "push" : event.getEventType().trim().toLowerCase();
         if (isMetadataEvent(eventType)) {
             if (webhookIngestionService == null || event.getRawPayload() == null || event.getRawPayload().isBlank()) {
@@ -141,20 +166,21 @@ public class WebhookIncrementalService {
         String sourceRepo = inboundIsB ? mapping.getRepoBUrl() : mapping.getRepoAUrl();
         String targetRepo = inboundIsB ? mapping.getRepoAUrl() : mapping.getRepoBUrl();
         PairSide inboundSide = inboundIsB ? PairSide.B : PairSide.A;
+        String priorJobId = event.getJobId();
 
         if (deleted && RefOriginService.isProtectedTrunk(branch)) {
             discard(event, "PROTECTED_TRUNK_DELETE", "Refusing to propagate delete of protected branch " + branch);
             return;
         }
-        if (deleted && dedupLedgerService.isSystemGeneratedRefDelete(event.getRepoUrl(), ref)) {
-            discard(event, "LOOP_DETECTED_SYSTEM_ECHO", "Ref delete was pushed by this mirror");
+        if (pairTipEchoService != null && deleted && pairTipEchoService.deleteEcho(mapping, inboundIsB, ref)) {
+            discard(event, "LOOP_DETECTED_SYSTEM_ECHO", "Other repository already has no " + ref);
             return;
         }
-        if (!deleted && dedupLedgerService.isSystemGeneratedEcho(event.getRepoUrl(), event.getAfterSha())) {
-            discard(event, "LOOP_DETECTED_SYSTEM_ECHO", "Commit was pushed by this mirror");
+        if (pairTipEchoService != null && !deleted && pairTipEchoService.pushEcho(mapping, inboundIsB, ref, event.getAfterSha())) {
+            discard(event, "LOOP_DETECTED_SYSTEM_ECHO", "Other repository already has " + ref + " at this tip");
             return;
         }
-        if (refOriginService != null && inboundIsB && refOriginService.isForkPrHead(mapping.getId(), branch)) {
+        if (inboundIsB && RefOriginService.isSyntheticForkPrHead(branch)) {
             discard(event, "DEST_SYNTHETIC_FORK_HEAD", "Fork PR head is not reverse-synced");
             return;
         }
@@ -164,10 +190,6 @@ public class WebhookIncrementalService {
         }
         if (refOriginService != null && refOriginService.shouldBlockReplicaInboundWebhook(mapping, ref, inboundSide)) {
             discard(event, "REPLICA_BACKUP_MIRROR", "Mirror-side changes are not reverse-synced");
-            return;
-        }
-        if (refOriginService != null && refOriginService.isReplicaEvent(mapping.getId(), ref, inboundSide)) {
-            discard(event, deleted ? "REPLICA_REF_DELETE" : "ORIGIN_SIDE_REPLICA", "Event arrived on the replica side");
             return;
         }
         if (refInterestPolicy != null && !refInterestPolicy.tryAcceptIncrementalEnqueue(mapping.getId(), branch)) {
@@ -187,6 +209,13 @@ public class WebhookIncrementalService {
         try {
             pairLeaseService.acquire(mapping.getId(), job.getId());
         } catch (PairLeaseBusyException busy) {
+            if (!fromBus) {
+                if (priorJobId == null || priorJobId.isBlank()) {
+                    syncJobRepository.delete(job);
+                    event.setJobId(null);
+                }
+                throw busy;
+            }
             log.info("Pair {} lease busy, re-queueing incremental event: {}", mapping.getId(), busy.getMessage());
             job.setStatus(SyncStatus.QUEUED);
             syncJobRepository.save(job);
@@ -229,6 +258,9 @@ public class WebhookIncrementalService {
                 failoverService.markUnreachable(mapping, inboundSide == PairSide.B ? PairSide.A : PairSide.B, e.getMessage());
                 failoverService.park(mapping, event, "PEER_UNREACHABLE");
                 return;
+            }
+            if (!fromBus) {
+                throw e;
             }
             retryOrDeadLetter(event, e);
         }
@@ -287,6 +319,7 @@ public class WebhookIncrementalService {
                     .details(details)
                     .receivedAt(Instant.now())
                     .build();
+            unmappedWebhookRetention.stamp(row);
             unmappedWebhookEventRepository.save(row);
             webSocketNotificationService.notifyUnmappedWebhookReceived(row);
         } catch (Exception e) {

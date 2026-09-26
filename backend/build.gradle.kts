@@ -20,6 +20,7 @@ repositories {
 
 val jgitVersion = "7.8.0.202609011348-r"
 val bouncyCastleVersion = "1.85"
+val cucumberVersion = "8.0.1"
 
 dependencies {
     // Boot 4 modular starters (web → webmvc)
@@ -46,10 +47,17 @@ dependencies {
     testImplementation("org.springframework.boot:spring-boot-starter-webmvc-test")
     testImplementation("org.springframework.boot:spring-boot-starter-amqp-test")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    testImplementation("io.cucumber:cucumber-java:$cucumberVersion")
+    testImplementation("io.cucumber:cucumber-junit-platform-engine:$cucumberVersion")
 }
 
 tasks.withType<Test> {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        val engine = providers.gradleProperty("testEngine").orNull
+        if (!engine.isNullOrBlank()) {
+            includeEngines(engine)
+        }
+    }
     jvmArgs("-XX:+EnableDynamicAgentLoading")
 }
 

@@ -74,6 +74,24 @@ class BareRepoHousekeepingTest {
     }
 
     @Test
+    void listHeadBranchNamesIncludesLooseRefsBesidePackedHeads(@TempDir Path tempDir) throws Exception {
+        Files.writeString(tempDir.resolve("packed-refs"), """
+                # pack
+                abc1111111111111111111111111111111111111 refs/heads/main
+                """);
+        Path loose = tempDir.resolve("refs/heads/feature/incremental-sync-and-dr");
+        Files.createDirectories(loose.getParent());
+        Files.writeString(loose, "1379233c4078a6ec6c24cc798bae06bc29dc1ea6\n");
+        Files.writeString(tempDir.resolve("refs/heads/feature/._incremental-sync-and-dr"), "junk");
+
+        try (var repo = new org.eclipse.jgit.internal.storage.file.FileRepository(tempDir.toFile())) {
+            assertEquals(
+                    Set.of("main", "feature/incremental-sync-and-dr"),
+                    BareRepoHousekeeping.listHeadBranchNames(repo));
+        }
+    }
+
+    @Test
     void listPairRefNamesSeparatesSourceAndDest(@TempDir Path tempDir) throws Exception {
         Files.writeString(tempDir.resolve("packed-refs"), """
                 # pack
@@ -91,6 +109,7 @@ class BareRepoHousekeepingTest {
             assertEquals(1, names.destOnlyBranchCount());
             assertTrue(names.sourceTags().contains("v1"));
             assertTrue(names.destTags().contains("v1"));
+            assertEquals(Set.of("main"), BareRepoHousekeeping.listSourceHeadBranchNames(repo));
         }
     }
 

@@ -59,6 +59,11 @@ public class UnmappedWebhookEvent implements WritePreparer {
     @Column(nullable = false)
     private Instant receivedAt = Instant.now();
 
+    /**
+     * Mongo TTL deletes the row when this instant passes. Unreplayed {@code KAFKA_POISON} rows leave it null.
+     */
+    private Instant expiresAt;
+
     @PrePersist
     @PreUpdate
     public void prepareForWrite() {

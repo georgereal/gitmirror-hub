@@ -27,9 +27,6 @@ import java.time.Duration;
 @Slf4j
 public class MongoSchemaInitializer {
 
-    /** Retention for discarded webhook records — 7 days, matching the H2 cleanup job semantics. */
-    private static final long UNMAPPED_RETENTION_SECONDS = 7L * 24 * 3600;
-
     private final MongoTemplate mongoTemplate;
 
     @PostConstruct
@@ -53,12 +50,10 @@ public class MongoSchemaInitializer {
 
         ensureIndex("sync_audit_logs", "jobId");
         ensureIndex("unmapped_webhook_events", "repoFullName");
-
-        // 7-day retention for discarded webhook records (matches the H2 cleanup job semantics).
-        // A TTL index also serves plain ascending receivedAt queries, so no separate non-TTL index
-        // may exist on the same field: MongoDB rejects a same-named index with different options
-        // (IndexOptionsConflict, code 85), which would abort startup on an already-initialized store.
-        ensureTtl("unmapped_webhook_events", "receivedAt", UNMAPPED_RETENTION_SECONDS);
+        // Drop the old blanket TTL on receivedAt. Expiry is per document via expiresAt, so poison
+        // rows with a null expiresAt are not deleted. A plain receivedAt index still serves sorts.
+        ensureIndex("unmapped_webhook_events", "receivedAt");
+        ensureTtl("unmapped_webhook_events", "expiresAt", 0);
 
         log.info("MongoDB persistence initialization complete.");
     }

@@ -33,10 +33,13 @@ public class SystemEngineConfigController {
     }
 
     @PostMapping
-    public ResponseEntity<SystemEngineConfigResponse> updateConfig(@RequestBody SystemEngineConfigRequest request) {
+    public ResponseEntity<?> updateConfig(@RequestBody SystemEngineConfigRequest request) {
         log.info("Received request to update System Engine Configuration: {}", request);
-        SystemEngineConfigResponse response = systemEngineConfigService.updateConfig(request);
-        return ResponseEntity.ok(response);
+        try {
+            return ResponseEntity.ok(systemEngineConfigService.updateConfig(request));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
     }
 
     @PostMapping("/test-nas-path")

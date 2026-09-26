@@ -16,6 +16,21 @@ public class WebSocketNotificationService {
 
     private final SimpMessagingTemplate messagingTemplate;
 
+    /** Tells an open pair page to reload card counts from the saved snapshot. */
+    public void notifyPairSnapshot(String mappingId) {
+        if (mappingId == null || mappingId.isBlank()) {
+            return;
+        }
+        try {
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("type", "PAIR_SNAPSHOT");
+            payload.put("mappingId", mappingId);
+            messagingTemplate.convertAndSend("/topic/sync-events", (Object) payload);
+        } catch (Exception e) {
+            log.warn("Failed to broadcast pair snapshot over WebSocket: {}", e.getMessage());
+        }
+    }
+
     public void notifyJobUpdated(SyncJob job) {
         try {
             Map<String, Object> payload = new HashMap<>();

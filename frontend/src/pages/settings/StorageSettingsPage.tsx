@@ -19,6 +19,9 @@ export const StorageSettingsPage: React.FC = () => {
   const [maxDiskQuotaMb, setMaxDiskQuotaMb] = useState(51200);
   const [maxCachedRepos, setMaxCachedRepos] = useState(1000);
   const [retentionHours, setRetentionHours] = useState(72);
+  const [webhookTtlDays, setWebhookTtlDays] = useState(7);
+  const [webhookPurgeDays, setWebhookPurgeDays] = useState(7);
+  const [webhookPurgeIntervalMinutes, setWebhookPurgeIntervalMinutes] = useState(60);
 
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -49,6 +52,9 @@ export const StorageSettingsPage: React.FC = () => {
         setMaxDiskQuotaMb(s.maxDiskQuotaMb || 51200);
         setMaxCachedRepos(s.maxCachedRepos || 1000);
         setRetentionHours(s.retentionHours || 72);
+        setWebhookTtlDays(s.unmappedWebhookTtlDays || 7);
+        setWebhookPurgeDays(s.unmappedWebhookPurgeDays || 7);
+        setWebhookPurgeIntervalMinutes(s.unmappedWebhookPurgeIntervalMinutes || 60);
       }
     } catch (e) {
       console.error('Error loading storage settings:', e);
@@ -100,6 +106,9 @@ export const StorageSettingsPage: React.FC = () => {
         maxDiskQuotaMb,
         maxCachedRepos,
         retentionHours,
+        unmappedWebhookTtlDays: webhookTtlDays,
+        unmappedWebhookPurgeDays: Math.min(webhookPurgeDays, webhookTtlDays),
+        unmappedWebhookPurgeIntervalMinutes: webhookPurgeIntervalMinutes,
       };
 
       await saveSystemEngineConfig(payload);
@@ -267,6 +276,78 @@ export const StorageSettingsPage: React.FC = () => {
                     className="w-full bg-white border border-zinc-200 rounded-lg px-2.5 py-1.5 text-zinc-900 font-mono text-xs focus:outline-none focus:border-zinc-400"
                   />
                   <span className="text-[10px] text-zinc-400">Cold tier age</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-zinc-100">
+                <div>
+                  <div className="flex items-center space-x-1 mb-1">
+                    <label className="block text-zinc-700 font-medium">Webhook TTL ceiling (days)</label>
+                    <InfoTooltip
+                      title="Webhook TTL ceiling"
+                      whatIsIt="How long a discarded webhook row may live. This is the high retention ceiling."
+                      howItWorks="Each non-poison row is stamped with an expiry of its received time plus this many days. Mongo deletes the row when that time passes. Unreplayed Kafka poison rows are not stamped, so this ceiling does not remove them."
+                      recommended="7 days, or a longer corporate retention window"
+                    />
+                  </div>
+                  <input
+                    type="number"
+                    min="1"
+                    value={webhookTtlDays}
+                    onChange={(e) => {
+                      const next = Math.max(1, parseInt(e.target.value) || 1);
+                      setWebhookTtlDays(next);
+                      if (webhookPurgeDays > next) {
+                        setWebhookPurgeDays(next);
+                      }
+                    }}
+                    className="w-full bg-white border border-zinc-200 rounded-lg px-2.5 py-1.5 text-zinc-900 font-mono text-xs focus:outline-none focus:border-zinc-400"
+                  />
+                  <span className="text-[10px] text-zinc-400">GIT_UNMAPPED_WEBHOOK_TTL_DAYS</span>
+                </div>
+
+                <div>
+                  <div className="flex items-center space-x-1 mb-1">
+                    <label className="block text-zinc-700 font-medium">Purge age (days)</label>
+                    <InfoTooltip
+                      title="Purge age"
+                      whatIsIt="How old a discarded webhook row must be before the cleanup job deletes it."
+                      howItWorks="The job runs on H2 and Mongo. It can be shorter than the TTL ceiling. It never deletes unreplayed Kafka poison rows."
+                      recommended="1 through the TTL ceiling"
+                    />
+                  </div>
+                  <input
+                    type="number"
+                    min="1"
+                    max={webhookTtlDays}
+                    value={webhookPurgeDays}
+                    onChange={(e) => {
+                      const next = Math.max(1, parseInt(e.target.value) || 1);
+                      setWebhookPurgeDays(Math.min(next, webhookTtlDays));
+                    }}
+                    className="w-full bg-white border border-zinc-200 rounded-lg px-2.5 py-1.5 text-zinc-900 font-mono text-xs focus:outline-none focus:border-zinc-400"
+                  />
+                  <span className="text-[10px] text-zinc-400">GIT_UNMAPPED_WEBHOOK_PURGE_DAYS</span>
+                </div>
+
+                <div>
+                  <div className="flex items-center space-x-1 mb-1">
+                    <label className="block text-zinc-700 font-medium">Purge interval (minutes)</label>
+                    <InfoTooltip
+                      title="Purge interval"
+                      whatIsIt="How often the discarded-webhook cleanup job runs."
+                      howItWorks="The process checks once a minute and runs the delete only after this many minutes have passed since the last purge."
+                      recommended="60 minutes"
+                    />
+                  </div>
+                  <input
+                    type="number"
+                    min="1"
+                    value={webhookPurgeIntervalMinutes}
+                    onChange={(e) => setWebhookPurgeIntervalMinutes(Math.max(1, parseInt(e.target.value) || 1))}
+                    className="w-full bg-white border border-zinc-200 rounded-lg px-2.5 py-1.5 text-zinc-900 font-mono text-xs focus:outline-none focus:border-zinc-400"
+                  />
+                  <span className="text-[10px] text-zinc-400">GIT_UNMAPPED_WEBHOOK_PURGE_INTERVAL_MINUTES</span>
                 </div>
               </div>
 

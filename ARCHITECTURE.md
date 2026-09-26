@@ -536,7 +536,9 @@ To fulfill SOC2, ISO 27001, and enterprise security telemetry compliance, GitMir
 
 In a bidirectional sync setup (Repo A ↔ Repo B), an automated push to Repo B triggers GitHub to fire a new push webhook for Repo B. The load balancer may deliver that webhook to a different Hub pod than the one that pushed.
 
-The pushing pod writes each tip SHA, ref delete, and mirrored pull-request number into the shared `echo_ledger` table **before** the Git push or immediately after `createPullRequest` returns. Any pod reads that row (default TTL 600 seconds, `git-utility.dedup.ledger-ttl-seconds`) and skips the webhook as `LOOP_DETECTED_SYSTEM_ECHO`. Push webhooks whose `sender.login` or `pusher.name` matches the inbound credential's `botLogin` (`{app-slug}[bot]`) are skipped as `MIRROR_APP_PUSH` before a job is queued. The same App check drops `pull_request` events the App itself opened.
+The inbound skip does not read `echo_ledger`. `PairTipEchoService` looks up the ref on the other repository. A push is skipped as `LOOP_DETECTED_SYSTEM_ECHO` only when that peer already advertises the same tip. A delete is skipped only when the lookup succeeded and the ref is already gone. If the peer cannot be read, the event is not treated as an echo.
+
+The engine still writes tip SHAs, ref deletes, and mirrored pull-request numbers into `echo_ledger` when it pushes or creates a pull request. Push webhooks whose `sender.login` or `pusher.name` matches the inbound credential's `botLogin` (`{app-slug}[bot]`) are skipped as `MIRROR_APP_PUSH` before a job is queued. The same App check drops `pull_request` events the App itself opened.
 
 ```
 [Developer pushes Commit X to Repo A]
@@ -544,14 +546,14 @@ The pushing pod writes each tip SHA, ref delete, and mirrored pull-request numbe
        ▼ (Webhook 1, any pod)
 [GitMirror Hub: Receives Commit X for Repo A]
        │
-       ├─► [Writes (Repo B, Commit X) to echo_ledger]
+       ├─► [Records (Repo B, Commit X) in echo_ledger]
        └─► [Pushes Commit X to Repo B]
               │
               ▼ (Webhook 2, possibly a different pod)
-       [Dedup check: echo_ledger row, or sender is the mirror App]
+       [PairTipEcho: does Repo A already advertise Commit X?]
               │
               ▼
-       [SKIPPED — LOOP_DETECTED_SYSTEM_ECHO or MIRROR_APP_PUSH]
+       [SKIPPED — LOOP_DETECTED_SYSTEM_ECHO]
 ```
 
 A repository ruleset named `gitmirror-replica-readonly` can make the replica read-only for humans. The bypass actor is the mirror GitHub App id (`Integration`), not the installation id. `POST /api/v1/mappings/{id}/replica-ruleset` with `action` `lock`, `unlock`, or `swap` updates `enforcement`. Swap activates the ruleset on the old primary before it disables the ruleset on the old replica.
@@ -587,6 +589,9 @@ The built-in Simulation Lab allows teams to test failure recovery without creati
   - Artificial latency injection (configurable millisecond delay).
 3. **Synthetic Webhook Generator**:
   - Emits simulated GitHub push events directly into the pipeline with custom branch, commit SHA, message, and author.
+4. **Scenario probes** (`POST /api/v1/simulation/emit-scenario`, current tip via `GET /api/v1/simulation/ref-tip`):
+  - The Simulation Lab can deliver a branch, tag, note, pull request, release, status, or check-run event through the same webhook path.
+  - The chosen side is the repository the event arrives on. `SimulationProbeGuide` in the UI lists the operator steps for each kind.
 
 ---
 

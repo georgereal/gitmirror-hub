@@ -1003,6 +1003,9 @@ export interface SystemEngineConfig {
   maxDiskQuotaMb: number;
   maxCachedRepos: number;
   retentionHours: number;
+  unmappedWebhookTtlDays?: number;
+  unmappedWebhookPurgeDays?: number;
+  unmappedWebhookPurgeIntervalMinutes?: number;
 
   maxConcurrentPushes: number;
   metadataSyncIntervalSeconds: number;

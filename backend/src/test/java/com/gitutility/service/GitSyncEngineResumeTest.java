@@ -13,6 +13,7 @@ import java.io.File;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -56,6 +57,19 @@ class GitSyncEngineResumeTest {
     }
 
     @Test
+    void bidirectionalDestAheadFastForwardsSourceInsteadOfIsolating() {
+        assertEquals(GitSyncEngine.TrunkPushAction.ADOPT_DEST,
+                GitSyncEngine.decideTrunkPush(false, true, false,
+                        com.gitutility.model.enums.TrunkConflictPolicy.ISOLATE, true));
+        assertEquals(GitSyncEngine.TrunkPushAction.ISOLATE,
+                GitSyncEngine.decideTrunkPush(false, false, false,
+                        com.gitutility.model.enums.TrunkConflictPolicy.ISOLATE, true));
+        assertEquals(GitSyncEngine.TrunkPushAction.FORCE,
+                GitSyncEngine.decideTrunkPush(false, true, true,
+                        com.gitutility.model.enums.TrunkConflictPolicy.ISOLATE, true));
+    }
+
+    @Test
     void unidirectionalMappingTreatsDivergenceAsOverwrite() {
         com.gitutility.model.entity.RepoMapping uni = com.gitutility.model.entity.RepoMapping.builder()
                 .syncDirection(com.gitutility.model.enums.SyncDirection.UNIDIRECTIONAL_A_TO_B)
@@ -83,6 +97,41 @@ class GitSyncEngineResumeTest {
     }
 
     @Test
+    void missingSourceBranchIsADeleteRatherThanAFetchFailure() {
+        SyncEventMessage deleted = SyncEventMessage.builder()
+                .ref("refs/heads/test/sync-probe-2")
+                .branch("test/sync-probe-2")
+                .afterSha("0000000000000000000000000000000000000000")
+                .build();
+        assertTrue(GitSyncEngine.incrementalSourceBranchDeleted(deleted));
+        SyncEventMessage present = SyncEventMessage.builder()
+                .ref("refs/heads/test/sync-probe-2")
+                .branch("test/sync-probe-2")
+                .afterSha("c66a7d0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                .build();
+        assertFalse(GitSyncEngine.incrementalSourceBranchDeleted(present));
+        assertTrue(GitSyncEngine.remoteLacksRef(
+                new IllegalStateException("Remote does not have refs/heads/test/sync-probe-2 available for fetch."),
+                "refs/heads/test/sync-probe-2"));
+        assertFalse(GitSyncEngine.remoteLacksRef(
+                new IllegalStateException("Remote does not have refs/heads/other available for fetch."),
+                "refs/heads/test/sync-probe-2"));
+    }
+
+    @Test
+    void destinationAdvertisementDropsBranchesTheRemoteDeleted() {
+        Map<String, String> advertised = Map.of(
+                "refs/heads/main", "f53b9e2",
+                "refs/heads/test/sync-probe-2", "c66a7d0"
+        );
+        assertEquals(
+                Set.of("feature/incremental-sync-and-dr"),
+                GitSyncEngine.branchNamesMissingFromAdvertisement(
+                        List.of("main", "feature/incremental-sync-and-dr", "test/sync-probe-2"),
+                        advertised));
+    }
+
+    @Test
     void conflictSummaryListsIsolatedRefs() {
         GitSyncEngine.SyncResult result = new GitSyncEngine.SyncResult();
         GitSyncEngine.IsolatedRef iso = new GitSyncEngine.IsolatedRef();
@@ -91,6 +140,43 @@ class GitSyncEngineResumeTest {
         result.isolatedRefs.add(iso);
         assertEquals("Split-brain divergence isolated on: sync-conflict/main-1",
                 GitSyncEngine.conflictSummaryMessage(result));
+    }
+
+    @Test
+    void ancestrySyncsWhenTheOldTipIsStillInTheNewHistory() {
+        var isolate = com.gitutility.model.enums.TrunkConflictPolicy.ISOLATE;
+        assertEquals(GitSyncEngine.TrunkPushAction.NO_PUSH,
+                GitSyncEngine.decideAncestryUpdate(true, false, false, false, false, isolate, true));
+        assertEquals(GitSyncEngine.TrunkPushAction.PUSH,
+                GitSyncEngine.decideAncestryUpdate(false, true, false, false, false, isolate, true));
+        assertEquals(GitSyncEngine.TrunkPushAction.ADOPT_DEST,
+                GitSyncEngine.decideAncestryUpdate(false, false, true, false, false, isolate, true));
+        assertEquals(GitSyncEngine.TrunkPushAction.ISOLATE,
+                GitSyncEngine.decideAncestryUpdate(false, false, false, false, false, isolate, true));
+        assertEquals(GitSyncEngine.TrunkPushAction.PUSH,
+                GitSyncEngine.decideAncestryUpdate(false, true, false, true, false, isolate, true));
+        assertEquals(GitSyncEngine.TrunkPushAction.ISOLATE,
+                GitSyncEngine.decideAncestryUpdate(false, false, false, true, false, isolate, true));
+        assertEquals(GitSyncEngine.TrunkPushAction.ISOLATE,
+                GitSyncEngine.decideAncestryUpdate(false, false, false, false, false, isolate, true));
+    }
+
+    @Test
+    void beforeShaEqualsTheTipBeingUpdated() {
+        assertTrue(GitSyncEngine.beforeMatchesTip("abc123", "ABC123"));
+        assertFalse(GitSyncEngine.beforeMatchesTip("abc123", "def456"));
+        assertFalse(GitSyncEngine.beforeMatchesTip(null, "abc123"));
+        assertFalse(GitSyncEngine.beforeMatchesTip("0000000", "abc123"));
+    }
+
+    @Test
+    void conflictPullRequestOpensOnTheRepoWhoseTipWasKept() {
+        assertEquals("https://mirror.example/repo",
+                GitSyncEngine.repoForConflictPr("https://mirror.example/repo", "https://source.example/repo", false));
+        assertEquals("https://source.example/repo",
+                GitSyncEngine.repoForConflictPr("https://mirror.example/repo", "https://source.example/repo", true));
+        assertEquals("https://mirror.example/repo",
+                GitSyncEngine.repoForConflictPr("https://mirror.example/repo", " ", true));
     }
 
     @Test
@@ -189,6 +275,57 @@ class GitSyncEngineResumeTest {
         }
     }
 
+    @Test
+    void parkedConflictIsStaleOnceMainOnBothSidesContainsIt(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve("mirror.git").toFile();
+        try (Git git = Git.init().setBare(true).setDirectory(repoDir).call()) {
+            ObjectId base = insertEmptyCommit(git);
+            ObjectId kept = insertChildCommit(git, base, "kept");
+            pointRef(git, "refs/heads/main", kept);
+            pointRef(git, "refs/remotes/target/main", kept);
+            pointRef(git, "refs/remotes/target/sync-conflict/main-1", base);
+            assertTrue(GitSyncEngine.staleIsolatedConflict(
+                    git.getRepository(), "refs/heads/main", "sync-conflict/main-1", ObjectId.toString(base)));
+
+            ObjectId sibling = insertChildCommit(git, base, "sibling");
+            pointRef(git, "refs/remotes/target/main", sibling);
+            assertFalse(GitSyncEngine.staleIsolatedConflict(
+                    git.getRepository(), "refs/heads/main", "sync-conflict/main-1", ObjectId.toString(base)));
+
+            pointRef(git, "refs/remotes/target/main", kept);
+            pointRef(git, "refs/remotes/target/sync-conflict/main-1", sibling);
+            assertFalse(GitSyncEngine.staleIsolatedConflict(
+                    git.getRepository(), "refs/heads/main", "sync-conflict/main-1", ObjectId.toString(sibling)));
+        }
+    }
+
+    private static ObjectId insertChildCommit(Git git, ObjectId parent, String message) throws Exception {
+        org.eclipse.jgit.lib.Repository repo = git.getRepository();
+        org.eclipse.jgit.lib.ObjectInserter inserter = repo.newObjectInserter();
+        org.eclipse.jgit.lib.TreeFormatter tree = new org.eclipse.jgit.lib.TreeFormatter();
+        ObjectId treeId = inserter.insert(tree);
+        org.eclipse.jgit.lib.CommitBuilder commit = new org.eclipse.jgit.lib.CommitBuilder();
+        commit.setTreeId(treeId);
+        commit.setParentId(parent);
+        commit.setAuthor(new org.eclipse.jgit.lib.PersonIdent("t", "t@t"));
+        commit.setCommitter(commit.getAuthor());
+        commit.setMessage(message);
+        ObjectId commitId = inserter.insert(commit);
+        inserter.flush();
+        return commitId;
+    }
+
+    private static void pointRef(Git git, String name, ObjectId id) throws Exception {
+        RefUpdate update = git.getRepository().updateRef(name);
+        update.setNewObjectId(id);
+        update.setForceUpdate(true);
+        RefUpdate.Result result = update.update();
+        if (result != RefUpdate.Result.NEW && result != RefUpdate.Result.FORCED
+                && result != RefUpdate.Result.FAST_FORWARD && result != RefUpdate.Result.NO_CHANGE) {
+            throw new IllegalStateException("ref " + name + " -> " + result);
+        }
+    }
+
     private static ObjectId insertEmptyCommit(Git git) throws Exception {
         org.eclipse.jgit.lib.Repository repo = git.getRepository();
         org.eclipse.jgit.lib.ObjectInserter inserter = repo.newObjectInserter();
@@ -250,7 +387,6 @@ class GitSyncEngineResumeTest {
     @Test
     void recordShasOnLedgerWritesEveryBatchTipNotOnlyTriggerSha() {
         DedupLedgerService ledger = new DedupLedgerService();
-        org.springframework.test.util.ReflectionTestUtils.setField(ledger, "ledgerTtlSeconds", 600L);
         String dest = "https://github.com/acme/mirror-dest";
         GitSyncEngine.recordShasOnLedger(ledger, dest, Map.of(
                 "refs/heads/feat/rag-workflow", "aaa111",
@@ -265,7 +401,6 @@ class GitSyncEngineResumeTest {
     @Test
     void prSyncLedgerHelperRecordsDestUrlWithoutGitSuffix() {
         DedupLedgerService ledger = new DedupLedgerService();
-        org.springframework.test.util.ReflectionTestUtils.setField(ledger, "ledgerTtlSeconds", 600L);
         PullRequestSyncService.recordDestPushOnLedger(ledger, "https://github.com/acme/mirror-dest", "388dc77aaa");
         assertTrue(ledger.isSystemGeneratedEcho("https://github.com/acme/mirror-dest.git", "388dc77aaa"));
     }

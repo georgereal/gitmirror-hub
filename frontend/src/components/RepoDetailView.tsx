@@ -61,7 +61,7 @@ import { PairConfigModal } from './PairConfigModal';
 import { BranchComparisonTable } from './BranchComparisonTable';
 import { formatBytes, formatDuration } from '../utils/format';
 import { findRepoCollision } from '../utils/repoUrl';
-import { applySuccessfulMirrorJob, applyJobMirrorMetrics, applyLiveDiffProgress, isPrHandled, isPrMirrored, normalizeDiffReport, prDiscussionSummary, prsAccountedFromReport } from '../utils/syncDiff';
+import { applySuccessfulMirrorJob, applyJobMirrorMetrics, applyLiveDiffProgress, isPrHandled, isPrMirrored, isOpenPr, normalizeDiffReport, prDiscussionSummary, prsAccountedFromReport } from '../utils/syncDiff';
 import { shouldWarnBidirectionalBackup } from '../utils/mirrorTopology';
 
 interface RepoDetailViewProps {
@@ -78,6 +78,8 @@ interface RepoDetailViewProps {
   onRefreshJobs?: () => void;
   onMappingLoaded?: (mapping: RepoMapping) => void;
   allMappings?: RepoMapping[];
+  /** Bumps when an incremental sync writes pair card counts. */
+  snapshotEpoch?: number;
 }
 
 export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
@@ -93,7 +95,8 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
   onDiffProgressClear,
   onRefreshJobs,
   onMappingLoaded,
-  allMappings = []
+  allMappings = [],
+  snapshotEpoch = 0
 }) => {
   const [currentTab, setCurrentTab] = useState<'code' | 'pull-requests' | 'metadata' | 'settings'>(activeRepoTab);
   const [metadataSubTab, setMetadataSubTab] = useState<'tags' | 'releases' | 'lfs' | 'ci'>('tags');
@@ -321,6 +324,13 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
     }
     void fetchDiffReport(false, true);
   }, [latestJob?.id, latestJob?.status, latestJob?.completedAt, latestJob?.branchesCount, latestJob?.tagsCount, latestJob?.lfsObjectsCount, latestJob?.prsSyncedCount, mapping.id]);
+
+  useEffect(() => {
+    if (snapshotEpoch <= 0) {
+      return;
+    }
+    void fetchDiffReport(false, true);
+  }, [snapshotEpoch, mapping.id]);
 
   const handleSyncPrs = async () => {
     setSyncingPrs(true);
@@ -566,6 +576,7 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
   );
 
   const prsSummary = prsAccountedFromReport(metricsReport);
+  const openPullRequests = (diffReport?.pullRequests || []).filter(isOpenPr);
   const destOnlyCount = metricsReport?.destOnlyBranchesCount ?? 0;
   const pendingBranchCount = metricsReport?.pendingBranchesCount ?? 0;
   const divergedBranchCount = metricsReport?.divergedBranchesCount ?? 0;
@@ -1231,15 +1242,15 @@ export const RepoDetailView: React.FC<RepoDetailViewProps> = ({
                 </p>
               </div>
               <span className="text-[11px] text-zinc-400">
-                {diffReport?.pullRequestsTruncated && (diffReport?.totalOpenPrsCount ?? 0) > (diffReport?.pullRequests?.length ?? 0)
-                  ? `${diffReport.pullRequests.length} shown of ${diffReport.totalOpenPrsCount?.toLocaleString()} open`
-                  : `${diffReport?.pullRequests?.length ?? 0} PR(s) tracked`}
+                {diffReport?.pullRequestsTruncated && (diffReport?.totalOpenPrsCount ?? 0) > openPullRequests.length
+                  ? `${openPullRequests.length} shown of ${diffReport.totalOpenPrsCount?.toLocaleString()} open`
+                  : `${openPullRequests.length} open PR(s)`}
               </span>
             </div>
 
             <div className="divide-y divide-zinc-100">
-              {diffReport?.pullRequests && diffReport.pullRequests.length > 0 ? (
-                diffReport.pullRequests.map((pr) => (
+              {openPullRequests.length > 0 ? (
+                openPullRequests.map((pr) => (
                   <div key={pr.sourcePrNumber} className="p-4 sm:px-6 hover:bg-zinc-50/70 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-3">
                     <div className="space-y-1.5 min-w-0">
                       <div className="flex flex-wrap items-center gap-2">

@@ -512,7 +512,8 @@ public class GitComparisonService {
         try {
             List<PrMapping> mappedPrs = prMappingRepository.findByMappingId(mappingId);
             mirroredPrsCount = (int) mappedPrs.stream()
-                    .filter(pm -> pm.getTargetPrNumber() != null && pm.getTargetPrNumber() > 0)
+                    .filter(pm -> pm.getTargetPrNumber() != null && pm.getTargetPrNumber() > 0
+                            && PullRequestSyncService.isOpenPullRequestState(pm.getState()))
                     .count();
             Map<Long, PrMapping> bySourceNumber = new HashMap<>();
             Map<String, PrMapping> byHeadBase = new HashMap<>();
@@ -589,6 +590,9 @@ public class GitComparisonService {
                         if (pm.getSourcePrNumber() != null && seenSourceNums.contains(pm.getSourcePrNumber())) {
                             continue;
                         }
+                        if (!PullRequestSyncService.isOpenPullRequestState(pm.getState())) {
+                            continue;
+                        }
                         prDetails.add(PrSyncDetail.builder()
                                 .sourcePrNumber(pm.getSourcePrNumber())
                                 .targetPrNumber(pm.getTargetPrNumber())
@@ -606,6 +610,9 @@ public class GitComparisonService {
                 }
                 if (prDetails.isEmpty()) {
                     for (PrMapping pm : mappedPrs) {
+                        if (!PullRequestSyncService.isOpenPullRequestState(pm.getState())) {
+                            continue;
+                        }
                         prDetails.add(PrSyncDetail.builder()
                                 .sourcePrNumber(pm.getSourcePrNumber())
                                 .targetPrNumber(pm.getTargetPrNumber())
@@ -642,13 +649,11 @@ public class GitComparisonService {
                     String targetFullName = scmProviderFacade.parseRepoFullName(mapping.getRepoBUrl());
                     boolean targetSupportsReleases = targetAdapter != null && targetAdapter.supportsReleaseSync();
                     Set<String> targetTags = new HashSet<>();
-                    int targetReleaseCount = 0;
                     if (targetSupportsReleases && targetFullName != null) {
                         try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(
                                 mapping.getTargetCredentialId(), mapping.getTargetInstallationId())) {
                             for (SyncDiffReport.ReleaseDetail targetRelease : listReleasesPaged(targetAdapter, targetFullName)) {
-                                targetReleaseCount++;
-                                if (targetRelease.getTagName() != null) {
+                                if (targetRelease.getTagName() != null && !targetRelease.getTagName().isBlank()) {
                                     targetTags.add(targetRelease.getTagName());
                                 }
                             }
@@ -656,7 +661,8 @@ public class GitComparisonService {
                             log.debug("Destination release listing notice for {}: {}", targetFullName, e.getMessage());
                         }
                     }
-                    for (SyncDiffReport.ReleaseDetail item : releaseItems) {
+                    List<SyncDiffReport.ReleaseDetail> onePerTag = collapseReleasesToOnePerTag(releaseItems);
+                    for (SyncDiffReport.ReleaseDetail item : onePerTag) {
                         if (item == null) {
                             continue;
                         }
@@ -669,16 +675,15 @@ public class GitComparisonService {
                         }
                     }
 
-                    if (!releaseItems.isEmpty()) {
-                        releaseCount = metadata != null && metadata.releaseTotalCount() > 0
-                                ? metadata.releaseTotalCount()
-                                : releaseItems.size();
-                        String latestTag = releaseItems.get(0).getTagName() != null ? releaseItems.get(0).getTagName() : "None";
+                    if (!onePerTag.isEmpty()) {
+                        releaseCount = onePerTag.size();
+                        String latestTag = onePerTag.get(0).getTagName() != null ? onePerTag.get(0).getTagName() : "None";
                         int totalAssets = 0;
-                        for (var r : releaseItems) {
+                        for (var r : onePerTag) {
                             if (r.getAssets() != null) totalAssets += r.getAssets().size();
                         }
-                        boolean allMirrored = releaseItems.stream()
+                        int targetReleaseCount = targetTags.size();
+                        boolean allMirrored = onePerTag.stream()
                                 .allMatch(r -> r.getTagName() != null && targetTags.contains(r.getTagName()));
                         reportBuilder.releases(SyncDiffReport.ReleaseSyncSummary.builder()
                                 .sourceReleasesCount(releaseCount)
@@ -687,10 +692,10 @@ public class GitComparisonService {
                                 .latestReleaseTag(latestTag)
                                 .totalAssetsCount(totalAssets)
                                 .build());
-                        reportBuilder.releaseItems(releaseItems);
+                        reportBuilder.releaseItems(onePerTag);
                     }
                     progress.markDone(DiffInspectionPipeline.RELEASES,
-                            releaseCount > 0 ? releaseCount + " release(s) · " + targetReleaseCount + " on destination" : "No releases found");
+                            releaseCount > 0 ? releaseCount + " release(s) · " + targetTags.size() + " on destination" : "No releases found");
                 } catch (Exception ignored) {
                     progress.markDone(DiffInspectionPipeline.RELEASES, "Completed with notice");
                 }
@@ -739,6 +744,9 @@ public class GitComparisonService {
         } else {
             try {
                 for (PrMapping pm : prMappingRepository.findByMappingId(mappingId)) {
+                    if (!PullRequestSyncService.isOpenPullRequestState(pm.getState())) {
+                        continue;
+                    }
                     prDetails.add(PrSyncDetail.builder()
                             .sourcePrNumber(pm.getSourcePrNumber())
                             .targetPrNumber(pm.getTargetPrNumber())
@@ -824,6 +832,22 @@ public class GitComparisonService {
                 unidirectionalAToB,
                 System.currentTimeMillis() + BRANCH_LIST_CACHE_TTL_MS));
         return built;
+    }
+
+    /** One row per tag. A published release is kept ahead of the extra drafts for that tag. */
+    private static List<SyncDiffReport.ReleaseDetail> collapseReleasesToOnePerTag(
+            List<SyncDiffReport.ReleaseDetail> releases) {
+        Map<String, SyncDiffReport.ReleaseDetail> byTag = new LinkedHashMap<>();
+        if (releases == null) {
+            return List.of();
+        }
+        for (SyncDiffReport.ReleaseDetail release : releases) {
+            if (release == null || release.getTagName() == null || release.getTagName().isBlank()) {
+                continue;
+            }
+            byTag.merge(release.getTagName(), release, ReleaseAndStatusSyncService::preferRelease);
+        }
+        return new ArrayList<>(byTag.values());
     }
 
     /**

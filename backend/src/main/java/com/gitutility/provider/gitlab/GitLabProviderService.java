@@ -703,6 +703,31 @@ public class GitLabProviderService implements ScmProviderAdapter {
         }
     }
 
+    @Override
+    public boolean deleteRelease(String repoFullName, String externalId) {
+        String host = getNormalizedHostUrl();
+        String token = getEffectiveToken(null);
+        if (host == null || token == null || repoFullName == null || externalId == null || externalId.isBlank()) {
+            return false;
+        }
+        try {
+            HttpHeaders headers = createHeaders(token);
+            String encoded = URLEncoder.encode(repoFullName, StandardCharsets.UTF_8);
+            String encodedTag = URLEncoder.encode(externalId.trim(), StandardCharsets.UTF_8);
+            String url = host + "/api/v4/projects/" + encoded + "/releases/" + encodedTag;
+            restTemplate.exchange(URI.create(url), HttpMethod.DELETE, new HttpEntity<>(headers), String.class);
+            log.info("Deleted GitLab release '{}' on {}", externalId, repoFullName);
+            return true;
+        } catch (org.springframework.web.client.HttpClientErrorException.NotFound ignored) {
+            return true;
+        } catch (org.springframework.web.client.HttpClientErrorException e) {
+            throw new IllegalStateException("GitLab release delete rejected (" + e.getStatusCode() + "): "
+                    + e.getResponseBodyAsString(), e);
+        } catch (Exception e) {
+            throw new IllegalStateException("GitLab release delete failed: " + e.getMessage(), e);
+        }
+    }
+
     // ------------------------------------------------------------------
     // CI check mirror helpers (statuses only; no native check runs on GitLab)
     // ------------------------------------------------------------------

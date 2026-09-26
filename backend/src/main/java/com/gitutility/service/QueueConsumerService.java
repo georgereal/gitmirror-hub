@@ -297,9 +297,13 @@ public class QueueConsumerService {
                 pipeline.markSkipped(SyncPipelineState.LFS, MetadataSyncSettingsService.DISABLED);
                 broadcastPipeline(job.getId(), event.getMappingId(), pipeline);
             }
-            if (!result.fastPathShortCircuited && pairMetadata && result.lfsObjectsCount > 0) {
+            if (!result.fastPathShortCircuited && result.lfsObjectsCount > 0) {
                 if (pairDiffSnapshotService != null) {
-                    pairDiffSnapshotService.updateLfs(event.getMappingId(), result.lfsObjectsCount, result.lfsSyncedCount);
+                    if (pairMetadata) {
+                        pairDiffSnapshotService.updateLfs(event.getMappingId(), result.lfsObjectsCount, result.lfsSyncedCount);
+                    } else {
+                        pairDiffSnapshotService.addLfs(event.getMappingId(), result.lfsObjectsCount, result.lfsSyncedCount);
+                    }
                 }
                 job.setLfsObjectsCount(result.lfsObjectsCount);
                 syncJobRepository.save(job);
@@ -532,6 +536,10 @@ public class QueueConsumerService {
                     prsSynced, prsSynced == 1 ? "" : "s",
                     formatDuration(wallClockMs),
                     "PUBLIC".equals(result.sourceAccessMode) ? " (public source)" : "");
+            if (!SyncLaneRouter.isFullMirror(event) && event.getBranch() != null && !event.getBranch().isBlank()
+                    && !"*".equals(event.getBranch())) {
+                formattedSummary = event.getBranch() + " · " + formattedSummary;
+            }
 
             if (jobCancellationService != null && jobCancellationService.isPauseRequested(job.getId())) {
                 throw new JobPausedException(job.getId());

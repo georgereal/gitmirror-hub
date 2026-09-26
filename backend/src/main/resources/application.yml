@@ -108,6 +108,9 @@ git-utility:
     max-disk-quota-mb: ${GIT_STORAGE_MAX_DISK_QUOTA_MB:51200}
     max-cached-repos: ${GIT_STORAGE_MAX_CACHED_REPOS:1000}
     retention-hours: ${GIT_STORAGE_RETENTION_HOURS:72}
+    unmapped-webhook-ttl-days: ${GIT_UNMAPPED_WEBHOOK_TTL_DAYS:7}
+    unmapped-webhook-purge-days: ${GIT_UNMAPPED_WEBHOOK_PURGE_DAYS:7}
+    unmapped-webhook-purge-interval-minutes: ${GIT_UNMAPPED_WEBHOOK_PURGE_INTERVAL_MINUTES:60}
   throttle:
     max-concurrent-git-pushes: ${GIT_THROTTLE_MAX_CONCURRENT_PUSHES:5}
     metadata-sync-interval-seconds: ${GIT_METADATA_SYNC_INTERVAL_SEC:30}

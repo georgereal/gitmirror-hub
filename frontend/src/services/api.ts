@@ -589,6 +589,55 @@ export const emitSyntheticWebhook = async (data: {
   return res.data;
 };
 
+export interface SimulationScenarioRequest {
+  mappingId: string;
+  side: 'SOURCE' | 'DESTINATION';
+  kind: string;
+  operation: string;
+  refName?: string;
+  beforeSha?: string;
+  commitSha?: string;
+  commitMessage?: string;
+  authorName?: string;
+  pullRequestNumber?: number;
+  title?: string;
+  body?: string;
+  baseBranch?: string;
+  releaseTag?: string;
+  releaseName?: string;
+  context?: string;
+}
+
+export interface SimulationScenarioResult {
+  status: string;
+  event: string;
+  side: string;
+  repoUrl: string;
+  summary: string;
+}
+
+export const emitSimulationScenario = async (data: SimulationScenarioRequest): Promise<SimulationScenarioResult> => {
+  const res = await api.post('/simulation/emit-scenario', data);
+  return res.data;
+};
+
+export interface SimulationRefTip {
+  known: boolean;
+  present: boolean;
+  sha?: string;
+  ref?: string;
+}
+
+export const fetchSimulationRefTip = async (params: {
+  mappingId: string;
+  side: 'SOURCE' | 'DESTINATION';
+  refName: string;
+  kind: string;
+}): Promise<SimulationRefTip> => {
+  const res = await api.get('/simulation/ref-tip', { params });
+  return res.data;
+};
+
 // GitHub App & Authentication APIs
 export const getGitHubAppConfig = async (): Promise<GitHubAppConfig> => {
   const res = await api.get('/github-app/config');

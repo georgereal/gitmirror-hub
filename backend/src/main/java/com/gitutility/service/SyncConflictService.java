@@ -47,6 +47,20 @@ public class SyncConflictService {
         return conflictRepository.findByMappingIdAndStatusOrderByCreatedAtDesc(mappingId, ConflictStatus.OPEN);
     }
 
+    /** Open rows and rows whose conflict pull request is still recorded. */
+    public List<SyncConflict> listUnresolved(String mappingId) {
+        if (mappingId == null) {
+            return List.of();
+        }
+        List<SyncConflict> unresolved = new java.util.ArrayList<>();
+        for (SyncConflict row : listForMapping(mappingId)) {
+            if (row.getStatus() == ConflictStatus.OPEN || row.getStatus() == ConflictStatus.PR_OPENED) {
+                unresolved.add(row);
+            }
+        }
+        return unresolved;
+    }
+
     public SyncConflict recordGitRefConflict(String mappingId, String jobId, ConflictKind kind,
                                              TrunkConflictPolicy policy, String refName,
                                              String sourceSha, String destSha, String isolatedBranch,

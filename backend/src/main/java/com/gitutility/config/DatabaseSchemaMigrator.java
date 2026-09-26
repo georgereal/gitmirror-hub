@@ -111,7 +111,10 @@ public class DatabaseSchemaMigrator {
                     "ALTER TABLE system_engine_configs ADD COLUMN IF NOT EXISTS logstash_host VARCHAR(255)",
                     "ALTER TABLE system_engine_configs ADD COLUMN IF NOT EXISTS syslog_host VARCHAR(255)",
                     "ALTER TABLE system_engine_configs ADD COLUMN IF NOT EXISTS rolling_file_path VARCHAR(255) DEFAULT '/tmp/git-utility-mirrors/logs/git-utility.log'",
-                    "ALTER TABLE system_engine_configs ADD COLUMN IF NOT EXISTS json_structured_enabled BOOLEAN DEFAULT TRUE"
+                    "ALTER TABLE system_engine_configs ADD COLUMN IF NOT EXISTS json_structured_enabled BOOLEAN DEFAULT TRUE",
+                    "ALTER TABLE system_engine_configs ADD COLUMN IF NOT EXISTS unmapped_webhook_ttl_days INTEGER DEFAULT 7",
+                    "ALTER TABLE system_engine_configs ADD COLUMN IF NOT EXISTS unmapped_webhook_purge_days INTEGER DEFAULT 7",
+                    "ALTER TABLE system_engine_configs ADD COLUMN IF NOT EXISTS unmapped_webhook_purge_interval_minutes INTEGER DEFAULT 60"
             };
 
             for (String sql : systemEngineColumns) {
@@ -269,9 +272,11 @@ public class DatabaseSchemaMigrator {
                             id VARCHAR(64) PRIMARY KEY,
                             repo_key VARCHAR(512) NOT NULL,
                             token VARCHAR(512) NOT NULL,
+                            payload VARCHAR(64),
                             expires_at TIMESTAMP NOT NULL
                         )
                         """);
+                stmt.execute("ALTER TABLE echo_ledger ADD COLUMN IF NOT EXISTS payload VARCHAR(64)");
                 log.info("Database migration: verified replica ruleset columns and echo_ledger.");
             } catch (Exception e) {
                 log.debug("Schema migration notice (repo_mappings.trunk_conflict_policy): {}", e.getMessage());

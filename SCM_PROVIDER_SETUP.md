@@ -76,7 +76,7 @@ Under **Subscribe to events**, enable every row below. GitHub’s checkbox label
 | **Create** | `create` | Branch or tag created outside a push payload. Hub turns it into a ref sync. |
 | **Delete** | `delete` | Branch or tag deleted outside a push payload. Hub deletes that ref on the other side. |
 | **Pull request** | `pull_request` | Incremental pull request sync (open, edit, close, merge). Gated by **Settings → Metadata sync → Pull requests**. |
-| **Release** | `release` | One release and its assets. A deleted or unpublished release is recorded as skipped. Gated by **Settings → Metadata sync → Releases and assets**. |
+| **Release** | `release` | Create, edit, publish, delete, and unpublish. Delete and unpublish are actions on this same event, not extra checkboxes. Gated by **Settings → Metadata sync → Releases and assets**. |
 | **Status** | `status` | One commit status, written on the opposite side of the pair. Gated by **Settings → Metadata sync → CI checks**. |
 
 **Check run is not in the Subscribe to events list.** With **Checks: Read and write**, GitHub subscribes the App to `check_run` and `check_suite` on its own, so neither name appears next to Push, Release, or Status. **Status** on that list is a commit status (`status`), not a check run. **Workflow job** and **Workflow run** are Actions, not the Checks API. Hub mirrors a completed `check_run`. If the destination has no Checks API, Hub writes a commit status instead. That path is gated by **Settings → Metadata sync → CI checks**. `check_suite` deliveries still arrive with the automatic subscription. Hub and the Worker ignore them.

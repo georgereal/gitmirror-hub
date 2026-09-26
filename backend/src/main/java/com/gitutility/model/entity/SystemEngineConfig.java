@@ -44,6 +44,21 @@ public class SystemEngineConfig implements WritePreparer {
     @Builder.Default
     private int retentionHours = 72;
 
+    /** High ceiling for discarded webhook rows. Stamped as expiresAt. Poison rows are not stamped. */
+    @Column(nullable = false)
+    @Builder.Default
+    private int unmappedWebhookTtlDays = 7;
+
+    /** Age at which the purge job deletes a non-poison discarded webhook row. At most the TTL days. */
+    @Column(nullable = false)
+    @Builder.Default
+    private int unmappedWebhookPurgeDays = 7;
+
+    /** How often the discarded-webhook purge job runs. */
+    @Column(nullable = false)
+    @Builder.Default
+    private int unmappedWebhookPurgeIntervalMinutes = 60;
+
     // --- Concurrency & Rate Limiting ---
     @Column(nullable = false)
     @Builder.Default

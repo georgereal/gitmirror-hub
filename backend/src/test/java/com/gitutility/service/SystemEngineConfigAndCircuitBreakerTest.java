@@ -38,6 +38,8 @@ public class SystemEngineConfigAndCircuitBreakerTest {
 
     @Mock
     private EnterpriseLoggingService enterpriseLoggingService;
+    @Mock
+    private UnmappedWebhookRetention unmappedWebhookRetention;
 
     @Mock
     private ClusterRuntimeService clusterRuntimeService;
@@ -60,7 +62,8 @@ public class SystemEngineConfigAndCircuitBreakerTest {
                 circuitBreakerManager,
                 storageTieringService,
                 queueConsumerService,
-                enterpriseLoggingService
+                enterpriseLoggingService,
+                unmappedWebhookRetention
         );
 
         ReflectionTestUtils.setField(systemEngineConfigService, "defaultLocalDir", "/tmp/local-test");

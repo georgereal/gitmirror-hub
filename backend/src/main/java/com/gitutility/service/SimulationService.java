@@ -4,6 +4,9 @@ import com.gitutility.messaging.SyncEventBus;
 import com.gitutility.messaging.webhook.WebhookBusControls;
 import com.gitutility.messaging.none.NoneSyncEventBus;
 import com.gitutility.model.dto.SimulationConfigRequest;
+import com.gitutility.model.dto.SimulationRefTip;
+import com.gitutility.model.dto.SimulationScenarioRequest;
+import com.gitutility.model.dto.SimulationScenarioResult;
 import com.gitutility.model.dto.SyntheticWebhookRequest;
 import com.gitutility.model.entity.RepoMapping;
 import com.gitutility.model.entity.SyncJob;
@@ -17,6 +20,7 @@ import org.springframework.amqp.core.MessageListenerContainer;
 import org.springframework.amqp.rabbit.listener.RabbitListenerEndpointRegistry;
 import org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
@@ -47,6 +51,19 @@ public class SimulationService {
      * Resolved on use so pause/resume does not pull the listener into this bean's creation.
      */
     private final ObjectProvider<WebhookBusControls> webhookBusControls;
+
+    private WebhookIngestionService webhookIngestionService;
+    private PairTipEchoService pairTipEchoService;
+
+    @Autowired(required = false)
+    public void setWebhookIngestionService(@Lazy WebhookIngestionService webhookIngestionService) {
+        this.webhookIngestionService = webhookIngestionService;
+    }
+
+    @Autowired(required = false)
+    public void setPairTipEchoService(PairTipEchoService pairTipEchoService) {
+        this.pairTipEchoService = pairTipEchoService;
+    }
 
     private final AtomicBoolean consumerPaused = new AtomicBoolean(false);
     /** When true, this pod paused itself on boot; cluster poller must not auto-resume. */
@@ -353,6 +370,63 @@ public class SimulationService {
 
         queueProducerService.enqueueSyncJob(mapping, job, sourceRepo, targetRepo, ref, branch, null, commitSha, commitMsg, author, TriggerType.SYNTHETIC);
         return job;
+    }
+
+    /**
+     * Delivers one commit or metadata probe through the same path as a GitHub webhook.
+     * The chosen side is the repository the event arrives on.
+     */
+    /**
+     * Current tip of a ref on the side a probe would be sent from.
+     * {@code known} is false when the advertisement could not be read.
+     * A known missing ref returns the zero SHA so a new ref keeps an empty previous tip.
+     */
+    public SimulationRefTip currentTip(String mappingId, String side, String refName, String kind) {
+        if (mappingId == null || mappingId.isBlank()) {
+            throw new IllegalArgumentException("A pair is required");
+        }
+        RepoMapping mapping = mappingRepository.findById(mappingId)
+                .orElseThrow(() -> new IllegalArgumentException("Mapping not found with id: " + mappingId));
+        String normalized = SimulationScenarioPayload.normalizeSide(side);
+        String ref = SimulationScenarioPayload.refFor(kind, refName);
+        if (pairTipEchoService == null) {
+            return SimulationRefTip.builder().known(false).present(false).ref(ref).build();
+        }
+        PairTipEchoService.PeerTip tip = pairTipEchoService.lookupSide(mapping, "DESTINATION".equals(normalized), ref);
+        boolean present = tip.present();
+        return SimulationRefTip.builder()
+                .known(tip.known())
+                .present(present)
+                .sha(present ? tip.sha() : (tip.known() ? SimulationScenarioPayload.ZERO_SHA : null))
+                .ref(ref)
+                .build();
+    }
+
+    public SimulationScenarioResult emitScenario(SimulationScenarioRequest request) {
+        if (request == null || request.getMappingId() == null || request.getMappingId().isBlank()) {
+            throw new IllegalArgumentException("A pair is required");
+        }
+        if (webhookIngestionService == null) {
+            throw new IllegalStateException("Webhook ingestion is not available");
+        }
+        RepoMapping mapping = mappingRepository.findById(request.getMappingId())
+                .orElseThrow(() -> new IllegalArgumentException("Mapping not found with id: " + request.getMappingId()));
+        SimulationScenarioPayload.Built built = SimulationScenarioPayload.build(mapping, request);
+        var response = webhookIngestionService.processGithubDelivery(mapping, built.eventType(), built.json());
+        String status = "accepted";
+        if (response != null && response.getBody() instanceof Map<?, ?> body && body.get("status") != null) {
+            status = String.valueOf(body.get("status"));
+        }
+        String side = SimulationScenarioPayload.normalizeSide(request.getSide());
+        String repoUrl = "DESTINATION".equals(side) ? mapping.getRepoBUrl() : mapping.getRepoAUrl();
+        log.info("Simulation scenario {} {} on {} ({})", built.eventType(), request.getOperation(), side, mapping.getName());
+        return SimulationScenarioResult.builder()
+                .status(status)
+                .event(built.eventType())
+                .side(side)
+                .repoUrl(repoUrl)
+                .summary(built.summary())
+                .build();
     }
 
     private void broadcastSimulationState() {

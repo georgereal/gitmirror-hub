@@ -41,6 +41,10 @@ public class EchoLedgerEntry {
     @Column(nullable = false, length = 512)
     private String token;
 
+    /** Ref-tip SHA, or the head SHA recorded with a pull-request opened marker. */
+    @Column(length = 64)
+    private String payload;
+
     @Column(name = "expires_at", nullable = false)
     private Instant expiresAt;
 

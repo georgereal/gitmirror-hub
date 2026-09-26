@@ -13,6 +13,7 @@ gitUtility/
 ├── INSTRUCTIONS.md                     # Operational guide, runbook, and failover instructions
 ├── INSTRUCTIONS-MULTI-POD.md           # Local multi-pod (2+ backend JVMs) runbook
 ├── INSTRUCTIONS-KAFKA-WEBHOOK.md       # Confluent Cloud cluster, Kafka webhook worker, and Hub bus env
+├── KAFKA_PARTITION_ORDERING.md         # Why one repo stays in order across many partitions
 ├── SCM_PROVIDER_SETUP.md               # Create/configure SCM identities (GitHub App first; more providers later)
 ├── README.md                           # Quickstart summary
 ├── SECURITY.md                         # Localhost-only threat model & secret handling
@@ -129,6 +130,9 @@ gitUtility/
 │       │   │   │   │   ├── RepoSearchResult.java       # Paginated multi-provider search results DTO
 │       │   │   │   │   ├── RuntimeMetricsResponse.java # Internals UI Micrometer snapshot
 │       │   │   │   │   ├── SimulationConfigRequest.java
+│       │   │   │   │   ├── SimulationRefTip.java      # Peer tip lookup for a simulation probe
+│       │   │   │   │   ├── SimulationScenarioRequest.java # Probe kind, side, and operation
+│       │   │   │   │   ├── SimulationScenarioResult.java # Accepted or skipped probe outcome
 │       │   │   │   │   ├── StorageStatusResponse.java # Storage usage metrics & tier breakdown
 │       │   │   │   │   ├── SyncDiffReport.java      # Real-time branch ahead/behind & itemized metadata (Tags, Git Notes, Releases, LFS, CI/CD Checks)
 │       │   │   │   │   ├── SyncEventMessage.java
@@ -218,7 +222,9 @@ gitUtility/
 │       │   │       ├── ReleaseAndStatusSyncService.java # Release mirror (cursor-paged diff, create/update, asset streaming) + CI check-run/status backfill; per-side credential+installation binding; standalone metadata sync jobs
 │       │   │       ├── RepoMappingService.java  # Mapping CRUD & manual trigger helper
 │       │   │       ├── RuntimeMetricsService.java # Assembles MeterRegistry snapshot for /api/v1/runtime-metrics
-│       │   │       ├── SimulationService.java   # Consumer pause/resume & chaos injection
+│       │   │       ├── PairTipEchoService.java  # Webhook echo when the other repo already has the tip or delete
+│       │   │       ├── SimulationScenarioPayload.java # GitHub payload for a Simulation Lab probe
+│       │   │       ├── SimulationService.java   # Pause/resume, chaos faults, synthetic push, scenario probes
 │       │   │       ├── StorageTieringService.java# LRU eviction, NAS directory routing & ephemeral pruning
 │       │   │       ├── SyncJobService.java      # Job history query, retry, and cancel coordinator
 │       │   │       ├── SystemEngineConfigService.java # Database persistence & dynamic hot-reload coordinator
@@ -226,15 +232,19 @@ gitUtility/
 │       │   │       └── WebSocketNotificationService.java # Broadcasts JOB_UPDATE, JOB_PROGRESS, queue, and simulation events
 │       │   └── resources/
 │       │       └── application.yml              # Spring Boot configuration properties
-│       └── test/java/com/gitutility/
-│           ├── controller/
-│           │   ├── RootApiControllerTest.java
-│           │   └── WebhookControllerTest.java   # Ingestion & loop filter unit tests
-│           ├── security/
-│           │   └── CryptoServiceTest.java       # AES-256-GCM encryption tests
-│           └── service/
-│               ├── DedupLedgerServiceTest.java  # Echo detection & TTL expiration unit tests
-│               └── SimulationServiceTest.java   # Chaos toggles & synthetic emitter tests
+│       └── test/
+│           ├── java/com/gitutility/
+│           │   ├── bdd/                         # Cucumber steps for the behavioral scenarios
+│           │   ├── controller/
+│           │   │   ├── RootApiControllerTest.java
+│           │   │   └── WebhookControllerTest.java   # Ingestion & loop filter unit tests
+│           │   ├── security/
+│           │   │   └── CryptoServiceTest.java       # AES-256-GCM encryption tests
+│           │   └── service/
+│           │       ├── DedupLedgerServiceTest.java  # Ledger writes used when the engine records a push
+│           │       ├── MirrorBehavior.java          # Package bridge for Cucumber (not a test)
+│           │       └── SimulationServiceTest.java   # Chaos toggles & synthetic emitter tests
+│           └── resources/features/              # Gherkin: trunk, echo, PR rules, simulation, queue ack
 │
 └── frontend/                                   # React 18 + Vite + Tailwind CSS Frontend Dashboard
     ├── package.json                            # NPM dependencies (react-router-dom, @stomp/stompjs, axios, lucide-react)
@@ -295,7 +305,8 @@ gitUtility/
             ├── JobExecutionSummary.tsx         # Run recap: stage timings, git/LFS bytes, artifact counts
             ├── ProviderSettingsView.tsx        # Legacy/alternate provider settings component
             ├── QueueControlPanel.tsx           # Consumer pause/resume, DLQ redrive, and bulk submission panel
-            ├── SimulationLab.tsx               # Chaos sandbox: outage toggles & synthetic webhook form
+            ├── SimulationLab.tsx               # Chaos sandbox, synthetic push, and scenario probes
+            ├── SimulationProbeGuide.tsx        # Operator steps for each probe kind
             ├── JobLogModal.tsx                 # Audit log drawer; live overlay, pipeline, provider API, rejected refs
             ├── PairConfigModal.tsx             # Add/Edit mirror pair; Single pair | Bulk migration tabs; Check Access with Auto/Public/Private
             ├── CredentialPickModal.tsx         # Quick GitHub App/PAT picker opened when Check Access needs authentication
@@ -304,7 +315,7 @@ gitUtility/
             └── UnmappedWebhooksView.tsx        # Discarded & unmapped webhooks stream with 1-click configure action
 ```
 
-> **Tests:** `backend/src/test/java/com/gitutility/` contains ~40 test classes covering sync resume, GraphQL parsers, queue skip-ACK, checkpoints, LFS, conflicts, and controller integration. The tree above lists representative tests only. Persistence facades are additionally proven by the store contract suite in `persistence/contract/` (`H2StoreContractTest` runs on every build; `MongoStoreContractTest` runs against a real MongoDB supplied via `MONGO_CONTRACT_URI` and skips when unset — no Docker/Testcontainers; see `INSTRUCTIONS.md`).
+> **Tests:** `backend/src/test/java/com/gitutility/` contains ~73 JUnit classes covering sync resume, GraphQL parsers, queue skip-ACK, checkpoints, LFS, conflicts, and controller integration. The tree above lists representative tests only. Cucumber scenarios in `backend/src/test/resources/features/` run in the same Gradle/Maven test task (46 scenarios: trunk divergence, release echo, pull-request mirror rules, simulation lab, queue acknowledgement, webhook echo). Persistence facades are additionally proven by the store contract suite in `persistence/contract/` (`H2StoreContractTest` runs on every build; `MongoStoreContractTest` runs against a real MongoDB supplied via `MONGO_CONTRACT_URI` and skips when unset — no Docker/Testcontainers; see `INSTRUCTIONS.md`).
 
 ---
 
@@ -327,7 +338,8 @@ gitUtility/
 | **Backend** | `ProviderRateMeter` | ThreadLocal job-scoped REST vs GraphQL vs Git counters and a sampled call-volume series. WARN audit on REST 429 or remaining &lt; 20%. Remaining quota is installation-wide; job attribution uses call counts. |
 | **Backend** | `SyncPipelineState` | Outer mirror stages persisted on `sync_jobs.pipeline_json` and live on `JOB_PROGRESS`. |
 | **Backend** | `PublicReadProbe` | Shared anonymous HTTPS / `git ls-remote` probe used by all SCM adapters so public read is the primary Check Access path. |
-| **Backend** | `DedupLedgerService` | Shared `echo_ledger` rows (repo + SHA, ref delete, or `pr:<number>`) so any pod drops mirror echoes. Falls back to an in-memory map only when the store is not wired. |
+| **Backend** | `PairTipEchoService` | Webhook echo check: skip a push only when the other repository already advertises that tip, and a delete only when that ref is already gone. An unknown peer is not an echo. |
+| **Backend** | `DedupLedgerService` | Still records tip SHAs, ref deletes, and `pr:<number>` when the engine writes. The inbound webhook skip uses `PairTipEchoService`, not this row. |
 | **Backend** | `QueueProducerService` | Builds `SyncEventMessage` and publishes via pluggable `SyncEventBus` (Rabbit or inline). |
 | **Backend** | `MessagingModule` / `SyncEventBus` | `GIT_MESSAGING_PROVIDER=rabbitmq\|kafka\|none`; descriptor at `GET /api/v1/messaging`. |
 | **Backend** | `WebhookIncrementalService` | `GIT_WEBHOOK_BUS_PROVIDER=kafka\|rabbitmq\|off`. One incremental lane. `GET /api/v1/webhook-bus`, `POST /api/v1/webhook-bus/redrive`. |
@@ -338,7 +350,7 @@ gitUtility/
 | **Backend** | `QueueObservabilityService` | Builds Ready vs Unacked plus idle/unused/dead listener thread stats for `/api/v1/queue/status`. |
 | **Backend** | `DlqRedriveService` | Inspects queue depths, replays `git.sync.dlq` onto the original execution lane by ref shape. |
 | **Backend** | `CryptoService` | Envelope AES-256-GCM encryption for stored PAT tokens and webhook secrets. Requires `GIT_UTILITY_ENCRYPTION_KEY` (32+ chars); boot fails if unset. |
-| **Backend** | `SimulationService` | Controls consumer pause/resume via `RabbitListenerEndpointRegistry`, injects synthetic HTTP errors (500, 503, 429), and generates synthetic push events. |
+| **Backend** | `SimulationService` | Consumer pause/resume, injected 500/503/429 faults, synthetic push, `GET /api/v1/simulation/ref-tip`, and `POST /api/v1/simulation/emit-scenario` probes (branch, tag, note, pull request, release, status, check run). |
 | **Backend** | `JobExecutionStateService` | Persists per-job pipeline cursor and stage progress; drives pause/resume/skip-stage decisions. |
 | **Backend** | `SyncCheckpointService` | Pair-level LFS/git resume checkpoints on `repo_mappings`. |
 | **Backend** | `StartupJobRecoveryService` | Pauses consumers on boot; marks orphan `IN_PROGRESS` jobs as `INTERRUPTED`. |

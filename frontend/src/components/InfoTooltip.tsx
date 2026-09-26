@@ -10,6 +10,8 @@ export interface InfoTooltipProps {
   position?: 'top' | 'bottom' | 'left' | 'right';
   className?: string;
   iconSize?: number;
+  /** Stay open until the close control or a click outside. Hover does not dismiss it. */
+  pinned?: boolean;
 }
 
 export const InfoTooltip: React.FC<InfoTooltipProps> = ({
@@ -21,6 +23,7 @@ export const InfoTooltip: React.FC<InfoTooltipProps> = ({
   position = 'top',
   className = '',
   iconSize = 13,
+  pinned = false,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -58,8 +61,8 @@ export const InfoTooltip: React.FC<InfoTooltipProps> = ({
     <div
       ref={containerRef}
       className={`relative inline-flex items-center align-middle ${className}`}
-      onMouseEnter={() => setIsOpen(true)}
-      onMouseLeave={() => setIsOpen(false)}
+      onMouseEnter={pinned ? undefined : () => setIsOpen(true)}
+      onMouseLeave={pinned ? undefined : () => setIsOpen(false)}
     >
       <button
         type="button"
@@ -85,11 +88,27 @@ export const InfoTooltip: React.FC<InfoTooltipProps> = ({
               <HelpCircle className="w-3.5 h-3.5 text-blue-400 shrink-0" />
               <span>{title}</span>
             </div>
-            {badge && (
-              <span className="px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider rounded bg-zinc-800 text-blue-300 border border-zinc-700">
-                {badge}
-              </span>
-            )}
+            <div className="flex items-center gap-1.5 shrink-0">
+              {badge && (
+                <span className="px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider rounded bg-zinc-800 text-blue-300 border border-zinc-700">
+                  {badge}
+                </span>
+              )}
+              {pinned && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setIsOpen(false);
+                  }}
+                  className="text-zinc-400 hover:text-white p-0.5 rounded"
+                  aria-label={`Close ${title}`}
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Body Content */}

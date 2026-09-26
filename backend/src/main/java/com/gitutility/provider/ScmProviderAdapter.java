@@ -187,6 +187,14 @@ public interface ScmProviderAdapter {
     }
 
     /**
+     * Deletes a release by provider id (GitHub numeric id, GitLab tag name).
+     * Returns true when the release is gone, including when it was already absent.
+     */
+    default boolean deleteRelease(String repoFullName, String externalId) {
+        return false;
+    }
+
+    /**
      * Uploads one binary asset to a release from a local file. Returns true when uploaded.
      * Implementations that cannot host binaries (GitLab links-only, Bitbucket) return false.
      */
