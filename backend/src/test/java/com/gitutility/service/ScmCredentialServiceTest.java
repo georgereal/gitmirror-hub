@@ -196,6 +196,7 @@ class ScmCredentialServiceTest {
         mapping.setRepoAUrl("https://github.com/microsoft/vscode.git");
         mapping.setRepoBUrl("https://github.com/acme/mirror-vscode.git");
         mapping.setSourceVisibility(com.gitutility.model.enums.RepoVisibility.PUBLIC);
+        mapping.setSyncDirection(com.gitutility.model.enums.SyncDirection.UNIDIRECTIONAL_A_TO_B);
         mapping.setTargetCredentialId("9");
         assertDoesNotThrow(() -> service.requireBoundIfGithub(mapping));
     }

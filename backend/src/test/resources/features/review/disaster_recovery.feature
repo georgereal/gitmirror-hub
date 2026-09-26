@@ -1,4 +1,4 @@
-@review
+@disaster-recovery
 Feature: Disaster recovery lane
   Activate DR is one control for every pair that shares a source host and a destination host.
   A dark host parks incremental events. It does not dead-letter them.

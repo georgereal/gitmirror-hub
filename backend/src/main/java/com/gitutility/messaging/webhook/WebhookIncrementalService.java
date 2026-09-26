@@ -13,6 +13,7 @@ import com.gitutility.repository.RepoMappingRepository;
 import com.gitutility.repository.SyncJobRepository;
 import com.gitutility.repository.UnmappedWebhookEventRepository;
 import com.gitutility.service.FailoverPeerErrors;
+import com.gitutility.service.UnmappedWebhookRetention;
 import com.gitutility.service.PairTipEchoService;
 import com.gitutility.service.FailoverService;
 import com.gitutility.service.PairLeaseBusyException;

@@ -4,6 +4,7 @@ import com.gitutility.messaging.SyncEventBus;
 import com.gitutility.messaging.none.NoneSyncEventBus;
 import com.gitutility.messaging.webhook.WebhookBusControls;
 import com.gitutility.model.dto.SimulationConfigRequest;
+import com.gitutility.model.dto.SyncEventMessage;
 import com.gitutility.model.dto.SyntheticWebhookRequest;
 import com.gitutility.model.entity.RepoMapping;
 import com.gitutility.model.entity.SyncJob;
@@ -11,28 +12,36 @@ import com.gitutility.model.enums.SyncStatus;
 import com.gitutility.model.enums.TriggerType;
 import com.gitutility.repository.RepoMappingRepository;
 import com.gitutility.repository.SyncJobRepository;
+import com.gitutility.service.QueueConsumerService;
 import com.gitutility.service.QueueProducerService;
 import com.gitutility.service.SimulationService;
 import com.gitutility.service.SyncLaneRouter;
 import com.gitutility.service.WebSocketNotificationService;
+import io.cucumber.java.After;
 import io.cucumber.java.Before;
 import io.cucumber.java.en.Given;
 import io.cucumber.java.en.Then;
 import io.cucumber.java.en.When;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.springframework.amqp.core.MessageListenerContainer;
 import org.springframework.amqp.rabbit.listener.RabbitListenerEndpointRegistry;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -50,6 +59,10 @@ public class SimulationLabSteps {
     private SimulationService simulation;
     private Exception fault;
     private SyncJob syntheticJob;
+    private NoneSyncEventBus noneBus;
+    private QueueConsumerService noneConsumer;
+    private String lastSha;
+    private long delayStartedAt;
 
     @Before("@simulation")
     public void reset() {
@@ -64,7 +77,23 @@ public class SimulationLabSteps {
         incrementalListener = null;
         fault = null;
         syntheticJob = null;
+        noneBus = null;
+        noneConsumer = null;
+        lastSha = null;
+        delayStartedAt = 0L;
         simulation = service(mock(SyncEventBus.class));
+    }
+
+    @After("@simulation")
+    public void stopNoneBus() {
+        if (noneBus == null) {
+            return;
+        }
+        try {
+            ReflectionTestUtils.invokeMethod(noneBus, "shutdown");
+        } finally {
+            noneBus = null;
+        }
     }
 
     @Given("in-memory messaging")
@@ -143,8 +172,70 @@ public class SimulationLabSteps {
         }
     }
 
+    @Given("execution consumers are paused")
+    public void consumersArePaused() {
+        noneConsumer = mock(QueueConsumerService.class);
+        AtomicReference<SimulationService> live = new AtomicReference<>();
+        SimulationService probe = mock(SimulationService.class);
+        lenient().when(probe.isConsumerPaused()).thenAnswer(invocation ->
+                live.get() != null && live.get().isConsumerPaused());
+        noneBus = new NoneSyncEventBus(noneConsumer, probe, new SimpleMeterRegistry(), 1);
+        simulation = service(noneBus);
+        live.set(simulation);
+        mirrorPair("buffered", "https://github.com/acme/origin.git", "https://github.com/acme/mirror.git");
+        lenient().doAnswer(invocation -> {
+            SyncJob job = invocation.getArgument(1);
+            noneBus.publish(SyncEventMessage.builder()
+                    .jobId(job.getId())
+                    .mappingId(job.getMappingId())
+                    .pairName(job.getPairName())
+                    .ref(job.getRef())
+                    .branch(job.getBranch())
+                    .build());
+            return null;
+        }).when(queueProducerService).enqueueSyncJob(
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+        simulation.pauseConsumer();
+    }
+
+    @Given("a synthetic push is queued on branch {string}")
+    public void syntheticQueuedOnBranch(String branch) {
+        emitSynthetic(branch, "abc123");
+    }
+
+    @Given("the provider rate limit is simulated")
+    public void rateLimitOn() {
+        simulation.updateSimulationConfig(SimulationConfigRequest.builder()
+                .simulateRateLimit(true)
+                .build());
+    }
+
+    @Given("the provider rate limit simulation is turned off")
+    public void rateLimitOff() {
+        simulation.updateSimulationConfig(SimulationConfigRequest.builder()
+                .simulateRateLimit(false)
+                .build());
+    }
+
+    @Given("an artificial delay of {int} milliseconds")
+    public void artificialDelay(int milliseconds) {
+        delayStartedAt = System.nanoTime();
+        simulation.updateSimulationConfig(SimulationConfigRequest.builder()
+                .artificialDelayMs((long) milliseconds)
+                .build());
+    }
+
+    @Given("no outage is simulated")
+    public void noOutage() {
+        simulation.updateSimulationConfig(SimulationConfigRequest.builder()
+                .simulateSourceDown(false)
+                .simulateTargetDown(false)
+                .build());
+    }
+
     @When("a synthetic push is emitted on branch {string} with sha {string}")
     public void emitSynthetic(String branch, String sha) {
+        lastSha = sha;
         syntheticJob = simulation.emitSyntheticWebhook(SyntheticWebhookRequest.builder()
                 .mappingId("1")
                 .branch(branch)
@@ -206,13 +297,43 @@ public class SimulationLabSteps {
         assertTrue(fault.getMessage().contains("Origin repository is DOWN"));
     }
 
+    @Then("the sync fails because the provider rate limit was exceeded")
+    public void rateLimitFailure() {
+        assertNotNull(fault);
+        assertTrue(fault.getMessage().contains("rate limit"));
+    }
+
+    @Then("the fault check returns without error")
+    public void faultCheckPasses() {
+        assertNull(fault);
+    }
+
+    @Then("at least {int} milliseconds elapsed")
+    public void elapsed(int milliseconds) {
+        long waitedMs = (System.nanoTime() - delayStartedAt) / 1_000_000L;
+        assertTrue(waitedMs >= milliseconds, "waited " + waitedMs + "ms");
+    }
+
+    @Then("the deferred sync is not dispatched")
+    public void deferredNotDispatched() throws Exception {
+        assertNotNull(noneBus);
+        assertTrue(noneBus.pendingCount() >= 1);
+        verify(noneConsumer, never()).consumeSyncEvent(any());
+    }
+
+    @Then("the queued job is eligible to run")
+    public void queuedJobEligible() throws Exception {
+        verify(noneConsumer, timeout(2000)).consumeSyncEvent(any());
+        assertEquals(0, noneBus.pendingCount());
+    }
+
     @Then("the synthetic job is queued")
     public void syntheticQueued() {
         assertNotNull(syntheticJob);
         assertEquals("99", syntheticJob.getId());
         assertEquals(SyncStatus.QUEUED, syntheticJob.getStatus());
         assertEquals(TriggerType.SYNTHETIC, syntheticJob.getTriggerType());
-        assertEquals("abcdef123", syntheticJob.getCommitSha());
+        assertEquals(lastSha, syntheticJob.getCommitSha());
     }
 
     @Then("the sync queue receives that push")

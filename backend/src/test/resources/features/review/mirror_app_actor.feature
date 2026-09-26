@@ -1,4 +1,4 @@
-@review
+@mirror-app
 Feature: Mirror App actor
   A pull request event sent by the mirror GitHub App is the App's own write.
   It is discarded and not synced again.

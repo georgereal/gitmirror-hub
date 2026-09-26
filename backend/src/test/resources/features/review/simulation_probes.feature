@@ -1,4 +1,4 @@
-@review
+@sim-probe
 Feature: Simulation probes
   A probe is a GitHub event for one side of a pair. The clone URL is that side,
   so the mirror treats the event as a change on that repository.

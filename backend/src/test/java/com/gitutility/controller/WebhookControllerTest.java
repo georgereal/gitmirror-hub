@@ -8,6 +8,7 @@ import com.gitutility.model.enums.SyncDirection;
 import com.gitutility.repository.RepoMappingRepository;
 import com.gitutility.repository.SyncJobRepository;
 import com.gitutility.service.DedupLedgerService;
+import com.gitutility.service.PairTipEchoService;
 import com.gitutility.service.PullRequestSyncService;
 import com.gitutility.service.QueueProducerService;
 import com.gitutility.service.ReleaseAndStatusSyncService;
@@ -92,7 +93,6 @@ class WebhookControllerTest {
                 .build();
 
         when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
-        when(dedupLedgerService.isSystemGeneratedEcho(any(), eq("sha123456"))).thenReturn(false);
         when(syncJobRepository.save(any(SyncJob.class))).thenAnswer(i -> {
             SyncJob j = i.getArgument(0);
             j.setId("101");
@@ -140,7 +140,9 @@ class WebhookControllerTest {
                 .build();
 
         when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
-        when(dedupLedgerService.isSystemGeneratedEcho(any(), eq("sha123456"))).thenReturn(true);
+        PairTipEchoService peerTips = mock(PairTipEchoService.class);
+        when(peerTips.pushEcho(any(), anyBoolean(), any(), eq("sha123456"))).thenReturn(true);
+        webhookIngestionService.setPairTipEchoService(peerTips);
 
         String payload = """
                 {
@@ -161,7 +163,7 @@ class WebhookControllerTest {
         Map<String, Object> body = (Map<String, Object>) response.getBody();
         assertNotNull(body);
         assertEquals("skipped", body.get("status"));
-        assertEquals("Loop prevention: commit was pushed by this mirror utility", body.get("reason"));
+        assertEquals("Other repository already has refs/heads/main at this tip", body.get("reason"));
 
         // Must NOT enqueue to queue
         verify(queueProducerService, never()).enqueueSyncJob(

@@ -1,4 +1,4 @@
-@review
+@replica-ruleset
 Feature: Replica read-only ruleset
   The replica ruleset makes a GitHub or GHES side read-only for people.
   The mirror App remains the bypass actor. GitLab and Bitbucket have no ruleset API.

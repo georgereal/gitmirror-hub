@@ -66,8 +66,6 @@ public class SystemEngineConfigAndCircuitBreakerTest {
                 unmappedWebhookRetention
         );
 
-        ReflectionTestUtils.setField(systemEngineConfigService, "defaultLocalDir", "/tmp/local-test");
-        ReflectionTestUtils.setField(systemEngineConfigService, "defaultNasDir", "/tmp/nas-test");
         ReflectionTestUtils.setField(systemEngineConfigService, "defaultMaxDiskQuotaMb", 20480L);
         ReflectionTestUtils.setField(systemEngineConfigService, "defaultMaxCachedRepos", 500);
         ReflectionTestUtils.setField(systemEngineConfigService, "defaultRetentionHours", 48);

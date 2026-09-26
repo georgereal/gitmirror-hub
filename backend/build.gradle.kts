@@ -52,6 +52,7 @@ dependencies {
 }
 
 tasks.withType<Test> {
+    description = "Regression: JUnit and Cucumber together. -PtestEngine=cucumber or -PtestEngine=junit-jupiter runs one engine."
     useJUnitPlatform {
         val engine = providers.gradleProperty("testEngine").orNull
         if (!engine.isNullOrBlank()) {

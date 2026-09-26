@@ -1,4 +1,4 @@
-@review
+@simulation
 Feature: Simulation faults beyond an outage
   The lab can also inject a rate limit and a delay. Origin and destination outages are already covered.
 
