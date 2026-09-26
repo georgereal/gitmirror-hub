@@ -12,6 +12,8 @@ import com.gitutility.repository.PrMappingRepository;
 import com.gitutility.repository.RepoMappingRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -29,6 +31,15 @@ public class PairDiffSnapshotService {
 
     private final RepoMappingRepository repoMappingRepository;
     private final PrMappingRepository prMappingRepository;
+    private GitComparisonService gitComparisonService;
+    private WebSocketNotificationService webSocketNotificationService;
+
+    @Autowired(required = false)
+    void setSnapshotRefresh(@Lazy GitComparisonService gitComparisonService,
+                            WebSocketNotificationService webSocketNotificationService) {
+        this.gitComparisonService = gitComparisonService;
+        this.webSocketNotificationService = webSocketNotificationService;
+    }
 
     public void backfillFromMirrorFieldsIfMissing(RepoMapping mapping) {
         if (mapping == null || mapping.getId() == null || load(mapping) != null) {
@@ -153,9 +164,14 @@ public class PairDiffSnapshotService {
                 int lfsTotal = Math.max(result.lfsObjectsCount, result.lfsSyncedCount);
                 int lfsSynced = result.lfsSyncedCount > 0 ? result.lfsSyncedCount : 0;
                 if (lfsTotal > 0) {
-                    snapshot.setLfsTotal(lfsTotal);
-                    snapshot.setLfsSynced(Math.min(lfsTotal, Math.max(lfsSynced, 0)));
-                    snapshot.setLfsPending(Math.max(0, lfsTotal - snapshot.getLfsSynced()));
+                    // A full sync recounts the catalog and writes that absolute total first.
+                    // An incremental push only reports the objects in that range, so it must
+                    // not replace the saved pair total with the smaller range count.
+                    int total = Math.max(snapshot.getLfsTotal(), lfsTotal);
+                    int synced = Math.max(snapshot.getLfsSynced(), Math.min(total, Math.max(lfsSynced, 0)));
+                    snapshot.setLfsTotal(total);
+                    snapshot.setLfsSynced(Math.min(total, synced));
+                    snapshot.setLfsPending(Math.max(0, total - snapshot.getLfsSynced()));
                 }
                 saveSnapshot(mapping, snapshot);
             });
@@ -174,9 +190,13 @@ public class PairDiffSnapshotService {
         }
         List<PrMapping> mappings = prMappingRepository.findByMappingId(mappingId);
         int synced = (int) mappings.stream()
-                .filter(m -> m.getTargetPrNumber() != null && m.getTargetPrNumber() > 0)
+                .filter(m -> m.getTargetPrNumber() != null && m.getTargetPrNumber() > 0
+                        && PullRequestSyncService.isOpenPullRequestState(m.getState()))
                 .count();
-        int total = sourceOpenCount > 0 ? sourceOpenCount : Math.max(mappings.size(), synced);
+        int openRows = (int) mappings.stream()
+                .filter(m -> PullRequestSyncService.isOpenPullRequestState(m.getState()))
+                .count();
+        int total = sourceOpenCount > 0 ? sourceOpenCount : Math.max(openRows, synced);
         updatePrs(mappingId, total, synced, synced);
     }
 
@@ -227,6 +247,94 @@ public class PairDiffSnapshotService {
         } catch (Exception e) {
             log.debug("Could not update LFS diff snapshot for mapping #{}: {}", mappingId, e.getMessage());
         }
+    }
+
+    /**
+     * A webhook mirrored one release onto the other side. {@code created} is 1 when that release
+     * was new. An update of a release the cards have never counted still records one on each side.
+     */
+    public void noteReleaseMirrored(String mappingId, int created) {
+        if (mappingId == null) {
+            return;
+        }
+        try {
+            repoMappingRepository.findById(mappingId).ifPresent(mapping -> {
+                PairDiffSnapshot snapshot = loadOrEmpty(mapping);
+                int add = Math.max(created, 0);
+                int source = snapshot.getReleasesSourceCount();
+                int target = snapshot.getReleasesTargetCount();
+                if (add > 0) {
+                    source += add;
+                    target += add;
+                } else if (source == 0 && target == 0) {
+                    source = 1;
+                    target = 1;
+                } else {
+                    int both = Math.max(source, target);
+                    source = both;
+                    target = both;
+                }
+                snapshot.setSource("SYNC_RELEASE");
+                snapshot.setCapturedAt(Instant.now());
+                snapshot.setReleasesSourceCount(source);
+                snapshot.setReleasesTargetCount(target);
+                saveSnapshot(mapping, snapshot);
+            });
+        } catch (Exception e) {
+            log.debug("Could not record mirrored release for mapping #{}: {}", mappingId, e.getMessage());
+        }
+    }
+
+    /** A release deleted on one side was removed from the other. */
+    public void noteReleaseRemoved(String mappingId) {
+        if (mappingId == null) {
+            return;
+        }
+        try {
+            repoMappingRepository.findById(mappingId).ifPresent(mapping -> {
+                PairDiffSnapshot snapshot = loadOrEmpty(mapping);
+                snapshot.setSource("SYNC_RELEASE");
+                snapshot.setCapturedAt(Instant.now());
+                snapshot.setReleasesSourceCount(Math.max(0, snapshot.getReleasesSourceCount() - 1));
+                snapshot.setReleasesTargetCount(Math.max(0, snapshot.getReleasesTargetCount() - 1));
+                saveSnapshot(mapping, snapshot);
+            });
+        } catch (Exception e) {
+            log.debug("Could not record removed release for mapping #{}: {}", mappingId, e.getMessage());
+        }
+    }
+
+    /** Adds pointers found on one push without replacing the pair's existing LFS total. */
+    public void addLfs(String mappingId, int discovered, int synced) {
+        if (mappingId == null || discovered <= 0) {
+            return;
+        }
+        try {
+            repoMappingRepository.findById(mappingId).ifPresent(mapping -> {
+                PairDiffSnapshot snapshot = loadOrEmpty(mapping);
+                int total = snapshot.getLfsTotal() + discovered;
+                int syncedTotal = snapshot.getLfsSynced() + Math.max(synced, 0);
+                snapshot.setSource("SYNC_LFS");
+                snapshot.setCapturedAt(Instant.now());
+                snapshot.setLfsTotal(total);
+                snapshot.setLfsSynced(Math.min(total, syncedTotal));
+                snapshot.setLfsPending(Math.max(0, total - snapshot.getLfsSynced()));
+                if (total > 0) {
+                    mapping.setLastMirrorLfsObjects(total);
+                }
+                saveSnapshot(mapping, snapshot);
+            });
+        } catch (Exception e) {
+            log.debug("Could not add LFS diff snapshot for mapping #{}: {}", mappingId, e.getMessage());
+        }
+    }
+
+    private PairDiffSnapshot loadOrEmpty(RepoMapping mapping) {
+        PairDiffSnapshot snapshot = load(mapping);
+        if (snapshot == null) {
+            snapshot = PairDiffSnapshot.builder().capturedAt(Instant.now()).build();
+        }
+        return snapshot;
     }
 
     public void updateReleases(String mappingId, int sourceCount, int targetCount) {
@@ -440,6 +548,12 @@ public class PairDiffSnapshotService {
             mapping.setDiffSnapshotAt(snapshot.getCapturedAt() != null ? snapshot.getCapturedAt() : Instant.now());
             repoMappingRepository.save(mapping);
             log.debug("Persisted diff snapshot for mapping #{} ({})", mapping.getId(), snapshot.getSource());
+            if (gitComparisonService != null) {
+                gitComparisonService.invalidateQuickDiffCache(mapping.getId());
+            }
+            if (webSocketNotificationService != null) {
+                webSocketNotificationService.notifyPairSnapshot(mapping.getId());
+            }
         } catch (JacksonException e) {
             log.debug("Could not serialize diff snapshot for mapping #{}: {}", mapping.getId(), e.getMessage());
         }

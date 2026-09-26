@@ -341,7 +341,7 @@ public class PullRequestSyncService {
             int objectsCached = 0;
             for (PrMapping pm : prMappingRepository.findByMappingId(mappingId)) {
                 if (pm.getTargetPrNumber() != null && pm.getTargetPrNumber() > 0
-                        && !"closed".equalsIgnoreCase(pm.getState())) {
+                        && isOpenPullRequestState(pm.getState())) {
                     destMapped++;
                 } else if (STATE_OBJECTS_CACHED.equals(pm.getState()) || Boolean.TRUE.equals(pm.isForkPrHead())) {
                     objectsCached++;
@@ -1241,6 +1241,7 @@ public class PullRequestSyncService {
         CredentialsProvider srcCreds = gitCreds(mapping, mapping.getRepoAUrl(), mapping.getTokenA());
         CredentialsProvider targetCreds = gitCreds(mapping, mapping.getRepoBUrl(), mapping.getTokenB());
         String destBranch = replicaHeadBranch(sourcePrNumber, stub.getHeadBranch(), true);
+        String headSha = null;
         try (Git git = Git.open(repoDir)) {
             Ref pullRef = git.getRepository().exactRef("refs/pull/" + sourcePrNumber + "/head");
             if (pullRef == null) {
@@ -1279,7 +1280,8 @@ public class PullRequestSyncService {
                     .setTimeout(120)
                     .call();
             BareRepoHousekeeping.prepareRepoDirectoryAfterPackIo(repoDir);
-            recordDestPushOnLedger(dedupLedgerService, mapping.getRepoBUrl(), ObjectId.toString(pullRef.getObjectId()));
+            headSha = pullRef.getObjectId() != null ? ObjectId.toString(pullRef.getObjectId()) : null;
+            recordDestPushOnLedger(dedupLedgerService, mapping.getRepoBUrl(), headSha);
         } catch (IllegalStateException e) {
             throw e;
         } catch (Exception e) {
@@ -1305,7 +1307,7 @@ public class PullRequestSyncService {
         if (targetPrNum == null) {
             throw new IllegalStateException("Dest PR create returned null for fork PR #" + sourcePrNumber);
         }
-        noteCreatedPullRequest(mapping.getRepoBUrl(), targetPrNum);
+        noteCreatedPullRequest(mapping.getRepoBUrl(), targetPrNum, headSha);
         stub.setTargetPrNumber(targetPrNum);
         stub.setHeadBranch(destBranch);
         stub.setState("open");
@@ -1715,7 +1717,7 @@ public class PullRequestSyncService {
                                     targetFullName, pr.getTitle(), mirrorBody, item.resolvedHead, pr.getBaseBranch());
                         }
                         if (targetPrNum != null) {
-                            noteCreatedPullRequest(targetRepoUrl, targetPrNum);
+                            noteCreatedPullRequest(targetRepoUrl, targetPrNum, null);
                             suppressActionsAfterWrite(targetRepoUrl, jobId);
                             PrMapping created = PrMapping.builder()
                                     .mappingId(mappingId)
@@ -2150,9 +2152,15 @@ public class PullRequestSyncService {
         ledger.recordSystemPush(destRepoUrl, sha);
     }
 
-    private void noteCreatedPullRequest(String repoUrl, Long prNumber) {
+    private void noteCreatedPullRequest(String repoUrl, Long prNumber, String headSha) {
         if (dedupLedgerService != null && prNumber != null && prNumber > 0) {
-            dedupLedgerService.recordMirroredPullRequest(repoUrl, prNumber);
+            dedupLedgerService.recordPullRequestOpened(repoUrl, prNumber, headSha);
+        }
+    }
+
+    private void noteClosedPullRequest(String repoUrl, Long prNumber) {
+        if (dedupLedgerService != null && prNumber != null && prNumber > 0) {
+            dedupLedgerService.recordPullRequestClosed(repoUrl, prNumber);
         }
     }
 
@@ -2175,7 +2183,11 @@ public class PullRequestSyncService {
             try {
                 Ref ref = git.getRepository().exactRef(source);
                 if (ref != null && ref.getObjectId() != null) {
-                    recordDestPushOnLedger(dedupLedgerService, repoUrl, ObjectId.toString(ref.getObjectId()));
+                    String sha = ObjectId.toString(ref.getObjectId());
+                    recordDestPushOnLedger(dedupLedgerService, repoUrl, sha);
+                    if (dedupLedgerService != null) {
+                        dedupLedgerService.recordRefTip(repoUrl, source, sha);
+                    }
                 }
             } catch (Exception e) {
                 log.debug("Could not record echo SHA for {}: {}", source, e.getMessage());
@@ -2208,9 +2220,13 @@ public class PullRequestSyncService {
         boolean isFork = headRepo != null && !headRepo.isBlank() && !headRepo.equalsIgnoreCase(inboundFullName);
         String authorLogin = PrMirrorSupport.authorLoginFromWebhook(prNode);
         String sourcePrUrl = PrMirrorSupport.sourcePrUrlFromWebhook(prNode);
+        String headSha = shaText(prNode.path("head").path("sha"));
+        String mergeSha = shaText(prNode.get("merge_commit_sha"));
+        boolean merged = prNode.path("merged").asBoolean(false);
         if (inboundRepoUrl != null && dedupLedgerService != null
-                && dedupLedgerService.isMirroredPullRequest(inboundRepoUrl, eventPrNumber)) {
-            log.info("Skipping mirrored PR #{} echo on {}", eventPrNumber, inboundRepoUrl);
+                && dedupLedgerService.isEchoPullRequest(
+                        inboundRepoUrl, eventPrNumber, action, headSha, mergeSha, merged)) {
+            log.info("Skipping PR #{} {} echo on {}", eventPrNumber, action, inboundRepoUrl);
             return;
         }
 
@@ -2227,6 +2243,22 @@ public class PullRequestSyncService {
         } catch (Exception e) {
             log.warn("Error processing PR webhook event: {}", e.getMessage());
         }
+        publishOpenPrSnapshot(mapping.getId());
+    }
+
+    /** Writes the open mirrored PR counts the pair page reads, without a diff refresh. */
+    private void publishOpenPrSnapshot(String mappingId) {
+        if (pairDiffSnapshotService == null || mappingId == null) {
+            return;
+        }
+        int open = 0;
+        for (PrMapping pm : prMappingRepository.findByMappingId(mappingId)) {
+            if (pm.getTargetPrNumber() != null && pm.getTargetPrNumber() > 0
+                    && isOpenPullRequestState(pm.getState())) {
+                open++;
+            }
+        }
+        pairDiffSnapshotService.updatePrs(mappingId, open, open, open);
     }
 
     private void replicateOpenedPr(RepoMapping mapping, PairSide inbound, long eventPrNumber,
@@ -2272,7 +2304,7 @@ public class PullRequestSyncService {
                 aPrNum = sourceAdapter.createPullRequest(sourceFullName, title, mirrorBody, destHead, baseRef);
             }
             if (aPrNum != null) {
-                noteCreatedPullRequest(mapping.getRepoAUrl(), aPrNum);
+                noteCreatedPullRequest(mapping.getRepoAUrl(), aPrNum, null);
                 suppressActionsAfterWrite(mapping.getRepoAUrl(), null);
                 prMappingRepository.save(PrMapping.builder()
                         .mappingId(mapping.getId())
@@ -2368,7 +2400,7 @@ public class PullRequestSyncService {
             targetPrNum = targetAdapter.createPullRequest(targetFullName, title, mirrorBody, destHead, baseRef);
         }
         if (targetPrNum != null) {
-            noteCreatedPullRequest(mapping.getRepoBUrl(), targetPrNum);
+            noteCreatedPullRequest(mapping.getRepoBUrl(), targetPrNum, null);
             suppressActionsAfterWrite(mapping.getRepoBUrl(), null);
             prMappingRepository.save(PrMapping.builder()
                     .mappingId(mapping.getId())
@@ -2498,36 +2530,36 @@ public class PullRequestSyncService {
         if (pm == null) {
             return;
         }
-        PairSide origin = PairSide.fromString(pm.getOriginSide());
-        if (origin == null) {
-            origin = PairSide.A;
-        }
-        boolean inboundIsOrigin = inbound == origin;
-        if (inboundIsOrigin) {
-            if (origin == PairSide.A && pm.getTargetPrNumber() != null) {
-                scmProviderFacade.getAdapterForUrl(mapping.getRepoBUrl())
-                        .closePullRequest(targetFullName, pm.getTargetPrNumber());
-                if (pm.isForkPrHead() && pm.getHeadBranch() != null
-                        && !pm.getHeadBranch().startsWith(FORK_OBJECT_REF_PREFIX)
-                        && !pm.getHeadBranch().startsWith("refs/")) {
-                    deleteReplicaHead(mapping, mapping.getRepoBUrl(), mapping.getTokenB(), "target", pm.getHeadBranch());
-                }
-            } else if (origin == PairSide.B && pm.getSourcePrNumber() != null) {
-                scmProviderFacade.getAdapterForUrl(mapping.getRepoAUrl())
-                        .closePullRequest(sourceFullName, pm.getSourcePrNumber());
-                if (pm.isForkPrHead() && pm.getHeadBranch() != null
-                        && !pm.getHeadBranch().startsWith(FORK_OBJECT_REF_PREFIX)
-                        && !pm.getHeadBranch().startsWith("refs/")) {
-                    deleteReplicaHead(mapping, mapping.getRepoAUrl(), mapping.getTokenA(), "source", pm.getHeadBranch());
-                }
+        if (inbound == PairSide.B && pm.getSourcePrNumber() != null) {
+            noteClosedPullRequest(mapping.getRepoAUrl(), pm.getSourcePrNumber());
+            scmProviderFacade.getAdapterForUrl(mapping.getRepoAUrl())
+                    .closePullRequest(sourceFullName, pm.getSourcePrNumber());
+        } else if (inbound != PairSide.B && pm.getTargetPrNumber() != null) {
+            noteClosedPullRequest(mapping.getRepoBUrl(), pm.getTargetPrNumber());
+            scmProviderFacade.getAdapterForUrl(mapping.getRepoBUrl())
+                    .closePullRequest(targetFullName, pm.getTargetPrNumber());
+            if (pm.isForkPrHead() && pm.getHeadBranch() != null
+                    && !pm.getHeadBranch().startsWith(FORK_OBJECT_REF_PREFIX)
+                    && !pm.getHeadBranch().startsWith("refs/")) {
+                deleteReplicaHead(mapping, mapping.getRepoBUrl(), mapping.getTokenB(), "target", pm.getHeadBranch());
             }
-        } else {
-            log.info("Replica PR close on mapping {} PR #{} — origin {} is unchanged",
-                    mapping.getId(), eventPrNumber, origin);
         }
+        String inboundRepo = inbound == PairSide.B ? mapping.getRepoBUrl() : mapping.getRepoAUrl();
+        noteClosedPullRequest(inboundRepo, eventPrNumber);
         pm.setState("closed");
         pm.setUpdatedAt(Instant.now());
         prMappingRepository.save(pm);
+    }
+
+    private static String shaText(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+        String text = node.asText(null);
+        if (text == null || text.isBlank() || "null".equalsIgnoreCase(text)) {
+            return null;
+        }
+        return text.trim();
     }
 
     private Optional<PrMapping> findExistingPr(String mappingId, PairSide inbound, long eventPrNumber,
@@ -2612,6 +2644,16 @@ public class PullRequestSyncService {
             return mapping.getTargetCredentialId();
         }
         return null;
+    }
+
+    /** Open pull requests are the pair page. Closed and merged rows stay in history. */
+    static boolean isOpenPullRequestState(String state) {
+        if (state == null || state.isBlank()) {
+            return true;
+        }
+        String normalized = state.trim().toLowerCase();
+        return !"closed".equals(normalized) && !"merged".equals(normalized)
+                && !"declined".equals(normalized) && !"rejected".equals(normalized);
     }
 
     static boolean isOpenAction(String action) {

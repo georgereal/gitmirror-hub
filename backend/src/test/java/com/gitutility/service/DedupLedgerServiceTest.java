@@ -2,7 +2,6 @@ package com.gitutility.service;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -13,7 +12,6 @@ class DedupLedgerServiceTest {
     @BeforeEach
     void setUp() {
         dedupLedgerService = new DedupLedgerService();
-        ReflectionTestUtils.setField(dedupLedgerService, "ledgerTtlSeconds", 600L);
     }
 
     @Test
@@ -56,5 +54,22 @@ class DedupLedgerServiceTest {
         assertTrue(dedupLedgerService.isSystemGeneratedRefDelete(
                 "https://github.com/acme/mirror-dest", "add-repocloud-deploy-button"));
         assertFalse(dedupLedgerService.isSystemGeneratedRefDelete(dest, "refs/heads/other"));
+    }
+
+    @Test
+    void refTipAndPullRequestActionAreDistinctFromABlanketPrNumber() {
+        String dest = "https://github.com/acme/mirror-dest.git";
+        dedupLedgerService.recordRefTip(dest, "refs/heads/main", "7bceb28");
+        assertTrue(dedupLedgerService.isEchoPush(dest, "refs/heads/main", "7bceb28"));
+        assertFalse(dedupLedgerService.isEchoPush(dest, "refs/heads/main", "05b3b4d"));
+        assertEquals("7bceb28", dedupLedgerService.refTip("https://github.com/acme/mirror-dest", "main"));
+
+        dedupLedgerService.recordPullRequestOpened(dest, 1, "1379233");
+        assertTrue(dedupLedgerService.isEchoPullRequest(dest, 1, "opened", "1379233", null, false));
+        assertFalse(dedupLedgerService.isEchoPullRequest(
+                dest, 1, "closed", "1379233", "05b3b4d", true));
+
+        dedupLedgerService.recordPullRequestClosed(dest, 1);
+        assertTrue(dedupLedgerService.isEchoPullRequest(dest, 1, "closed", null, null, false));
     }
 }

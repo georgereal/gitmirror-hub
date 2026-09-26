@@ -66,6 +66,8 @@ class WebhookControllerTest {
                 pullRequestSyncService,
                 releaseAndStatusSyncService,
                 unmappedWebhookEventRepository,
+                mock(com.gitutility.service.UnmappedWebhookRetention.class),
+                mock(com.gitutility.service.SystemEngineConfigService.class),
                 refOriginService,
                 new com.gitutility.service.RefInterestPolicy("agents/,dependabot/", 45_000L, true),
                 null

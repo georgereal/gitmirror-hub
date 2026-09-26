@@ -7,6 +7,7 @@ import com.gitutility.model.dto.TestConnectionRequest;
 import com.gitutility.model.dto.CreateRepoRequest;
 import com.gitutility.model.dto.GitHubRepoOption;
 import com.gitutility.model.entity.RepoMapping;
+import com.gitutility.model.entity.SyncConflict;
 import com.gitutility.model.entity.SyncJob;
 import com.gitutility.model.entity.SyncAuditLog;
 import com.gitutility.model.enums.ConflictKind;
@@ -58,6 +59,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -207,6 +209,8 @@ public class GitSyncEngine {
         public SyncPipelineState pipeline;
         public String sourceTipFingerprint;
         public String destTipFingerprint;
+        /** Branch refs whose destination tip already contains the source tip. */
+        public List<String> adoptDestRefs = new ArrayList<>();
         public java.util.Set<String> lfsScannedTipOids;
     }
 
@@ -307,8 +311,17 @@ public class GitSyncEngine {
         String jobId = event.getJobId();
         SyncResult result = new SyncResult();
 
-        logAudit(jobId, LogLevel.INFO, "Starting Git mirror sync for pair: " + event.getPairName() +
-                " from " + maskUrl(event.getSourceRepoUrl()) + " to " + maskUrl(event.getTargetRepoUrl()));
+        String eventRef = eventRefLabel(event);
+        boolean incrementalRef = !SyncLaneRouter.isFullMirror(event) && eventRef != null;
+        if (incrementalRef) {
+            logAudit(jobId, LogLevel.INFO, "Starting incremental sync of " + eventRef
+                    + " for pair: " + event.getPairName()
+                    + " from " + maskUrl(event.getSourceRepoUrl())
+                    + " to " + maskUrl(event.getTargetRepoUrl()));
+        } else {
+            logAudit(jobId, LogLevel.INFO, "Starting Git mirror sync for pair: " + event.getPairName() +
+                    " from " + maskUrl(event.getSourceRepoUrl()) + " to " + maskUrl(event.getTargetRepoUrl()));
+        }
         if (actionsTriggerSuppressionService != null) {
             actionsTriggerSuppressionService.beginJob(jobId);
         }
@@ -566,6 +579,13 @@ public class GitSyncEngine {
                         ? "Skipping source pack fetch; tips unchanged — comparing local tips to destination."
                         : "Skipping source fetch; local packs exist and "
                         + alreadyPushed.size() + " ref(s) were already pushed. Resuming remaining push batches.");
+            } else if (incrementalSourceBranchDeleted(event)) {
+                dropLocalHead(git, event.getRef());
+                pipeline.markDone(SyncPipelineState.FETCH_SOURCE, "Source branch deleted");
+                persistPipeline(jobId, pipeline, null);
+                broadcastPipeline(jobId, event.getMappingId(), pipeline);
+                logAudit(jobId, LogLevel.INFO, "Source no longer has '" + event.getRef()
+                        + "'. Deleting that branch on the destination.");
             } else {
                 pipeline.markCurrent(SyncPipelineState.FETCH_SOURCE);
                 broadcastPipeline(jobId, event.getMappingId(), pipeline);
@@ -584,7 +604,9 @@ public class GitSyncEngine {
                         () -> touchRunningDuration(jobId)
                 );
                 fetchMonitor.setCancelCheck(() -> isStopRequested(jobId));
-                logAudit(jobId, LogLevel.INFO, "Source fetch · " + sourceLabel + ": Fetching latest refs from source repository"
+                logAudit(jobId, LogLevel.INFO, incrementalRef
+                        ? "Source fetch · " + sourceLabel + ": Fetching " + eventRef + "."
+                        : "Source fetch · " + sourceLabel + ": Fetching latest refs from source repository"
                         + (includePullHeads ? " (including PR heads)..." : " (heads/tags/notes; PR heads omitted)..."));
                 try {
                     java.util.List<String> sourceFailedFetchRefs = new ArrayList<>();
@@ -615,6 +637,13 @@ public class GitSyncEngine {
                     if (isSimulationOrTestUrl(event.getSourceRepoUrl())) {
                         pipeline.markSkipped(SyncPipelineState.FETCH_SOURCE, "Simulated source");
                         logAudit(jobId, LogLevel.WARN, "Simulated repository URL detected (" + event.getSourceRepoUrl() + "). Proceeding in demo mirror mode.");
+                    } else if (!SyncLaneRouter.isFullMirror(event) && remoteLacksRef(e, event.getRef())) {
+                        dropLocalHead(git, event.getRef());
+                        pipeline.markDone(SyncPipelineState.FETCH_SOURCE, "Source branch deleted");
+                        persistPipeline(jobId, pipeline, null);
+                        broadcastPipeline(jobId, event.getMappingId(), pipeline);
+                        logAudit(jobId, LogLevel.INFO, "Source no longer has '" + event.getRef()
+                                + "'. Deleting that branch on the destination.");
                     } else {
                         pipeline.markFailed(SyncPipelineState.FETCH_SOURCE, e.getMessage());
                         persistPipeline(jobId, pipeline, null);
@@ -670,6 +699,10 @@ public class GitSyncEngine {
                                 .call();
                         destAdvertised = advertisedDestTips(advertised);
                         destAdsOk = true;
+                        if (isFullMirror) {
+                            reconcileBranchesDestinationNoLongerHas(
+                                    git, mapping, event, destAdvertised, jobId);
+                        }
                         int advertisedHeads = 0;
                         int advertisedTags = 0;
                         for (String name : destAdvertised.keySet()) {
@@ -692,11 +725,26 @@ public class GitSyncEngine {
                             if (advertisedTags > 0) {
                                 result.destTagsCount = Math.max(result.destTagsCount, advertisedTags);
                             }
+                            if (incrementalRef) {
+                                String shown = event.getBranch() != null && !event.getBranch().isBlank()
+                                        ? event.getBranch() : eventRef;
+                                logAudit(jobId, LogLevel.INFO, "Inspect destination · " + destLabel
+                                        + ": " + eventRef + " matches the destination tip. Skipping dest pack fetch.");
+                                pipeline.markDone(SyncPipelineState.INSPECT_DEST, shown + " matches destination");
+                            } else {
+                                logAudit(jobId, LogLevel.INFO, "Inspect destination · " + destLabel
+                                        + ": destination advertises " + advertisedHeads + " branch tip(s) and "
+                                        + advertisedTags + " tag(s) matching local tracking — skipping dest pack fetch.");
+                                pipeline.markDone(SyncPipelineState.INSPECT_DEST,
+                                        advertisedHeads + " heads match tracking");
+                            }
+                            broadcastPipeline(jobId, event.getMappingId(), pipeline);
+                        } else if (incrementalRef) {
                             logAudit(jobId, LogLevel.INFO, "Inspect destination · " + destLabel
-                                    + ": destination advertises " + advertisedHeads + " branch tip(s) and "
-                                    + advertisedTags + " tag(s) matching local tracking — skipping dest pack fetch.");
-                            pipeline.markDone(SyncPipelineState.INSPECT_DEST,
-                                    advertisedHeads + " heads match tracking");
+                                    + ": checking " + eventRef + " against the destination"
+                                    + (destProbe.differ() ? " (" + destProbe.summary() + ")" : "")
+                                    + ".");
+                            pipeline.markCurrent(SyncPipelineState.INSPECT_DEST, "checking " + eventRef);
                             broadcastPipeline(jobId, event.getMappingId(), pipeline);
                         } else {
                             logAudit(jobId, LogLevel.INFO, "Inspect destination · " + destLabel
@@ -804,7 +852,7 @@ public class GitSyncEngine {
             if (isFullMirror) {
                 int localBranches;
                 try {
-                    localBranches = BareRepoHousekeeping.listHeadBranchNames(git.getRepository()).size();
+                    localBranches = BareRepoHousekeeping.listSourceHeadBranchNames(git.getRepository()).size();
                 } catch (Exception e) {
                     localBranches = 0;
                 }
@@ -827,16 +875,16 @@ public class GitSyncEngine {
                 Ref remoteTargetRef = branchName != null ? git.getRepository().exactRef("refs/remotes/target/" + branchName) : null;
                 PairSide sourceSide = sourceSideOf(mapping, event);
 
-                if (shouldOmitHead(mapping, event, localRefName != null ? localRefName : branchName)) {
+                if (shouldOmitHead(mapping, event, localRefName != null ? localRefName : branchName, tipOf(localRef))) {
                     logAudit(jobId, LogLevel.INFO, "Omitting reverse-sync of '" + branchName
-                            + "' (synthetic fork-PR head or replica of a ref originated on the other side).");
+                            + "' (synthetic fork-PR head, or this tip was already written by this mirror).");
                     result.updatedRefs.add("Ref " + (localRefName != null ? localRefName : "refs/heads/" + branchName)
                             + " -> SKIPPED (origin/fork policy)");
                 } else if (localRef == null) {
                     // Ref does not exist on source (e.g. branch was deleted or merged)
                     boolean propagate = refOriginService == null
                             || mapping == null
-                            || refOriginService.shouldPropagateDelete(mapping, sourceSide,
+                            || refOriginService.shouldPropagateInboundDelete(mapping, sourceSide,
                                     localRefName != null ? localRefName : branchName);
                     if (targetReachable && remoteTargetRef != null && propagate) {
                         logAudit(jobId, LogLevel.INFO, "Source branch '" + branchName + "' was deleted on source; pushing deletion to destination.");
@@ -877,16 +925,26 @@ public class GitSyncEngine {
             if (runPush) {
             pipeline.markCurrent(SyncPipelineState.PUSH_DEST);
             broadcastPipeline(jobId, event.getMappingId(), pipeline);
-            logAudit(jobId, LogLevel.INFO, "Destination push · " + destLabel + ": Pushing mirrored refs to target repository...");
             try {
                 if (pushRefSpecs.isEmpty()) {
-                    pipeline.markDone(SyncPipelineState.PUSH_DEST, "Nothing to push");
-                    logAudit(jobId, LogLevel.INFO, "Nothing to push — no refs require an update on the destination.");
+                    if (incrementalRef) {
+                        String shown = event.getBranch() != null && !event.getBranch().isBlank()
+                                ? event.getBranch() : eventRef;
+                        pipeline.markDone(SyncPipelineState.PUSH_DEST, shown + " already on destination");
+                        logAudit(jobId, LogLevel.INFO, "Nothing to push — '" + shown
+                                + "' is already on the destination.");
+                    } else {
+                        pipeline.markDone(SyncPipelineState.PUSH_DEST, "Nothing to push");
+                        logAudit(jobId, LogLevel.INFO, "Nothing to push — no refs require an update on the destination.");
+                    }
                 } else if (isSimulationOrTestUrl(event.getTargetRepoUrl())) {
                     pipeline.markSkipped(SyncPipelineState.PUSH_DEST, "Simulated target");
                     logAudit(jobId, LogLevel.WARN, "Simulated target repository URL detected (" + event.getTargetRepoUrl() + "). Completed simulated push.");
                     result.updatedRefs.add("Ref " + (event.getRef() != null ? event.getRef() : "refs/heads/main") + " -> OK (Simulated)");
                 } else {
+                    logAudit(jobId, LogLevel.INFO, incrementalRef
+                            ? "Destination push · " + destLabel + ": Pushing " + eventRef + "."
+                            : "Destination push · " + destLabel + ": Pushing mirrored refs to target repository...");
                     LiveGitProgressMonitor pushMonitor = new LiveGitProgressMonitor(
                             jobId, event.getMappingId(), "push", "destination", destLabel,
                             webSocketNotificationService,
@@ -989,7 +1047,11 @@ public class GitSyncEngine {
                 if (isFullMirror && event.getMappingId() != null) {
                     syncCheckpointService.persistStage(event.getMappingId(), SyncCheckpointStage.PUSH_DONE);
                 }
-                persistAndOpenConflicts(result, mapping, event);
+                try {
+                    adoptDestinationAhead(git, event, mapping, result, jobId);
+                } finally {
+                    persistAndOpenConflicts(result, mapping, event);
+                }
             } catch (Exception e) {
                 rethrowIfStopRequested(jobId, e);
                 if (isSimulationOrTestUrl(event.getTargetRepoUrl())) {
@@ -1023,7 +1085,11 @@ public class GitSyncEngine {
             // 6. Fallback: record the triggering job SHA if no per-ref ledger writes happened
             if (event.getAfterSha() != null && !event.getAfterSha().isBlank()
                     && !RefOriginService.isDeletedSha(event.getAfterSha())) {
-                dedupLedgerService.recordSystemPush(event.getTargetRepoUrl(), event.getAfterSha());
+                if (event.getRef() != null && !event.getRef().isBlank()) {
+                    dedupLedgerService.recordRefTip(event.getTargetRepoUrl(), event.getRef(), event.getAfterSha());
+                } else {
+                    dedupLedgerService.recordSystemPush(event.getTargetRepoUrl(), event.getAfterSha());
+                }
             }
 
             syncSucceeded = true;
@@ -1032,7 +1098,13 @@ public class GitSyncEngine {
             int bCount = 0;
             int tCount = 0;
             fillPairRefCounts(git, result);
-            if (result.sourceBranchesCount > 0) {
+            if (incrementalRef) {
+                if (eventRef.startsWith("refs/tags/")) {
+                    tCount = 1;
+                } else {
+                    bCount = 1;
+                }
+            } else if (result.sourceBranchesCount > 0) {
                 bCount = result.sourceBranchesCount;
             } else {
                 for (String refMsg : result.updatedRefs) {
@@ -1045,9 +1117,9 @@ public class GitSyncEngine {
                     } catch (Exception ignored) {}
                 }
             }
-            if (result.sourceTagsCount > 0) {
+            if (!incrementalRef && result.sourceTagsCount > 0) {
                 tCount = result.sourceTagsCount;
-            } else if (tCount == 0) {
+            } else if (!incrementalRef && tCount == 0) {
                 try {
                     tCount = BareRepoHousekeeping.listPairRefNames(git.getRepository()).sourceTags().size();
                 } catch (Exception ignored) {}
@@ -1065,6 +1137,9 @@ public class GitSyncEngine {
             if (isFullMirror && !isSimulationOrTestUrl(event.getTargetRepoUrl())) {
                 persistCompletedPushRefs(event.getMappingId(), Map.of(), stageProgress);
             }
+            if (isFullMirror) {
+                reconcileStaleConflicts(git, mapping, event, result, jobId);
+            }
 
             pipeline.markCurrent(SyncPipelineState.PR_METADATA, "Git mirror complete");
             result.durationMs = System.currentTimeMillis() - startTime;
@@ -1074,6 +1149,10 @@ public class GitSyncEngine {
             String volume = formatTransferVolume(wireMeter.gitWireBytes(), result.lfsBytes, result.objectsReceived);
             if (result.conflictIsolated) {
                 result.message = conflictSummaryMessage(result);
+            } else if (incrementalRef) {
+                result.message = "Incremental sync of " + eventRef + " finished (" + volume + ") in "
+                        + result.durationMs + "ms"
+                        + ("PUBLIC".equals(result.sourceAccessMode) ? " (public source)" : "");
             } else {
                 result.message = "Git object mirror finished (" + volume + ", " + result.branchesCount + " branches, "
                         + result.tagsCount + " tags) in " + result.durationMs + "ms"
@@ -1521,13 +1600,19 @@ public class GitSyncEngine {
         public String destSha;
         public TrunkConflictPolicy policy;
         public TrunkPushAction action;
+        /** Repo whose tip was left in place. The conflict PR opens here. */
+        public String keptRepoUrl;
     }
 
     public enum TrunkPushAction {
         PUSH,
         FORCE,
         ISOLATE,
-        SKIP
+        SKIP,
+        /** Tips are equal. Nothing to push and no conflict pull request. */
+        NO_PUSH,
+        /** Destination tip already contains the source tip. Fast-forward the source; do not isolate. */
+        ADOPT_DEST
     }
 
     /**
@@ -1540,8 +1625,21 @@ public class GitSyncEngine {
 
     static TrunkPushAction decideTrunkPush(boolean isFastForward, boolean overwriteFromSource,
                                            TrunkConflictPolicy policy) {
+        return decideTrunkPush(isFastForward, false, overwriteFromSource, policy, false);
+    }
+
+    /**
+     * {@code destContainsSource} means the destination tip is a fast-forward of the source tip.
+     * On a bidirectional pair that is the destination's new work, not a conflict.
+     */
+    static TrunkPushAction decideTrunkPush(boolean isFastForward, boolean destContainsSource,
+                                           boolean overwriteFromSource, TrunkConflictPolicy policy,
+                                           boolean bidirectional) {
         if (isFastForward) {
             return TrunkPushAction.PUSH;
+        }
+        if (destContainsSource && bidirectional && !overwriteFromSource) {
+            return TrunkPushAction.ADOPT_DEST;
         }
         if (overwriteFromSource) {
             return TrunkPushAction.FORCE;
@@ -1552,6 +1650,43 @@ public class GitSyncEngine {
             case FAIL_JOB -> TrunkPushAction.SKIP;
             case ISOLATE -> TrunkPushAction.ISOLATE;
         };
+    }
+
+    /**
+     * One decision for every branch. {@code incomingContainsCurrent} is a fast-forward onto the
+     * side being updated. {@code currentContainsIncoming} means that side is strictly ahead.
+     * {@code beforeMatchesCurrentTip} is the webhook previous SHA equaling that tip.
+     * Neither history containing the other isolates.
+     */
+    static TrunkPushAction decideAncestryUpdate(boolean sameTip, boolean incomingContainsCurrent,
+                                                boolean currentContainsIncoming, boolean beforeMatchesCurrentTip,
+                                                boolean overwriteFromSource, TrunkConflictPolicy policy,
+                                                boolean bidirectional) {
+        if (sameTip) {
+            return TrunkPushAction.NO_PUSH;
+        }
+        if (beforeMatchesCurrentTip && incomingContainsCurrent) {
+            return TrunkPushAction.PUSH;
+        }
+        return decideTrunkPush(incomingContainsCurrent, currentContainsIncoming, overwriteFromSource, policy, bidirectional);
+    }
+
+    static boolean beforeMatchesTip(String beforeSha, String currentTip) {
+        if (beforeSha == null || beforeSha.isBlank() || currentTip == null || currentTip.isBlank()) {
+            return false;
+        }
+        if (RefOriginService.isDeletedSha(beforeSha)) {
+            return false;
+        }
+        return beforeSha.equalsIgnoreCase(currentTip);
+    }
+
+    /** Conflict PRs open only for a real isolate, on the repo whose tip was kept. */
+    static String repoForConflictPr(String pushTargetRepo, String sourceRepo, boolean keptOnSource) {
+        if (keptOnSource && sourceRepo != null && !sourceRepo.isBlank()) {
+            return sourceRepo;
+        }
+        return pushTargetRepo;
     }
 
     static TrunkConflictPolicy policyOf(RepoMapping mapping) {
@@ -1727,6 +1862,55 @@ public class GitSyncEngine {
         return sourceFetchRefSpecs(event, true);
     }
 
+    /** Ref this job is about. Full mirrors return null. */
+    private static String eventRefLabel(SyncEventMessage event) {
+        if (event == null || SyncLaneRouter.isFullMirror(event)) {
+            return null;
+        }
+        if (event.getRef() != null && !event.getRef().isBlank()) {
+            return event.getRef();
+        }
+        if (event.getBranch() != null && !event.getBranch().isBlank()) {
+            return event.getBranch().startsWith("refs/") ? event.getBranch() : "refs/heads/" + event.getBranch();
+        }
+        return null;
+    }
+
+    static boolean incrementalSourceBranchDeleted(SyncEventMessage event) {
+        return event != null
+                && !SyncLaneRouter.isFullMirror(event)
+                && RefOriginService.isDeletedSha(event.getAfterSha());
+    }
+
+    /** JGit throws this when an incremental fetch names a branch the remote has already deleted. */
+    static boolean remoteLacksRef(Throwable error, String ref) {
+        if (ref == null || ref.isBlank()) {
+            return false;
+        }
+        Throwable current = error;
+        while (current != null) {
+            String message = current.getMessage();
+            if (message != null && message.contains("does not have " + ref) && message.contains("available for fetch")) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private static void dropLocalHead(Git git, String ref) {
+        if (git == null || ref == null || !ref.startsWith("refs/")) {
+            return;
+        }
+        try {
+            RefUpdate update = git.getRepository().updateRef(ref);
+            update.setForceUpdate(true);
+            update.delete();
+        } catch (Exception e) {
+            log.debug("Could not drop local {} after source delete: {}", ref, e.getMessage());
+        }
+    }
+
     static RefSpec[] sourceFetchRefSpecs(SyncEventMessage event, boolean includePullHeads) {
         if (event != null && !SyncLaneRouter.isFullMirror(event)) {
             String ref = event.getRef();
@@ -1795,7 +1979,7 @@ public class GitSyncEngine {
                                                   RepoMapping mapping, SyncEventMessage event, SyncResult result,
                                                   ThrottledAuditProgress progress) throws Exception {
         Repository repo = git.getRepository();
-        List<String> headNames = new ArrayList<>(BareRepoHousekeeping.listHeadBranchNames(repo));
+        List<String> headNames = new ArrayList<>(BareRepoHousekeeping.listSourceHeadBranchNames(repo));
         headNames.sort(Comparator.comparingInt(name -> defaultBranchSortKey("refs/heads/" + name)));
 
         List<RefSpec> specs = new ArrayList<>();
@@ -1808,12 +1992,12 @@ public class GitSyncEngine {
                         + " · " + specs.size() + " need push · " + skipped + " already matched");
             }
             String refName = "refs/heads/" + branch;
-            if (shouldOmitHead(mapping, event, refName)) {
+            Ref ref = repo.exactRef(refName);
+            if (ref == null || ref.getObjectId() == null) {
                 skipped++;
                 continue;
             }
-            Ref ref = repo.exactRef(refName);
-            if (ref == null || ref.getObjectId() == null) {
+            if (shouldOmitHead(mapping, event, refName, ObjectId.toString(ref.getObjectId()))) {
                 skipped++;
                 continue;
             }
@@ -1867,12 +2051,90 @@ public class GitSyncEngine {
         return specs;
     }
 
-    private boolean shouldOmitHead(RepoMapping mapping, SyncEventMessage event, String branchOrRef) {
+    /**
+     * Destination advertisement is the live branch list. A tracked tip the destination no longer
+     * advertises was deleted there. A branch that started on the destination is removed from the
+     * source. A branch that started on the source has its stale tracking dropped so the push puts
+     * it back.
+     */
+    private void reconcileBranchesDestinationNoLongerHas(Git git, RepoMapping mapping, SyncEventMessage event,
+                                                         Map<String, String> destAdvertised, String jobId) {
+        if (git == null || destAdvertised == null) {
+            return;
+        }
+        Set<String> missing = branchNamesMissingFromAdvertisement(destHeadBranchNames(git), destAdvertised);
+        if (missing.isEmpty()) {
+            return;
+        }
+        boolean bidirectional = mapping != null && mapping.getSyncDirection() == SyncDirection.BIDIRECTIONAL;
+        PairSide destSide = mapping != null ? destSideOf(mapping, event) : null;
+        for (String branch : missing) {
+            String ref = "refs/heads/" + branch;
+            boolean removeFromSource = bidirectional
+                    && refOriginService != null
+                    && mapping != null
+                    && refOriginService.shouldPropagateDelete(mapping, destSide, ref)
+                    && exactHeadExists(git, ref);
+            if (removeFromSource) {
+                logAudit(jobId, LogLevel.INFO, "Destination no longer has '" + ref
+                        + "', and that branch started there. Removing it from the source.");
+                if (!deleteRemoteBranch(git, event, event.getSourceRepoUrl(), "source", branch, false, jobId,
+                        "branch deleted on the other side")) {
+                    continue;
+                }
+            } else {
+                logAudit(jobId, LogLevel.INFO, "Destination no longer has '" + ref
+                        + "'. Clearing stale destination tracking so the source copy is pushed back.");
+            }
+            deleteDestTrackingForRemoteRef(git, ref);
+        }
+    }
+
+    private static boolean exactHeadExists(Git git, String ref) {
+        try {
+            Ref head = git.getRepository().exactRef(ref);
+            return head != null && head.getObjectId() != null;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Branch names whose {@code refs/heads/} tip is absent from a live advertisement. */
+    static Set<String> branchNamesMissingFromAdvertisement(Collection<String> trackedBranches,
+                                                           Map<String, String> advertisedTips) {
+        Set<String> missing = new TreeSet<>();
+        if (trackedBranches == null) {
+            return missing;
+        }
+        for (String branch : trackedBranches) {
+            if (branch == null || branch.isBlank()) {
+                continue;
+            }
+            String key = branch.startsWith("refs/heads/") ? branch : "refs/heads/" + branch;
+            if (advertisedTips == null || !advertisedTips.containsKey(key)) {
+                missing.add(branch.startsWith("refs/heads/") ? branch.substring("refs/heads/".length()) : branch);
+            }
+        }
+        return missing;
+    }
+
+    private boolean shouldOmitHead(RepoMapping mapping, SyncEventMessage event, String branchOrRef, String tipSha) {
         if (mapping == null || refOriginService == null || branchOrRef == null) {
             return false;
         }
+        String recorded = null;
+        if (dedupLedgerService != null && event != null) {
+            recorded = dedupLedgerService.refTip(event.getTargetRepoUrl(), branchOrRef);
+        }
         return refOriginService.shouldOmitHeadPush(
-                mapping, sourceSideOf(mapping, event), destSideOf(mapping, event), branchOrRef);
+                mapping, sourceSideOf(mapping, event), destSideOf(mapping, event), branchOrRef, tipSha, recorded);
+    }
+
+    private static String tipOf(Ref ref) {
+        if (ref == null || ref.getObjectId() == null) {
+            return null;
+        }
+        return ObjectId.toString(ref.getObjectId());
     }
 
     private static PairSide sourceSideOf(RepoMapping mapping, SyncEventMessage event) {
@@ -1888,7 +2150,7 @@ public class GitSyncEngine {
     private Set<String> localHeadBranchNames(Git git) {
         Set<String> names = new HashSet<>();
         try {
-            names.addAll(BareRepoHousekeeping.listHeadBranchNames(git.getRepository()));
+            names.addAll(BareRepoHousekeeping.listSourceHeadBranchNames(git.getRepository()));
         } catch (Exception e) {
             log.debug("Could not list local heads: {}", e.getMessage());
         }
@@ -2054,19 +2316,36 @@ public class GitSyncEngine {
             return null;
         }
         boolean fastForward = false;
+        boolean destContainsSource = false;
         try (RevWalk revWalk = new RevWalk(git.getRepository())) {
             RevCommit localCommit = revWalk.parseCommit(localId);
             RevCommit remoteCommit = revWalk.parseCommit(destId);
             fastForward = revWalk.isMergedInto(remoteCommit, localCommit);
+            destContainsSource = revWalk.isMergedInto(localCommit, remoteCommit);
         } catch (Exception ex) {
             logAudit(jobId, LogLevel.WARN, "Could not compute RevWalk fast-forward ancestor: " + ex.getMessage());
             return new RefSpec("+" + localRefName + ":" + localRefName);
         }
         TrunkConflictPolicy policy = policyOf(mapping);
-        boolean overwrite = (event != null && event.isOverwriteFromSource()) || isUnidirectional(mapping);
-        TrunkPushAction action = decideTrunkPush(fastForward, overwrite, policy);
+        boolean trunk = isTrunkBranch(branchName);
+        boolean overwrite = trunk && ((event != null && event.isOverwriteFromSource()) || isUnidirectional(mapping));
+        TrunkConflictPolicy effective = trunk ? policy : TrunkConflictPolicy.ISOLATE;
+        boolean bidirectional = mapping != null && mapping.getSyncDirection() == SyncDirection.BIDIRECTIONAL;
         String sourceSha = ObjectId.toString(localId);
         String destSha = ObjectId.toString(destId);
+        boolean beforeMatches = event != null && beforeMatchesTip(event.getBeforeSha(), destSha);
+        TrunkPushAction action = decideAncestryUpdate(
+                false, fastForward, destContainsSource, beforeMatches, overwrite, effective, bidirectional);
+        if (action == TrunkPushAction.NO_PUSH) {
+            return null;
+        }
+        if (action == TrunkPushAction.ADOPT_DEST) {
+            result.adoptDestRefs.add(localRefName);
+            logAudit(jobId, LogLevel.INFO, String.format(
+                    "Destination '%s' (%s) already contains source (%s). Fast-forwarding source; not a conflict.",
+                    branchName, destSha.substring(0, 7), sourceSha.substring(0, 7)));
+            return null;
+        }
         if (action == TrunkPushAction.PUSH) {
             return new RefSpec("+" + localRefName + ":" + localRefName);
         }
@@ -2082,7 +2361,7 @@ public class GitSyncEngine {
             iso.originalRef = localRefName;
             iso.sourceSha = sourceSha;
             iso.destSha = destSha;
-            iso.policy = policy;
+            iso.policy = effective;
             iso.action = TrunkPushAction.FORCE;
             result.isolatedRefs.add(iso);
             return new RefSpec("+" + localRefName + ":" + localRefName);
@@ -2093,7 +2372,7 @@ public class GitSyncEngine {
             iso.originalRef = localRefName;
             iso.sourceSha = sourceSha;
             iso.destSha = destSha;
-            iso.policy = policy;
+            iso.policy = effective;
             iso.action = TrunkPushAction.SKIP;
             result.conflictIsolated = true;
             result.isolatedRefs.add(iso);
@@ -2110,17 +2389,351 @@ public class GitSyncEngine {
         iso.isolatedBranch = conflictBranch;
         iso.sourceSha = sourceSha;
         iso.destSha = destSha;
-        iso.policy = policy;
+        iso.policy = effective;
         iso.action = TrunkPushAction.ISOLATE;
+        iso.keptRepoUrl = repoForConflictPr(
+                event != null ? event.getTargetRepoUrl() : null,
+                event != null ? event.getSourceRepoUrl() : null,
+                false);
         result.conflictIsolated = true;
         result.isolatedBranch = conflictBranch;
         result.isolatedRefs.add(iso);
         logAudit(jobId, LogLevel.WARN, String.format(
-                "DIVERGENCE DETECTED on trunk branch '%s'! Remote commit (%s) is not ancestor of local commit (%s). "
-                        + "Pushing non-destructively to isolated branch '%s' to prevent data loss.",
-                branchName, destSha.substring(0, 7), sourceSha.substring(0, 7), conflictBranch
+                "DIVERGENCE DETECTED on '%s'! Neither tip contains the other (incoming %s, kept %s). "
+                        + "Pushing the incoming tip to isolated branch '%s'.",
+                branchName, sourceSha.substring(0, 7), destSha.substring(0, 7), conflictBranch
         ));
         return new RefSpec("+" + localRefName + ":refs/heads/" + conflictBranch);
+    }
+
+    /**
+     * Destination tip already contains the source tip. Push that tip back onto the source
+     * ref so a merge made on the mirror lands on the origin. Histories that diverged
+     * (neither tip contains the other) never reach this path.
+     */
+    private void adoptDestinationAhead(Git git, SyncEventMessage event, RepoMapping mapping,
+                                       SyncResult result, String jobId) throws Exception {
+        if (git == null || event == null || result == null || result.adoptDestRefs == null
+                || result.adoptDestRefs.isEmpty()) {
+            return;
+        }
+        if (isSimulationOrTestUrl(event.getSourceRepoUrl())) {
+            logAudit(jobId, LogLevel.INFO, "Simulated source; skipping fast-forward of "
+                    + result.adoptDestRefs.size() + " destination-ahead ref(s).");
+            return;
+        }
+        List<RefSpec> specs = new ArrayList<>();
+        for (String refName : result.adoptDestRefs) {
+            if (refName == null || !refName.startsWith("refs/heads/")) {
+                continue;
+            }
+            String branch = refName.substring("refs/heads/".length());
+            Ref dest = git.getRepository().exactRef("refs/remotes/target/" + branch);
+            if (dest == null || dest.getObjectId() == null) {
+                logAudit(jobId, LogLevel.WARN, "Cannot fast-forward '" + branch + "': destination tip is not in the local mirror.");
+                continue;
+            }
+            specs.add(new RefSpec(dest.getName() + ":" + refName));
+        }
+        if (specs.isEmpty()) {
+            return;
+        }
+        logAudit(jobId, LogLevel.INFO, "Source fast-forward · " + specs.size()
+                + " ref(s) whose destination tip already contains the source tip.");
+        CredentialsProvider creds = createCredentialsProvider(event, event.getSourceRepoUrl(), event.getTokenA());
+        Iterable<PushResult> pushResults = git.push()
+                .setRemote("source")
+                .setCredentialsProvider(creds)
+                .setRefSpecs(specs)
+                .setForce(false)
+                .setTimeout(httpTimeoutSeconds)
+                .call();
+        PushBatchResult parsed = parsePushResults(jobId, pushResults);
+        result.updatedRefs.addAll(parsed.messages);
+        if (parsed.destinationRejected) {
+            if (parsed.authFailure) {
+                throw new IllegalStateException("Source fast-forward rejected: " + parsed.rejectedMessages);
+            }
+            isolateOntoKeptSource(git, event, mapping, result, jobId);
+            return;
+        }
+        for (String refName : result.adoptDestRefs) {
+            if (refName == null || !refName.startsWith("refs/heads/")) {
+                continue;
+            }
+            String branch = refName.substring("refs/heads/".length());
+            Ref dest = git.getRepository().exactRef("refs/remotes/target/" + branch);
+            if (dest == null || dest.getObjectId() == null) {
+                continue;
+            }
+            RefUpdate update = git.getRepository().updateRef(refName);
+            update.setNewObjectId(dest.getObjectId());
+            update.setForceUpdate(true);
+            update.update();
+            if (dedupLedgerService != null) {
+                dedupLedgerService.recordRefTip(event.getSourceRepoUrl(), refName, ObjectId.toString(dest.getObjectId()));
+            }
+            logAudit(jobId, LogLevel.INFO, "Fast-forwarded source '" + branch + "' to "
+                    + ObjectId.toString(dest.getObjectId()).substring(0, 7) + ".");
+        }
+    }
+
+    /**
+     * The source fast-forward was not possible. Keep the source tip and park the destination
+     * tip on a conflict branch there, so the pull request opens on the source.
+     */
+    private void isolateOntoKeptSource(Git git, SyncEventMessage event, RepoMapping mapping,
+                                       SyncResult result, String jobId) {
+        String keptRepo = repoForConflictPr(event.getTargetRepoUrl(), event.getSourceRepoUrl(), true);
+        for (String refName : result.adoptDestRefs) {
+            if (refName == null || !refName.startsWith("refs/heads/")) {
+                continue;
+            }
+            String branch = refName.substring("refs/heads/".length());
+            Ref dest;
+            try {
+                dest = git.getRepository().exactRef("refs/remotes/target/" + branch);
+            } catch (Exception e) {
+                logAudit(jobId, LogLevel.WARN, "Could not read destination tip for '" + branch + "': " + e.getMessage());
+                continue;
+            }
+            if (dest == null || dest.getObjectId() == null) {
+                continue;
+            }
+            String conflictBranch = isolatedConflictBranch(branch, new Date());
+            try {
+                CredentialsProvider creds = createCredentialsProvider(event, event.getSourceRepoUrl(), event.getTokenA());
+                git.push()
+                        .setRemote("source")
+                        .setCredentialsProvider(creds)
+                        .setRefSpecs(new RefSpec(dest.getName() + ":refs/heads/" + conflictBranch))
+                        .setForce(false)
+                        .setTimeout(httpTimeoutSeconds)
+                        .call();
+            } catch (Exception e) {
+                logAudit(jobId, LogLevel.WARN, "Could not push isolated branch '" + conflictBranch
+                        + "' onto source: " + e.getMessage());
+            }
+            Ref local = null;
+            try {
+                local = git.getRepository().exactRef(refName);
+            } catch (Exception ignored) {
+            }
+            IsolatedRef iso = new IsolatedRef();
+            iso.kind = ConflictKind.GIT_REF;
+            iso.originalRef = refName;
+            iso.isolatedBranch = conflictBranch;
+            iso.sourceSha = local != null && local.getObjectId() != null
+                    ? ObjectId.toString(local.getObjectId()) : null;
+            iso.destSha = ObjectId.toString(dest.getObjectId());
+            iso.policy = policyOf(mapping);
+            iso.action = TrunkPushAction.ISOLATE;
+            iso.keptRepoUrl = keptRepo;
+            result.conflictIsolated = true;
+            result.isolatedBranch = conflictBranch;
+            result.isolatedRefs.add(iso);
+            logAudit(jobId, LogLevel.WARN, "Source '" + branch + "' diverged from destination "
+                    + iso.destSha.substring(0, 7) + ". Isolated onto '" + conflictBranch + "' on the source.");
+        }
+    }
+
+    /**
+     * A full sync drops a parked conflict once both sides of the original branch share a tip
+     * that already contains the isolated commit, and deletes that leftover branch.
+     */
+    private void reconcileStaleConflicts(Git git, RepoMapping mapping, SyncEventMessage event,
+                                         SyncResult result, String jobId) {
+        if (syncConflictService == null || mapping == null || mapping.getId() == null || git == null) {
+            return;
+        }
+        java.util.Set<String> justIsolated = new java.util.HashSet<>();
+        if (result != null && result.isolatedRefs != null) {
+            for (IsolatedRef iso : result.isolatedRefs) {
+                if (iso.action == TrunkPushAction.ISOLATE && iso.isolatedBranch != null) {
+                    justIsolated.add(iso.isolatedBranch);
+                }
+            }
+        }
+        List<SyncConflict> rows;
+        try {
+            rows = syncConflictService.listUnresolved(mapping.getId());
+        } catch (Exception e) {
+            logAudit(jobId, LogLevel.WARN, "Could not list conflicts to reconcile: " + e.getMessage());
+            return;
+        }
+        for (SyncConflict row : rows) {
+            if (row.getKind() != ConflictKind.GIT_REF || row.getIsolatedBranch() == null || row.getIsolatedBranch().isBlank()) {
+                continue;
+            }
+            if (justIsolated.contains(row.getIsolatedBranch())) {
+                continue;
+            }
+            boolean stale;
+            try {
+                stale = staleIsolatedConflict(git.getRepository(), row.getRefName(), row.getIsolatedBranch(), row.getSourceSha());
+            } catch (Exception e) {
+                logAudit(jobId, LogLevel.WARN, "Could not check conflict '" + row.getIsolatedBranch() + "': " + e.getMessage());
+                continue;
+            }
+            if (!stale) {
+                continue;
+            }
+            if (!deleteContainedConflictBranch(git, event, row, jobId)) {
+                continue;
+            }
+            syncConflictService.resolve(mapping.getId(), row.getId());
+            logAudit(jobId, LogLevel.INFO, "Resolved leftover conflict '" + row.getIsolatedBranch()
+                    + "' because its commits are already in '" + headBranchName(row.getRefName()) + "'.");
+        }
+    }
+
+    /**
+     * True when the original branch has the same tip on both sides and that tip already
+     * contains the parked conflict branch. A parked tip that is still unique stays open.
+     */
+    static boolean staleIsolatedConflict(org.eclipse.jgit.lib.Repository repo, String originalRef,
+                                         String isolatedBranch, String isolatedSha) throws java.io.IOException {
+        if (repo == null || originalRef == null || !originalRef.startsWith("refs/heads/")) {
+            return false;
+        }
+        Ref source = repo.exactRef(originalRef);
+        Ref dest = repo.exactRef("refs/remotes/target/" + headBranchName(originalRef));
+        if (source == null || dest == null || source.getObjectId() == null || dest.getObjectId() == null) {
+            return false;
+        }
+        if (!source.getObjectId().equals(dest.getObjectId())) {
+            return false;
+        }
+        ObjectId parked = parkedTip(repo, isolatedBranch, isolatedSha);
+        if (parked == null) {
+            return false;
+        }
+        try (RevWalk walk = new RevWalk(repo)) {
+            RevCommit parkedCommit = walk.parseCommit(parked);
+            RevCommit kept = walk.parseCommit(source.getObjectId());
+            return walk.isMergedInto(parkedCommit, kept);
+        }
+    }
+
+    private static ObjectId parkedTip(org.eclipse.jgit.lib.Repository repo, String isolatedBranch, String isolatedSha)
+            throws java.io.IOException {
+        if (isolatedBranch != null && !isolatedBranch.isBlank()) {
+            Ref onDest = repo.exactRef("refs/remotes/target/" + isolatedBranch);
+            if (onDest != null && onDest.getObjectId() != null) {
+                return onDest.getObjectId();
+            }
+            Ref onSource = repo.exactRef("refs/heads/" + isolatedBranch);
+            if (onSource != null && onSource.getObjectId() != null) {
+                return onSource.getObjectId();
+            }
+        }
+        if (isolatedSha == null || isolatedSha.isBlank() || RefOriginService.isDeletedSha(isolatedSha)) {
+            return null;
+        }
+        return repo.resolve(isolatedSha);
+    }
+
+    static String headBranchName(String ref) {
+        if (ref == null || ref.isBlank()) {
+            return null;
+        }
+        String name = ref.startsWith("refs/heads/") ? ref.substring("refs/heads/".length()) : ref;
+        return name.isBlank() ? null : name;
+    }
+
+    /** Deletes the parked branch from the repo that still has it. Already-absent refs count as cleared. */
+    private boolean deleteContainedConflictBranch(Git git, SyncEventMessage event, SyncConflict row, String jobId) {
+        String branch = row.getIsolatedBranch();
+        boolean onTarget;
+        boolean onSource;
+        try {
+            onTarget = git.getRepository().exactRef("refs/remotes/target/" + branch) != null;
+            onSource = git.getRepository().exactRef("refs/heads/" + branch) != null;
+        } catch (Exception e) {
+            logAudit(jobId, LogLevel.WARN, "Could not read parked branch '" + branch + "': " + e.getMessage());
+            return false;
+        }
+        if (!onTarget && !onSource) {
+            return true;
+        }
+        if (onTarget && !deleteRemoteBranch(git, event, event.getTargetRepoUrl(), "target", branch, true, jobId)) {
+            return false;
+        }
+        if (onSource && !deleteRemoteBranch(git, event, event.getSourceRepoUrl(), "source", branch, false, jobId)) {
+            return false;
+        }
+        return true;
+    }
+
+    private boolean deleteRemoteBranch(Git git, SyncEventMessage event, String repoUrl, String remote,
+                                       String branch, boolean destTracking, String jobId) {
+        return deleteRemoteBranch(git, event, repoUrl, remote, branch, destTracking, jobId, "parked branch");
+    }
+
+    private boolean deleteRemoteBranch(Git git, SyncEventMessage event, String repoUrl, String remote,
+                                       String branch, boolean destTracking, String jobId, String reason) {
+        String headRef = "refs/heads/" + branch;
+        if (repoUrl == null || isSimulationOrTestUrl(repoUrl)) {
+            dropLocalConflictRef(git, headRef, destTracking);
+            return true;
+        }
+        try {
+            String token = "target".equals(remote) ? event.getTokenB() : event.getTokenA();
+            CredentialsProvider creds = createCredentialsProvider(event, repoUrl, token);
+            Iterable<org.eclipse.jgit.transport.PushResult> pushed = git.push()
+                    .setRemote(remote)
+                    .setCredentialsProvider(creds)
+                    .setRefSpecs(new RefSpec(":" + headRef))
+                    .setForce(true)
+                    .setTimeout(httpTimeoutSeconds)
+                    .call();
+            if (!remoteDeleteAccepted(pushed)) {
+                logAudit(jobId, LogLevel.WARN, "Could not delete parked branch '" + branch + "' on " + repoUrl + ".");
+                return false;
+            }
+        } catch (Exception e) {
+            logAudit(jobId, LogLevel.WARN, "Could not delete parked branch '" + branch + "': " + e.getMessage());
+            return false;
+        }
+        dropLocalConflictRef(git, headRef, destTracking);
+        if (dedupLedgerService != null) {
+            dedupLedgerService.recordSystemRefDelete(repoUrl, headRef);
+        }
+        logAudit(jobId, LogLevel.INFO, "Deleted " + reason + " '" + branch + "' from " + repoUrl + ".");
+        return true;
+    }
+
+    private static void dropLocalConflictRef(Git git, String headRef, boolean destTracking) {
+        if (destTracking) {
+            deleteDestTrackingForRemoteRef(git, headRef);
+            return;
+        }
+        try {
+            RefUpdate update = git.getRepository().updateRef(headRef);
+            update.setForceUpdate(true);
+            update.delete();
+        } catch (Exception e) {
+            log.debug("Could not delete local ref {}: {}", headRef, e.getMessage());
+        }
+    }
+
+    private static boolean remoteDeleteAccepted(Iterable<org.eclipse.jgit.transport.PushResult> pushed) {
+        if (pushed == null) {
+            return false;
+        }
+        boolean sawUpdate = false;
+        for (org.eclipse.jgit.transport.PushResult result : pushed) {
+            for (org.eclipse.jgit.transport.RemoteRefUpdate update : result.getRemoteUpdates()) {
+                sawUpdate = true;
+                org.eclipse.jgit.transport.RemoteRefUpdate.Status status = update.getStatus();
+                if (status != org.eclipse.jgit.transport.RemoteRefUpdate.Status.OK
+                        && status != org.eclipse.jgit.transport.RemoteRefUpdate.Status.UP_TO_DATE
+                        && status != org.eclipse.jgit.transport.RemoteRefUpdate.Status.NON_EXISTING) {
+                    return false;
+                }
+            }
+        }
+        return sawUpdate;
     }
 
     private void persistAndOpenConflicts(SyncResult result, RepoMapping mapping, SyncEventMessage event) {
@@ -2139,14 +2752,17 @@ public class GitSyncEngine {
                     : (iso.action == TrunkPushAction.SKIP
                     ? "Diverged trunk not pushed (FAIL_JOB policy)"
                     : "Incoming commits isolated to " + iso.isolatedBranch);
+            String keptRepo = iso.keptRepoUrl != null && !iso.keptRepoUrl.isBlank()
+                    ? iso.keptRepoUrl
+                    : destUrl;
             var row = syncConflictService.recordGitRefConflict(
                     mappingId, jobId, iso.kind, iso.policy, iso.originalRef,
-                    iso.sourceSha, iso.destSha, iso.isolatedBranch, destUrl, message);
-            if (row != null && iso.action == TrunkPushAction.ISOLATE && mapping != null && destUrl != null
-                    && !isSimulationOrTestUrl(destUrl)
+                    iso.sourceSha, iso.destSha, iso.isolatedBranch, keptRepo, message);
+            if (row != null && iso.action == TrunkPushAction.ISOLATE && mapping != null && keptRepo != null
+                    && !isSimulationOrTestUrl(keptRepo)
                     && mapping.getSyncDirection() == SyncDirection.BIDIRECTIONAL) {
                 try {
-                    syncConflictService.openConflictPr(row, mapping, destUrl);
+                    syncConflictService.openConflictPr(row, mapping, keptRepo);
                 } catch (Exception e) {
                     log.warn("Could not open conflict PR for {}: {}", iso.isolatedBranch, e.getMessage());
                 }
@@ -2855,9 +3471,10 @@ public class GitSyncEngine {
                 }
                 result.messages.add(msg);
                 if (isSuccessfulRemoteUpdate(status)) {
-                    if (rru.getSrcRef() != null) {
+                    if (rru.getSrcRef() != null
+                            && (rru.getRemoteName() == null || rru.getRemoteName().equals(rru.getSrcRef()))) {
                         result.successfulRefNames.add(rru.getSrcRef());
-                    } else if (rru.getRemoteName() != null) {
+                    } else if (rru.getSrcRef() == null && rru.getRemoteName() != null) {
                         result.deletedRemoteNames.add(rru.getRemoteName());
                     }
                 } else {
@@ -2963,8 +3580,15 @@ public class GitSyncEngine {
         if (ledger == null || targetRepoUrl == null || refToSha == null || refToSha.isEmpty()) {
             return;
         }
-        for (String sha : refToSha.values()) {
-            if (sha != null && !sha.isBlank()) {
+        for (Map.Entry<String, String> entry : refToSha.entrySet()) {
+            String ref = entry.getKey();
+            String sha = entry.getValue();
+            if (sha == null || sha.isBlank()) {
+                continue;
+            }
+            if (ref != null && ref.startsWith("refs/")) {
+                ledger.recordRefTip(targetRepoUrl, ref, sha);
+            } else {
                 ledger.recordSystemPush(targetRepoUrl, sha);
             }
         }

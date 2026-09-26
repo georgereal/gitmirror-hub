@@ -99,6 +99,7 @@ public class KafkaWebhookPublisher implements WebhookEventPublisher {
                     .branch(branchOf(ref))
                     .commitSha(afterSha)
                     .discardReason(POISON_REASON)
+                    .expiresAt(null)
                     .details(reason == null ? "Incremental record could not be applied" : reason)
                     .payloadJson(payload)
                     .receivedAt(Instant.now())

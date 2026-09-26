@@ -18,12 +18,15 @@ public class MongoEchoLedgerStore implements EchoLedgerRepository {
     private final EchoLedgerMongoRepository repo;
 
     @Override
-    public void upsert(String repoKey, String token, Instant expiresAt) {
+    public void upsert(String repoKey, String token, Instant expiresAt, String payload) {
         String id = EchoLedgerEntry.idFor(repoKey, token);
         Optional<EchoLedgerEntry> existing = repo.findById(id);
         if (existing.isPresent()) {
             EchoLedgerEntry row = existing.get();
             row.setExpiresAt(expiresAt);
+            if (payload != null) {
+                row.setPayload(payload);
+            }
             repo.save(row);
             return;
         }
@@ -32,11 +35,15 @@ public class MongoEchoLedgerStore implements EchoLedgerRepository {
                     .id(id)
                     .repoKey(repoKey)
                     .token(token)
+                    .payload(payload)
                     .expiresAt(expiresAt)
                     .build());
         } catch (DuplicateKeyException race) {
             repo.findById(id).ifPresent(row -> {
                 row.setExpiresAt(expiresAt);
+                if (payload != null) {
+                    row.setPayload(payload);
+                }
                 repo.save(row);
             });
         }

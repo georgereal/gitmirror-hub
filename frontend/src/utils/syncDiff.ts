@@ -93,6 +93,11 @@ export function isPrMirrored(pr: PrSyncDetail): boolean {
   return !!(pr.isSynced || pr.syncStatus === 'MIRRORED' || (pr.targetPrNumber != null && pr.targetPrNumber > 0));
 }
 
+export function isOpenPr(pr: PrSyncDetail): boolean {
+  const state = (pr.state || 'open').toLowerCase();
+  return state !== 'closed' && state !== 'merged' && state !== 'declined' && state !== 'rejected';
+}
+
 export function isPrHandled(pr: PrSyncDetail): boolean {
   return isPrMirrored(pr) || pr.syncStatus === 'SKIPPED';
 }
@@ -274,6 +279,13 @@ export function prsAccountedFromReport(report: SyncDiffReport | null | undefined
   pending: number;
   dest: number;
 } {
+  const listed = report?.pullRequests || [];
+  if (listed.length > 0) {
+    const open = listed.filter(isOpenPr);
+    const handled = open.filter(isPrHandled).length;
+    const dest = open.filter((pr) => (pr.targetPrNumber ?? 0) > 0).length;
+    return { handled, total: open.length, dest, pending: Math.max(0, open.length - handled) };
+  }
   if (report?.fromPersistedSnapshot && report.persistedPrsTotal != null) {
     const total = report.persistedPrsTotal;
     const handled = report.persistedPrsSynced ?? 0;

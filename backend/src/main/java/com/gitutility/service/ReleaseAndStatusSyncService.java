@@ -126,6 +126,7 @@ public class ReleaseAndStatusSyncService {
     private final StorageTieringService storageTieringService;
     private final ExecutorService releaseSyncExecutor;
     private final Executor syncTaskExecutor;
+    private final java.util.concurrent.ConcurrentHashMap<String, Object> releaseTagLocks = new java.util.concurrent.ConcurrentHashMap<>();
     private PushBatchConcurrencyService pushBatchConcurrencyService;
 
     @Value("${git-utility.git.release-page-size:50}")
@@ -215,13 +216,84 @@ public class ReleaseAndStatusSyncService {
         ScmProviderAdapter targetAdapter = scmProviderFacade.getAdapterForUrl(sides.targetUrl());
         try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(
                 sides.targetCredentialId(), sides.targetInstallationId())) {
+            if (context != null && !context.isBlank() && state != null && !state.isBlank()) {
+                try {
+                    for (CommitStatusDetail existing : targetAdapter.listCommitStatuses(targetFullName, sha)) {
+                        if (existing == null || existing.context() == null) {
+                            continue;
+                        }
+                        if (context.equals(existing.context())
+                                && statusWriteIsEcho(true, existing.state(), state)) {
+                            log.info("Commit status '{}' on {} is already {} on the other repository.",
+                                    context, sha, state);
+                            return true;
+                        }
+                    }
+                } catch (Exception e) {
+                    log.info("Could not read commit statuses on {} for {}: {}. Writing the status.",
+                            targetFullName, sha, e.getMessage());
+                }
+            }
             return targetAdapter.replicateCommitStatus(targetFullName, sha, state, targetUrl, description, context);
         }
     }
 
+    /** True when the other repository already records this context at the incoming state. */
+    static boolean statusWriteIsEcho(boolean known, String peerState, String incomingState) {
+        if (!known || peerState == null || peerState.isBlank() || incomingState == null || incomingState.isBlank()) {
+            return false;
+        }
+        return peerState.equalsIgnoreCase(incomingState.trim());
+    }
+
+    /** A release delete is an echo only when the other repository's lookup succeeded and the tag is already gone. */
+    static boolean releaseDeleteIsEcho(boolean known, boolean peerPresent) {
+        return known && !peerPresent;
+    }
+
+    /** Unpublish is an echo when the other side has no release, or that release is already a draft. */
+    static boolean releaseUnpublishIsEcho(boolean known, boolean peerPresent, boolean peerDraft) {
+        return known && (!peerPresent || peerDraft);
+    }
+
+    /** A published release is the one we keep when several rows share a tag. */
+    static SyncDiffReport.ReleaseDetail preferRelease(SyncDiffReport.ReleaseDetail current,
+                                                       SyncDiffReport.ReleaseDetail candidate) {
+        if (candidate == null) {
+            return current;
+        }
+        if (current == null) {
+            return candidate;
+        }
+        if (current.isDraft() && !candidate.isDraft()) {
+            return candidate;
+        }
+        if (!current.isDraft() && candidate.isDraft()) {
+            return current;
+        }
+        long currentId = current.getId() == null ? 0L : current.getId();
+        long candidateId = candidate.getId() == null ? 0L : candidate.getId();
+        return candidateId > currentId ? candidate : current;
+    }
+
+    static int distinctReleaseTags(List<SyncDiffReport.ReleaseDetail> releases) {
+        Set<String> tags = new LinkedHashSet<>();
+        if (releases == null) {
+            return 0;
+        }
+        for (SyncDiffReport.ReleaseDetail release : releases) {
+            if (release != null && release.getTagName() != null && !release.getTagName().isBlank()) {
+                tags.add(release.getTagName());
+            }
+        }
+        return tags.size();
+    }
+
     /**
      * Mirrors one GitHub release webhook onto the opposite side, including assets.
-     * {@code deleted} and {@code unpublished} are recorded as skipped.
+     * {@code deleted} removes the release on the other side when that side still has it.
+     * {@code unpublished} marks the other side's release as a draft when it is still published.
+     * Either action is an echo when the other side already matches.
      */
     public void mirrorWebhookRelease(RepoMapping mapping, String inboundRepoUrl, String action, JsonNode releaseNode) {
         if (mapping == null || releaseNode == null || releaseNode.isMissingNode() || releaseNode.isNull()) {
@@ -230,7 +302,7 @@ public class ReleaseAndStatusSyncService {
         String verb = action == null ? "" : action.trim().toLowerCase();
         String tag = releaseNode.path("tag_name").asText("");
         if ("deleted".equals(verb) || "unpublished".equals(verb)) {
-            log.info("Release {} on tag {} recorded as skipped", verb, tag);
+            mirrorReleaseRemoval(mapping, inboundRepoUrl, verb, tag);
             return;
         }
         awaitRateLimitCooldown();
@@ -252,28 +324,121 @@ public class ReleaseAndStatusSyncService {
             return;
         }
         Map<String, SyncDiffReport.ReleaseDetail> targetByTag = new LinkedHashMap<>();
-        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(
-                sides.targetCredentialId(), sides.targetInstallationId())) {
-            ReleaseLookup lookup = targetAdapter.findReleaseByTag(targetFullName, detail.getTagName());
-            if (lookup != null && lookup.exists()) {
-                targetByTag.put(detail.getTagName(), releaseFromLookup(lookup));
+        Object lock = releaseTagLocks.computeIfAbsent(targetFullName + "|" + detail.getTagName(), key -> new Object());
+        synchronized (lock) {
+            try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(
+                    sides.targetCredentialId(), sides.targetInstallationId())) {
+                ReleaseLookup lookup = targetAdapter.findReleaseByTag(targetFullName, detail.getTagName());
+                if (lookup != null && lookup.exists()) {
+                    targetByTag.put(detail.getTagName(), releaseFromLookup(lookup));
+                }
+            }
+            ReleaseSyncRequest request = new ReleaseSyncRequest(
+                    mapping.getId(),
+                    sides.sourceUrl(),
+                    sides.targetUrl(),
+                    sides.sourceCredentialId(),
+                    sides.sourceInstallationId(),
+                    sides.targetCredentialId(),
+                    sides.targetInstallationId(),
+                    null,
+                    null);
+            List<String> errors = new ArrayList<>();
+            int[] counters = executeReleasePlan(request, sourceAdapter, sourceFullName, targetAdapter, targetFullName,
+                    List.of(detail), targetByTag, null, errors);
+            deleteExtraReleases(targetAdapter, targetFullName, sides.targetCredentialId(), sides.targetInstallationId(),
+                    detail.getTagName());
+            deleteExtraReleases(sourceAdapter, sourceFullName, sides.sourceCredentialId(), sides.sourceInstallationId(),
+                    detail.getTagName());
+            if (pairDiffSnapshotService != null) {
+                int sourceCount = distinctReleaseTags(listAllReleases(
+                        sourceAdapter, sourceFullName, sides.sourceCredentialId(), sides.sourceInstallationId(), null));
+                int targetCount = distinctReleaseTags(listAllReleases(
+                        targetAdapter, targetFullName, sides.targetCredentialId(), sides.targetInstallationId(), null));
+                pairDiffSnapshotService.updateReleases(mapping.getId(), sourceCount, targetCount);
+            }
+            for (String error : errors) {
+                log.warn("Release webhook mirror: {}", error);
+            }
+            if (counters[0] == 0 && counters[1] == 0 && counters[2] == 0 && errors.isEmpty()) {
+                log.debug("Release {} on {} matched the other repository", detail.getTagName(), targetFullName);
             }
         }
-        ReleaseSyncRequest request = new ReleaseSyncRequest(
-                mapping.getId(),
-                sides.sourceUrl(),
-                sides.targetUrl(),
-                sides.sourceCredentialId(),
-                sides.sourceInstallationId(),
-                sides.targetCredentialId(),
-                sides.targetInstallationId(),
-                null,
-                null);
-        List<String> errors = new ArrayList<>();
-        executeReleasePlan(request, sourceAdapter, sourceFullName, targetAdapter, targetFullName,
-                List.of(detail), targetByTag, null, errors);
-        for (String error : errors) {
-            log.warn("Release webhook mirror: {}", error);
+    }
+
+    /**
+     * Applies a release delete or unpublish to the opposite repository from what that repository
+     * currently has. A failed lookup is not an echo.
+     */
+    private void mirrorReleaseRemoval(RepoMapping mapping, String inboundRepoUrl, String verb, String tag) {
+        if (tag == null || tag.isBlank()) {
+            log.info("Release {} webhook has no tag; skipping", verb);
+            return;
+        }
+        MirrorSides sides = mirrorSides(mapping, inboundRepoUrl);
+        String targetFullName = scmProviderFacade.parseRepoFullName(sides.targetUrl());
+        if (targetFullName == null) {
+            return;
+        }
+        ScmProviderAdapter targetAdapter = scmProviderFacade.getAdapterForUrl(sides.targetUrl());
+        if (!targetAdapter.supportsReleaseSync()) {
+            log.info("Release {} skipped; {} has no Releases API", verb, targetAdapter.getProviderType());
+            return;
+        }
+        if ("deleted".equals(verb)) {
+            String sourceFullName = scmProviderFacade.parseRepoFullName(sides.sourceUrl());
+            ScmProviderAdapter sourceAdapter = scmProviderFacade.getAdapterForUrl(sides.sourceUrl());
+            if (sourceFullName != null && sourceAdapter.supportsReleaseSync()) {
+                try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(
+                        sides.sourceCredentialId(), sides.sourceInstallationId())) {
+                    ReleaseLookup stillThere = sourceAdapter.findReleaseByTag(sourceFullName, tag);
+                    if (stillThere != null && stillThere.exists()) {
+                        log.info("Release {} still exists on {}. Leaving the other repository's release in place.",
+                                tag, sourceFullName);
+                        return;
+                    }
+                } catch (Exception e) {
+                    log.warn("Could not tell whether {} still has release {} after a delete: {}. Not removing it elsewhere.",
+                            sourceFullName, tag, e.getMessage());
+                    return;
+                }
+            }
+        }
+        ReleaseLookup peer;
+        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(
+                sides.targetCredentialId(), sides.targetInstallationId())) {
+            try {
+                peer = targetAdapter.findReleaseByTag(targetFullName, tag);
+            } catch (Exception e) {
+                log.warn("Could not tell whether {} still has release {}: {}. Not treating {} as an echo.",
+                        targetFullName, tag, e.getMessage(), verb);
+                return;
+            }
+            boolean present = peer != null && peer.exists();
+            if ("unpublished".equals(verb)) {
+                if (releaseUnpublishIsEcho(true, present, present && peer.draft())) {
+                    log.info("Release {} is already a draft or absent on the other repository.", tag);
+                    return;
+                }
+                targetAdapter.updateRelease(targetFullName, peer.externalId(), tag,
+                        peer.name(), peer.body(), true, peer.prerelease());
+                log.info("Marked release {} as a draft on {}", tag, targetFullName);
+                return;
+            }
+            if (releaseDeleteIsEcho(true, present)) {
+                log.info("Release {} is already absent on the other repository.", tag);
+                return;
+            }
+            String externalId = peer.externalId() != null && !peer.externalId().isBlank()
+                    ? peer.externalId() : tag;
+            if (!targetAdapter.deleteRelease(targetFullName, externalId)) {
+                log.warn("Could not delete release {} on {}", tag, targetFullName);
+                return;
+            }
+            log.info("Deleted release {} on {}", tag, targetFullName);
+            if (pairDiffSnapshotService != null) {
+                pairDiffSnapshotService.noteReleaseRemoved(mapping.getId());
+            }
         }
     }
 
@@ -529,6 +694,22 @@ public class ReleaseAndStatusSyncService {
             throw new MetadataSyncException("Release listing failed: " + cause.getMessage(), cause);
         }
 
+        int droppedSourceCopies = deleteExtraReleases(sourceAdapter, sourceFullName,
+                request.sourceCredentialId(), request.sourceInstallationId(), null);
+        int droppedTargetCopies = deleteExtraReleases(targetAdapter, targetFullName,
+                request.targetCredentialId(), request.targetInstallationId(), null);
+        Map<String, SyncDiffReport.ReleaseDetail> sourceByTag = new LinkedHashMap<>();
+        for (SyncDiffReport.ReleaseDetail release : sourceReleases) {
+            if (release != null && release.getTagName() != null && !release.getTagName().isBlank()) {
+                sourceByTag.merge(release.getTagName(), release, ReleaseAndStatusSyncService::preferRelease);
+            }
+        }
+        sourceReleases = new ArrayList<>(sourceByTag.values());
+        if (droppedTargetCopies > 0) {
+            targetByTag = listTargetReleasesByTag(targetAdapter, targetFullName,
+                    request.targetCredentialId(), request.targetInstallationId());
+        }
+
         long targetCountBefore = targetByTag.size();
         report(progress, "Releases · Source has " + sourceReleases.size()
                 + " release(s); destination has " + targetCountBefore);
@@ -541,10 +722,15 @@ public class ReleaseAndStatusSyncService {
         int unchanged = counters[2];
         int assetsUploaded = counters[3];
         int failed = counters[4];
+        int removed = deleteDestinationReleasesAbsentFromSource(
+                targetAdapter, targetFullName, request.targetCredentialId(), request.targetInstallationId(),
+                sourceReleases, targetByTag, errors);
 
-        long targetCountAfter = Math.max(targetCountBefore, targetCountBefore + created);
+        long targetCountAfter = Math.max(0, targetCountBefore + created - removed);
         report(progress, "Releases · Done: " + created + " created, " + updated + " updated, "
-                + unchanged + " unchanged, " + assetsUploaded + " asset(s) streamed"
+                + unchanged + " unchanged, " + removed + " deleted, "
+                + (droppedSourceCopies + droppedTargetCopies) + " extra copies removed, "
+                + assetsUploaded + " asset(s) streamed"
                 + (failed > 0 ? ", " + failed + " failed" : ""));
 
         ReleaseSyncResult result = new ReleaseSyncResult(
@@ -561,6 +747,59 @@ public class ReleaseAndStatusSyncService {
             }
         }
         return result;
+    }
+
+    /**
+     * A release still on the destination whose tag is gone from the source was deleted there.
+     * Full sync removes that destination copy. A lookup or delete failure is counted, not ignored as done.
+     */
+    private int deleteDestinationReleasesAbsentFromSource(ScmProviderAdapter targetAdapter,
+                                                          String targetFullName,
+                                                          String credentialId,
+                                                          String installationId,
+                                                          List<SyncDiffReport.ReleaseDetail> sourceReleases,
+                                                          Map<String, SyncDiffReport.ReleaseDetail> targetByTag,
+                                                          List<String> errors) {
+        if (targetByTag == null || targetByTag.isEmpty()) {
+            return 0;
+        }
+        Set<String> sourceTags = new LinkedHashSet<>();
+        if (sourceReleases != null) {
+            for (SyncDiffReport.ReleaseDetail release : sourceReleases) {
+                if (release != null && release.getTagName() != null && !release.getTagName().isBlank()) {
+                    sourceTags.add(release.getTagName());
+                }
+            }
+        }
+        // A failed provider listing also returns no rows. Do not wipe the destination in that case.
+        if (sourceTags.isEmpty()) {
+            log.info("Source release list is empty; leaving {} destination release(s) in place.", targetByTag.size());
+            return 0;
+        }
+        int removed = 0;
+        try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(credentialId, installationId)) {
+            for (Map.Entry<String, SyncDiffReport.ReleaseDetail> entry : targetByTag.entrySet()) {
+                if (sourceTags.contains(entry.getKey())) {
+                    continue;
+                }
+                SyncDiffReport.ReleaseDetail release = entry.getValue();
+                String externalId = release != null && release.getId() != null && release.getId() > 0
+                        ? String.valueOf(release.getId())
+                        : entry.getKey();
+                try {
+                    if (targetAdapter.deleteRelease(targetFullName, externalId)) {
+                        removed++;
+                        log.info("Deleted destination release {} on {}; source no longer has that tag.",
+                                entry.getKey(), targetFullName);
+                    } else {
+                        errors.add("Destination provider cannot delete release " + entry.getKey());
+                    }
+                } catch (Exception e) {
+                    errors.add("Could not delete destination release " + entry.getKey() + ": " + e.getMessage());
+                }
+            }
+        }
+        return removed;
     }
 
     /** Builds per-release work items and runs them on the bounded release pool. */
@@ -812,6 +1051,62 @@ public class ReleaseAndStatusSyncService {
         return all;
     }
 
+    /**
+     * Keeps one release per tag and deletes the others. A published release is kept ahead of drafts.
+     * {@code onlyTag} limits the cleanup to one tag; null cleans every tag.
+     */
+    private int deleteExtraReleases(ScmProviderAdapter adapter,
+                                    String repoFullName,
+                                    String credentialId,
+                                    String installationId,
+                                    String onlyTag) {
+        if (adapter == null || repoFullName == null || !adapter.supportsReleaseSync()) {
+            return 0;
+        }
+        List<SyncDiffReport.ReleaseDetail> all;
+        try {
+            all = listAllReleases(adapter, repoFullName, credentialId, installationId, null);
+        } catch (Exception e) {
+            log.warn("Could not list releases on {} to remove extra copies: {}", repoFullName, e.getMessage());
+            return 0;
+        }
+        Map<String, List<SyncDiffReport.ReleaseDetail>> grouped = new LinkedHashMap<>();
+        for (SyncDiffReport.ReleaseDetail release : all) {
+            if (release == null || release.getTagName() == null || release.getTagName().isBlank()) {
+                continue;
+            }
+            if (onlyTag != null && !onlyTag.equals(release.getTagName())) {
+                continue;
+            }
+            grouped.computeIfAbsent(release.getTagName(), key -> new ArrayList<>()).add(release);
+        }
+        int removed = 0;
+        for (List<SyncDiffReport.ReleaseDetail> sameTag : grouped.values()) {
+            if (sameTag.size() < 2) {
+                continue;
+            }
+            SyncDiffReport.ReleaseDetail keep = null;
+            for (SyncDiffReport.ReleaseDetail release : sameTag) {
+                keep = preferRelease(keep, release);
+            }
+            Long keepId = keep != null ? keep.getId() : null;
+            for (SyncDiffReport.ReleaseDetail release : sameTag) {
+                if (release.getId() == null || release.getId() <= 0 || release.getId().equals(keepId)) {
+                    continue;
+                }
+                try (ScmCredentialContext.Scope ignored = ScmCredentialContext.open(credentialId, installationId)) {
+                    if (adapter.deleteRelease(repoFullName, String.valueOf(release.getId()))) {
+                        removed++;
+                        log.info("Deleted extra release {} for tag {} on {}", release.getId(), release.getTagName(), repoFullName);
+                    }
+                } catch (Exception e) {
+                    log.warn("Could not delete extra release {} on {}: {}", release.getId(), repoFullName, e.getMessage());
+                }
+            }
+        }
+        return removed;
+    }
+
     /** Destination-side release listing keyed by tag for idempotent diffs. */
     private Map<String, SyncDiffReport.ReleaseDetail> listTargetReleasesByTag(ScmProviderAdapter adapter,
                                                                               String repoFullName,
@@ -820,7 +1115,7 @@ public class ReleaseAndStatusSyncService {
         Map<String, SyncDiffReport.ReleaseDetail> byTag = new LinkedHashMap<>();
         for (SyncDiffReport.ReleaseDetail release : listAllReleases(adapter, repoFullName, credentialId, installationId, null)) {
             if (release != null && release.getTagName() != null && !release.getTagName().isBlank()) {
-                byTag.putIfAbsent(release.getTagName(), release);
+                byTag.merge(release.getTagName(), release, ReleaseAndStatusSyncService::preferRelease);
             }
         }
         return byTag;

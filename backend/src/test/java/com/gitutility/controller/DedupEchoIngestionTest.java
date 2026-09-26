@@ -10,10 +10,13 @@ import com.gitutility.repository.RepoMappingRepository;
 import com.gitutility.repository.SyncJobRepository;
 import com.gitutility.repository.UnmappedWebhookEventRepository;
 import com.gitutility.service.DedupLedgerService;
+import com.gitutility.service.PairTipEchoService;
 import com.gitutility.service.PullRequestSyncService;
 import com.gitutility.service.QueueProducerService;
 import com.gitutility.service.RefInterestPolicy;
 import com.gitutility.service.RefOriginService;
+import com.gitutility.service.SystemEngineConfigService;
+import com.gitutility.service.UnmappedWebhookRetention;
 import com.gitutility.service.ReleaseAndStatusSyncService;
 import com.gitutility.service.WebhookIngestionService;
 import com.gitutility.service.WebSocketNotificationService;
@@ -25,12 +28,12 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
@@ -55,6 +58,7 @@ class DedupEchoIngestionTest {
     private RefOriginService refOriginService;
 
     private DedupLedgerService dedupLedgerService;
+    private PairTipEchoService pairTipEchoService;
     private WebhookController webhookController;
 
     private static final String DEST_NO_GIT = "https://github.com/acme/mirror-dest";
@@ -65,7 +69,6 @@ class DedupEchoIngestionTest {
     @BeforeEach
     void setUp() {
         dedupLedgerService = new DedupLedgerService();
-        ReflectionTestUtils.setField(dedupLedgerService, "ledgerTtlSeconds", 600L);
 
         WebhookIngestionService ingestion = new WebhookIngestionService(
                 mappingRepository,
@@ -77,20 +80,25 @@ class DedupEchoIngestionTest {
                 pullRequestSyncService,
                 releaseAndStatusSyncService,
                 unmappedWebhookEventRepository,
+                mock(UnmappedWebhookRetention.class),
+                mock(SystemEngineConfigService.class),
                 refOriginService,
                 new RefInterestPolicy("agents/,dependabot/", 45_000L, true),
                 null
         );
+        pairTipEchoService = mock(PairTipEchoService.class);
+        lenient().when(pairTipEchoService.pushEcho(any(), anyBoolean(), any(), any())).thenReturn(false);
+        lenient().when(pairTipEchoService.deleteEcho(any(), anyBoolean(), any())).thenReturn(false);
+        ingestion.setPairTipEchoService(pairTipEchoService);
         webhookController = new WebhookController(mappingRepository, ingestion, JsonMapper.builder().build(), null);
     }
 
     @Test
     void prSyncRecordedShaSkipsDestWebhookEvenWhenCloneUrlAddsGitSuffix() {
-        dedupLedgerService.recordSystemPush(DEST_NO_GIT, PR_HEAD_SHA);
-
         RepoMapping mapping = vscodePair();
         when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
         when(syncJobRepository.save(any(SyncJob.class))).thenAnswer(i -> i.getArgument(0));
+        when(pairTipEchoService.pushEcho(any(), anyBoolean(), any(), eq(PR_HEAD_SHA))).thenReturn(true);
 
         ResponseEntity<?> response = webhookController.handleMappingSpecificWebhook(
                 "1", "push", null, destPushPayload(PR_HEAD_SHA, "feat/rag-workflow", "feat: rag workflow")
@@ -112,8 +120,7 @@ class DedupEchoIngestionTest {
 
     @Test
     void gitSyncBatchShasSkipDestWebhooksForEveryPushedTip() {
-        dedupLedgerService.recordSystemPush(DEST_NO_GIT, "aaa111");
-        dedupLedgerService.recordSystemPush(DEST_NO_GIT, "bbb222");
+        when(pairTipEchoService.pushEcho(any(), anyBoolean(), any(), any())).thenReturn(true);
 
         RepoMapping mapping = vscodePair();
         when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
@@ -181,11 +188,10 @@ class DedupEchoIngestionTest {
                 .build();
         when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
         when(syncJobRepository.save(any(SyncJob.class))).thenAnswer(i -> i.getArgument(0));
-        when(refOriginService.isForkPrHead("1", "add-repocloud-deploy-button")).thenReturn(true);
 
         ResponseEntity<?> response = webhookController.handleMappingSpecificWebhook(
                 "1", "push", null,
-                destPushPayload("388dc77aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "add-repocloud-deploy-button", "fork head")
+                destPushPayload("388dc77aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "fork-pr-12", "fork head")
         );
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
@@ -202,7 +208,7 @@ class DedupEchoIngestionTest {
     }
 
     @Test
-    void originDeleteIsEnqueuedAndReplicaDeleteIsSkipped() {
+    void originDeleteIsEnqueuedAndUnrecordedReplicaDeleteIsEnqueued() {
         RepoMapping mapping = RepoMapping.builder()
                 .id("1")
                 .name("OpenMAIC")
@@ -239,7 +245,51 @@ class DedupEchoIngestionTest {
                 any(), eq(zeros), eq("Deleted branch feature-x"), any(), any()
         );
 
-        when(refOriginService.isReplicaEvent(eq("1"), eq("refs/heads/feature-x"), any())).thenReturn(true);
+        RepoMapping replicaPair = RepoMapping.builder()
+                .id("2")
+                .name("OpenMAIC")
+                .repoAUrl("https://github.com/THU-MAIC/OpenMAIC.git")
+                .repoBUrl(DEST_NO_GIT)
+                .active(true)
+                .syncDirection(SyncDirection.BIDIRECTIONAL)
+                .build();
+        when(mappingRepository.findById("2")).thenReturn(Optional.of(replicaPair));
+        String replicaDelete = """
+                {
+                  "ref": "refs/heads/feature-x",
+                  "after": "%s",
+                  "deleted": true,
+                  "repository": {
+                    "clone_url": "%s",
+                    "full_name": "acme/mirror-dest"
+                  },
+                  "pusher": { "name": "someone" }
+                }
+                """.formatted(zeros, DEST_WITH_GIT);
+
+        ResponseEntity<?> replica = webhookController.handleMappingSpecificWebhook("2", "push", null, replicaDelete);
+        assertEquals(HttpStatus.ACCEPTED, replica.getStatusCode());
+        verify(queueProducerService).enqueueSyncJob(
+                eq(replicaPair), any(SyncJob.class), eq(DEST_NO_GIT), any(), eq("refs/heads/feature-x"), eq("feature-x"),
+                any(), eq(zeros), any(), any(), any()
+        );
+    }
+
+    @Test
+    void recordedReplicaDeleteIsAnEcho() {
+        RepoMapping mapping = RepoMapping.builder()
+                .id("1")
+                .name("OpenMAIC")
+                .repoAUrl("https://github.com/THU-MAIC/OpenMAIC.git")
+                .repoBUrl(DEST_NO_GIT)
+                .active(true)
+                .syncDirection(SyncDirection.BIDIRECTIONAL)
+                .build();
+        when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
+        when(syncJobRepository.save(any(SyncJob.class))).thenAnswer(i -> i.getArgument(0));
+        when(pairTipEchoService.deleteEcho(any(), anyBoolean(), any())).thenReturn(true);
+
+        String zeros = "0000000000000000000000000000000000000000";
         String replicaDelete = """
                 {
                   "ref": "refs/heads/feature-x",
@@ -256,8 +306,80 @@ class DedupEchoIngestionTest {
         ResponseEntity<?> replica = webhookController.handleMappingSpecificWebhook("1", "push", null, replicaDelete);
         assertEquals(HttpStatus.OK, replica.getStatusCode());
         ArgumentCaptor<SyncJob> jobs = ArgumentCaptor.forClass(SyncJob.class);
-        verify(syncJobRepository, times(2)).save(jobs.capture());
-        assertEquals("REPLICA_REF_DELETE", jobs.getAllValues().get(1).getSkipReason());
+        verify(syncJobRepository).save(jobs.capture());
+        assertEquals("LOOP_DETECTED_SYSTEM_ECHO", jobs.getValue().getSkipReason());
+        verify(queueProducerService, never()).enqueueSyncJob(
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
+        );
+    }
+
+    @Test
+    void newShaOnMirrorMainIsEnqueued() {
+        RepoMapping mapping = vscodePair();
+        when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
+        when(syncJobRepository.save(any(SyncJob.class))).thenAnswer(i -> {
+            SyncJob job = i.getArgument(0);
+            job.setId("42");
+            return job;
+        });
+
+        ResponseEntity<?> response = webhookController.handleMappingSpecificWebhook(
+                "1", "push", null,
+                destPushPayload("05b3b4d30c2a8164e70f4379d2be541f3a657e8c", "main", "Merge pull request #1")
+        );
+
+        assertEquals(HttpStatus.ACCEPTED, response.getStatusCode());
+        verify(queueProducerService).enqueueSyncJob(
+                eq(mapping), any(SyncJob.class), eq(DEST_NO_GIT), eq(SOURCE),
+                eq("refs/heads/main"), eq("main"), any(), eq("05b3b4d30c2a8164e70f4379d2be541f3a657e8c"),
+                any(), any(), any()
+        );
+    }
+
+    @Test
+    void openedPullRequestHubCreatedIsDiscarded() {
+        RepoMapping mapping = vscodePair();
+        when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
+        dedupLedgerService.recordPullRequestOpened(DEST_WITH_GIT, 1, "1379233c4078a6ec6c24cc798bae06bc29dc1ea6");
+
+        ResponseEntity<?> response = webhookController.handleMappingSpecificWebhook(
+                "1", "pull_request", null, pullRequestPayload("opened", 1, false, null)
+        );
+
+        assertEquals(HttpStatus.ACCEPTED, response.getStatusCode());
+        verify(pullRequestSyncService, never()).handlePrWebhookEvent(any(), any(), any(), any());
+        ArgumentCaptor<com.gitutility.model.entity.UnmappedWebhookEvent> saved =
+                ArgumentCaptor.forClass(com.gitutility.model.entity.UnmappedWebhookEvent.class);
+        verify(unmappedWebhookEventRepository).save(saved.capture());
+        assertEquals("LOOP_DETECTED_SYSTEM_ECHO", saved.getValue().getDiscardReason());
+    }
+
+    @Test
+    void userMergeOnMirrorIsAccepted() {
+        RepoMapping mapping = vscodePair();
+        when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
+
+        ResponseEntity<?> response = webhookController.handleMappingSpecificWebhook(
+                "1", "pull_request", null,
+                pullRequestPayload("closed", 1, true, "05b3b4d30c2a8164e70f4379d2be541f3a657e8c")
+        );
+
+        assertEquals(HttpStatus.ACCEPTED, response.getStatusCode());
+        verify(pullRequestSyncService).handlePrWebhookEvent(eq(mapping), eq("closed"), any(), eq(DEST_WITH_GIT));
+    }
+
+    @Test
+    void hubClosedPullRequestIsDiscarded() {
+        RepoMapping mapping = vscodePair();
+        when(mappingRepository.findById("1")).thenReturn(Optional.of(mapping));
+        dedupLedgerService.recordPullRequestClosed(DEST_WITH_GIT, 1);
+
+        ResponseEntity<?> response = webhookController.handleMappingSpecificWebhook(
+                "1", "pull_request", null, pullRequestPayload("closed", 1, false, null)
+        );
+
+        assertEquals(HttpStatus.ACCEPTED, response.getStatusCode());
+        verify(pullRequestSyncService, never()).handlePrWebhookEvent(any(), any(), any(), any());
     }
 
     @Test
@@ -286,7 +408,6 @@ class DedupEchoIngestionTest {
     @Test
     void replicaBotBranchSkippedWhenNotInEphemeralList() {
         dedupLedgerService = new DedupLedgerService();
-        ReflectionTestUtils.setField(dedupLedgerService, "ledgerTtlSeconds", 600L);
         WebhookIngestionService ingestion = new WebhookIngestionService(
                 mappingRepository,
                 syncJobRepository,
@@ -297,6 +418,8 @@ class DedupEchoIngestionTest {
                 pullRequestSyncService,
                 releaseAndStatusSyncService,
                 unmappedWebhookEventRepository,
+                mock(UnmappedWebhookRetention.class),
+                mock(SystemEngineConfigService.class),
                 refOriginService,
                 new RefInterestPolicy("agents/", 45_000L, true),
                 null
@@ -386,5 +509,27 @@ class DedupEchoIngestionTest {
                   "pusher": { "name": "gitmirror[bot]" }
                 }
                 """.formatted(branch, sha, DEST_WITH_GIT, sha, message);
+    }
+
+    private static String pullRequestPayload(String action, int number, boolean merged, String mergeSha) {
+        String mergeJson = mergeSha == null ? "null" : "\"" + mergeSha + "\"";
+        return """
+                {
+                  "action": "%s",
+                  "pull_request": {
+                    "number": %d,
+                    "merged": %s,
+                    "merge_commit_sha": %s,
+                    "title": "Incremental metadata sync",
+                    "head": { "ref": "feature/incremental-sync-and-dr", "sha": "1379233c4078a6ec6c24cc798bae06bc29dc1ea6" },
+                    "base": { "ref": "main" }
+                  },
+                  "repository": {
+                    "clone_url": "%s",
+                    "full_name": "acme/mirror-dest"
+                  },
+                  "sender": { "login": "georgereal" }
+                }
+                """.formatted(action, number, merged, mergeJson, DEST_WITH_GIT);
     }
 }

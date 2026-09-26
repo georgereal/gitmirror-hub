@@ -75,8 +75,6 @@ class RefOriginServiceTest {
         when(prMappingRepository.findByMappingId("4")).thenReturn(List.of(
                 PrMapping.builder().headBranch("add-repocloud-deploy-button").forkPrHead(true).build()
         ));
-        when(refOriginRepository.findByMappingIdAndRefName("4", "refs/heads/add-repocloud-deploy-button"))
-                .thenReturn(Optional.empty());
 
         assertTrue(service.shouldOmitHeadPush(mapping, PairSide.B, PairSide.A, "add-repocloud-deploy-button"));
         assertFalse(service.shouldOmitHeadPush(mapping, PairSide.A, PairSide.B, "add-repocloud-deploy-button"));
@@ -134,6 +132,15 @@ class RefOriginServiceTest {
         RepoMapping mapping = RepoMapping.builder().id("4").build();
         assertTrue(service.shouldOmitHeadPush(mapping, PairSide.B, PairSide.A, "sync-conflict/main-1"));
         assertFalse(service.shouldOmitHeadPush(mapping, PairSide.A, PairSide.B, "sync-conflict/main-1"));
+    }
+
+    @Test
+    void newMergeShaIsPushedAndARecordedTipIsOmitted() {
+        RepoMapping mapping = RepoMapping.builder().id("4").build();
+        assertFalse(service.shouldOmitHeadPush(mapping, PairSide.B, PairSide.A, "main",
+                "05b3b4d30c2a8164e70f4379d2be541f3a657e8c", "7bceb28f99"));
+        assertTrue(service.shouldOmitHeadPush(mapping, PairSide.B, PairSide.A, "main",
+                "7bceb28f99", "7bceb28f99"));
     }
 
     @Test

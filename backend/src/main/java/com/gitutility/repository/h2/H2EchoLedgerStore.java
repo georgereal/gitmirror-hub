@@ -18,12 +18,15 @@ public class H2EchoLedgerStore implements EchoLedgerRepository {
     private final EchoLedgerJpaRepository jpa;
 
     @Override
-    public void upsert(String repoKey, String token, Instant expiresAt) {
+    public void upsert(String repoKey, String token, Instant expiresAt, String payload) {
         String id = EchoLedgerEntry.idFor(repoKey, token);
         Optional<EchoLedgerEntry> existing = jpa.findById(id);
         if (existing.isPresent()) {
             EchoLedgerEntry row = existing.get();
             row.setExpiresAt(expiresAt);
+            if (payload != null) {
+                row.setPayload(payload);
+            }
             jpa.save(row);
             return;
         }
@@ -32,11 +35,15 @@ public class H2EchoLedgerStore implements EchoLedgerRepository {
                     .id(id)
                     .repoKey(repoKey)
                     .token(token)
+                    .payload(payload)
                     .expiresAt(expiresAt)
                     .build());
         } catch (DataIntegrityViolationException race) {
             jpa.findById(id).ifPresent(row -> {
                 row.setExpiresAt(expiresAt);
+                if (payload != null) {
+                    row.setPayload(payload);
+                }
                 jpa.save(row);
             });
         }

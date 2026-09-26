@@ -147,7 +147,7 @@ class PullRequestOriginationTest {
     }
 
     @Test
-    void originCloseClosesReplicaAndDoesNotCloseOriginOnReplicaWebhook() {
+    void originCloseClosesReplicaAndReplicaMergeClosesOrigin() {
         PrMapping existing = PrMapping.builder()
                 .mappingId("4")
                 .sourcePrNumber(1287L)
@@ -180,7 +180,22 @@ class PullRequestOriginationTest {
 
         service.handlePrWebhookEvent(pair(), "closed", destPr, "https://github.com/acme/mirror-dest.git");
 
-        verify(githubAdapter, never()).closePullRequest(eq("THU-MAIC/OpenMAIC"), anyLong());
+        verify(githubAdapter).closePullRequest("THU-MAIC/OpenMAIC", 1287L);
+    }
+
+    @Test
+    void recordedCloseIsNotAppliedAgain() {
+        when(dedupLedgerService.isEchoPullRequest(
+                anyString(), eq(9L), eq("closed"), nullable(String.class), nullable(String.class), anyBoolean()))
+                .thenReturn(true);
+        ObjectNode destPr = mapper.createObjectNode();
+        destPr.put("number", 9);
+        destPr.putObject("head").put("ref", "add-repocloud-deploy-button");
+        destPr.putObject("base").put("ref", "main");
+
+        service.handlePrWebhookEvent(pair(), "closed", destPr, "https://github.com/acme/mirror-dest.git");
+
+        verify(githubAdapter, never()).closePullRequest(anyString(), anyLong());
     }
 
     @Test

@@ -48,15 +48,23 @@ public class WebhookIngestionService {
     private final PullRequestSyncService pullRequestSyncService;
     private final ReleaseAndStatusSyncService releaseAndStatusSyncService;
     private final UnmappedWebhookEventRepository unmappedWebhookEventRepository;
+    private final UnmappedWebhookRetention unmappedWebhookRetention;
+    private final SystemEngineConfigService systemEngineConfigService;
     private final RefOriginService refOriginService;
     private final RefInterestPolicy refInterestPolicy;
     private final ScmCredentialService scmCredentialService;
 
     private MetadataSyncSettingsService metadataSyncSettingsService;
+    private PairTipEchoService pairTipEchoService;
 
     @Autowired(required = false)
     public void setMetadataSyncSettingsService(MetadataSyncSettingsService metadataSyncSettingsService) {
         this.metadataSyncSettingsService = metadataSyncSettingsService;
+    }
+
+    @Autowired(required = false)
+    public void setPairTipEchoService(PairTipEchoService pairTipEchoService) {
+        this.pairTipEchoService = pairTipEchoService;
     }
 
     /**
@@ -262,10 +270,15 @@ public class WebhookIngestionService {
                     return;
                 }
                 long eventPrNumber = prNode.path("number").asLong(prNode.path("id").asLong(0));
-                if (eventPrNumber > 0 && dedupLedgerService.isMirroredPullRequest(inboundRepoUrl, eventPrNumber)) {
+                String headSha = shaText(prNode.path("head").path("sha"));
+                String mergeSha = shaText(prNode.get("merge_commit_sha"));
+                boolean merged = prNode.path("merged").asBoolean(false);
+                if (eventPrNumber > 0 && dedupLedgerService.isEchoPullRequest(
+                        inboundRepoUrl, eventPrNumber, action, headSha, mergeSha, merged)) {
                     recordDiscardedEvent("webhook", mapping.getName(), inboundRepoUrl, "pull_request",
-                            senderLogin, headBranch, null, "LOOP_DETECTED_SYSTEM_ECHO",
-                            "Pull request #" + eventPrNumber + " was created by this mirror", rawPayload);
+                            senderLogin, headBranch, mergeSha != null ? mergeSha : headSha, "LOOP_DETECTED_SYSTEM_ECHO",
+                            "Pull request #" + eventPrNumber + " " + action + " matches a write this mirror recorded",
+                            rawPayload);
                     return;
                 }
                 if (!pullRequestsOn()) {
@@ -408,14 +421,6 @@ public class WebhookIngestionService {
                         : (payload != null && payload.getSender() != null ? payload.getSender().getLogin() : "unknown");
             }
 
-            String senderLogin = payload != null && payload.getSender() != null ? payload.getSender().getLogin() : null;
-            String pusherName = payload != null && payload.getPusher() != null ? payload.getPusher().getName() : null;
-            if (isMirrorAppActor(mapping, inboundRepoUrl, senderLogin, pusherName)) {
-                return skipPush(mapping, mapping.getRepoAUrl(), mapping.getRepoBUrl(), ref, branch, afterSha,
-                        commitMessage, author, "MIRROR_APP_PUSH",
-                        "Push was sent by the mirror GitHub App");
-            }
-
             // Agentic / bot / pattern filter — before direction flip so discard reasons stay clear.
             if (refInterestPolicy != null && !refInterestPolicy.shouldEnqueuePushWebhook(mapping, branch)) {
                 String reason = refInterestPolicy.isEphemeralAutomationBranch(branch)
@@ -458,12 +463,12 @@ public class WebhookIngestionService {
                         "PROTECTED_TRUNK_DELETE", "Refusing to propagate delete of protected branch " + branch);
             }
 
-            if (deleted && dedupLedgerService.isSystemGeneratedRefDelete(inboundRepoUrl != null ? inboundRepoUrl : sourceRepo, ref)) {
+            if (pairTipEchoService != null && deleted && pairTipEchoService.deleteEcho(mapping, inboundIsB, ref)) {
                 return skipPush(mapping, sourceRepo, targetRepo, ref, branch, afterSha, commitMessage, author,
-                        "LOOP_DETECTED_SYSTEM_ECHO", "Loop prevention: ref delete was pushed by this mirror utility");
+                        "LOOP_DETECTED_SYSTEM_ECHO", "Other repository already has no " + ref);
             }
 
-            if (refOriginService != null && inboundIsB && refOriginService.isForkPrHead(mapping.getId(), branch)) {
+            if (inboundIsB && RefOriginService.isSyntheticForkPrHead(branch)) {
                 return skipPush(mapping, sourceRepo, targetRepo, ref, branch, afterSha, commitMessage, author,
                         "DEST_SYNTHETIC_FORK_HEAD",
                         "Destination-only fork PR head '" + branch + "' is not reverse-synced to origin");
@@ -482,17 +487,10 @@ public class WebhookIngestionService {
                         "Public→private backup: mirror-side changes are not reverse-synced to upstream");
             }
 
-            if (refOriginService != null && refOriginService.isReplicaEvent(mapping.getId(), ref, inboundSide)) {
-                String reason = deleted ? "REPLICA_REF_DELETE" : "ORIGIN_SIDE_REPLICA";
+            if (pairTipEchoService != null && !deleted && pairTipEchoService.pushEcho(mapping, inboundIsB, ref, afterSha)) {
+                log.info("Bidirectional loop prevented for commit {} on mapping {}. Peer already has this tip.", afterSha, mapping.getName());
                 return skipPush(mapping, sourceRepo, targetRepo, ref, branch, afterSha, commitMessage, author,
-                        reason, "Event arrived on replica side; origin of '" + branch + "' is unchanged");
-            }
-
-            // 1. Check Loop / Echo Prevention Filter (SHA). Deletion echoes use the ref-delete ledger above.
-            if (!deleted && dedupLedgerService.isSystemGeneratedEcho(inboundRepoUrl != null ? inboundRepoUrl : sourceRepo, afterSha)) {
-                log.info("Bidirectional loop prevented for commit {} on mapping {}. Skipped.", afterSha, mapping.getName());
-                return skipPush(mapping, sourceRepo, targetRepo, ref, branch, afterSha, commitMessage, author,
-                        "LOOP_DETECTED_SYSTEM_ECHO", "Loop prevention: commit was pushed by this mirror utility");
+                        "LOOP_DETECTED_SYSTEM_ECHO", "Other repository already has " + ref + " at this tip");
             }
 
             if (refInterestPolicy != null
@@ -549,6 +547,17 @@ public class WebhookIngestionService {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", "Failed to enqueue webhook: " + e.getMessage()));
         }
+    }
+
+    private static String shaText(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+        String text = node.asText(null);
+        if (text == null || text.isBlank() || "null".equalsIgnoreCase(text)) {
+            return null;
+        }
+        return text.trim();
     }
 
     private boolean isMirrorAppActor(RepoMapping mapping, String repoUrl, String... actors) {
@@ -638,6 +647,7 @@ public class WebhookIngestionService {
                     .details(details)
                     .receivedAt(Instant.now())
                     .build();
+            unmappedWebhookRetention.stamp(event);
 
             unmappedWebhookEventRepository.save(event);
             webSocketNotificationService.notifyUnmappedWebhookReceived(event);
@@ -648,16 +658,28 @@ public class WebhookIngestionService {
         }
     }
 
+    private Instant lastUnmappedPurgeAt = Instant.EPOCH;
+
     /**
-     * Automated rolling 7-day retention cleanup. Runs hourly.
+     * Deletes discarded webhook rows older than the configured purge age.
+     * Ticks once a minute and runs only when the configured interval has elapsed.
+     * Unreplayed Kafka poison rows are excluded by the store delete.
      */
-    @Scheduled(cron = "0 0 * * * *")
+    @Scheduled(fixedDelay = 60_000)
     public void purgeOldUnmappedEvents() {
         try {
-            Instant cutoff = Instant.now().minus(7, ChronoUnit.DAYS);
+            int intervalMinutes = systemEngineConfigService.unmappedWebhookPurgeIntervalMinutes();
+            Instant now = Instant.now();
+            if (lastUnmappedPurgeAt.plus(intervalMinutes, ChronoUnit.MINUTES).isAfter(now)) {
+                return;
+            }
+            int purgeDays = systemEngineConfigService.unmappedWebhookPurgeDays();
+            Instant cutoff = now.minus(purgeDays, ChronoUnit.DAYS);
             int deleted = unmappedWebhookEventRepository.deleteOlderThan(cutoff);
+            lastUnmappedPurgeAt = now;
             if (deleted > 0) {
-                log.info("Purged {} discarded webhook events older than 7 days (cutoff: {}). Kafka dead-letter rows are kept.", deleted, cutoff);
+                log.info("Purged {} discarded webhook events older than {} days (cutoff: {}). Unreplayed Kafka poison rows are kept.",
+                        deleted, purgeDays, cutoff);
             }
         } catch (Exception e) {
             log.warn("Failed to purge old unmapped webhook events: {}", e.getMessage());

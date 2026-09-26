@@ -18,6 +18,7 @@ export const RepoDetailPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [progressByJobId, setProgressByJobId] = useState<Record<number, JobProgress>>({});
   const [diffProgress, setDiffProgress] = useState<DiffInspectionProgress | null>(null);
+  const [snapshotEpoch, setSnapshotEpoch] = useState(0);
 
   const loadRepoData = useCallback(async () => {
     if (!id) return;
@@ -52,6 +53,9 @@ export const RepoDetailPage: React.FC = () => {
 
   useEffect(() => {
     const cleanup = initWebSocket((data) => {
+      if (data.type === 'PAIR_SNAPSHOT' && data.mappingId === id) {
+        setSnapshotEpoch((n) => n + 1);
+      }
       if (data.type === 'JOB_UPDATE' && data.job) {
         const job = data.job as SyncJob;
         if (id && job.mappingId === id) {
@@ -172,6 +176,7 @@ export const RepoDetailPage: React.FC = () => {
       onDiffProgressClear={() => setDiffProgress(null)}
       onRefreshJobs={loadRepoData}
       allMappings={allMappings}
+      snapshotEpoch={snapshotEpoch}
     />
   );
 };

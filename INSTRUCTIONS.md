@@ -342,11 +342,35 @@ Runbook migration between stores is not implemented (fresh start per store); see
 
 ### Recipe 3: Testing Bidirectional Loop & Echo Prevention
 
-- **Goal**: Verify that automated pushes by this utility do not trigger an infinite ping-pong loop between bidirectional repositories.
+- **Goal**: Verify that a webhook for a change the other repository already has does not trigger an infinite ping-pong loop.
 - **Steps**:
-  1. When a push event is processed for Repo A, the engine writes `(Repo B, Commit X)` to the shared `echo_ledger` table **before** the Git push. A pull request the Hub creates is recorded the same way (`pr:<number>`), and a push whose sender is the mirror App bot (`{slug}[bot]`) is dropped as `MIRROR_APP_PUSH`.
-  2. When GitHub fires the subsequent webhook, any pod reads that row (or the App login) and skips it. The row lives in the same database as pair leases, so it is visible across pods for `git-utility.dedup.ledger-ttl-seconds` (default 600).
-  3. In the **Live Sync Table**, a push echo appears with status `SKIPPED` and skip reason `LOOP_DETECTED_SYSTEM_ECHO` or `MIRROR_APP_PUSH`. No outbound push is made.
+  1. The engine still records the tip SHA, ref delete, or mirrored pull-request number in `echo_ledger` when it writes. That row is not what the inbound webhook uses to skip.
+  2. `PairTipEchoService` asks the other repository what it advertises. A push is `LOOP_DETECTED_SYSTEM_ECHO` only when that peer already has the same tip. A delete is an echo only when the lookup succeeded and the ref is already gone. An unknown peer is not an echo, so the event is queued.
+  3. A push whose sender is the mirror App bot (`{slug}[bot]`) is dropped as `MIRROR_APP_PUSH`. The same App check drops `pull_request` events the App itself opened.
+  4. In the **Live Sync Table**, a push echo appears with status `SKIPPED` and skip reason `LOOP_DETECTED_SYSTEM_ECHO` or `MIRROR_APP_PUSH`. No outbound push is made.
+
+### Automated behavioral scenarios
+
+Cucumber runs inside the normal backend test task. Feature files are in `backend/src/test/resources/features/`:
+
+| Feature | What it locks |
+| :--- | :--- |
+| Trunk divergence | Isolate, origin-wins, fail-job, overwrite, fast-forward, adopt-destination, unidirectional overwrite, conflict pull-request placement |
+| Release and status echo | Delete, unpublish, and status echoes; one published release kept per tag |
+| Pull request mirror rules | Fork heads stay off `main`; close versus open; closed pull requests stay out of the open mirror |
+| Simulation lab | Pause and resume, both listeners, origin and destination faults, synthetic push |
+| Queue acknowledgement | Cancelled and missing jobs are skipped so the broker can ack |
+| Webhook echo | Hub-written mirror tips and deletes are skipped; new origin work and a new mirror `main` commit are queued; dependabot branches are ignored |
+
+```bash
+# JUnit and Cucumber together. The Gradle JVM must be 21 or 23; Java 25 cannot configure this wrapper.
+./backend/gradlew -p backend test
+
+# Cucumber scenarios only
+./backend/gradlew -p backend test -PtestEngine=cucumber
+```
+
+Maven runs both as well: `mvn -f backend/pom.xml test`.
 
 ### Replica read-only ruleset (GitHub and GHES)
 

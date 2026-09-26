@@ -5,7 +5,7 @@ import {
   getMappings,
   getQueueStatus,
   updateSimulationConfig,
-  emitSyntheticWebhook
+  emitSimulationScenario
 } from '../services/api';
 
 export const SimulationPage: React.FC = () => {
@@ -38,8 +38,8 @@ export const SimulationPage: React.FC = () => {
           await updateSimulationConfig(config);
           await loadData();
         }}
-        onEmitSyntheticWebhook={async (data) => {
-          const res = await emitSyntheticWebhook(data);
+        onEmitScenario={async (data) => {
+          const res = await emitSimulationScenario(data);
           await loadData();
           return res;
         }}

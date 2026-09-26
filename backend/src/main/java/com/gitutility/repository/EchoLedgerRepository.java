@@ -11,7 +11,7 @@ import java.util.Optional;
  */
 public interface EchoLedgerRepository {
 
-    void upsert(String repoKey, String token, Instant expiresAt);
+    void upsert(String repoKey, String token, Instant expiresAt, String payload);
 
     Optional<EchoLedgerEntry> findById(String id);
 }

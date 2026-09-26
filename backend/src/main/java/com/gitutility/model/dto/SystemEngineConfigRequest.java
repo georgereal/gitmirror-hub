@@ -15,6 +15,9 @@ public class SystemEngineConfigRequest {
     private Long maxDiskQuotaMb;
     private Integer maxCachedRepos;
     private Integer retentionHours;
+    private Integer unmappedWebhookTtlDays;
+    private Integer unmappedWebhookPurgeDays;
+    private Integer unmappedWebhookPurgeIntervalMinutes;
 
     private Integer maxConcurrentPushes;
     private Integer metadataSyncIntervalSeconds;

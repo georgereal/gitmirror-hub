@@ -24,7 +24,7 @@ public interface UnmappedWebhookEventJpaRepository extends JpaRepository<Unmappe
     @Query("""
             DELETE FROM UnmappedWebhookEvent u
             WHERE u.receivedAt < :cutoff
-              AND u.discardReason NOT IN ('KAFKA_POISON', 'KAFKA_POISON_REPLAYED')
+              AND u.discardReason <> 'KAFKA_POISON'
             """)
     int deleteOlderThan(@Param("cutoff") Instant cutoff);
 }

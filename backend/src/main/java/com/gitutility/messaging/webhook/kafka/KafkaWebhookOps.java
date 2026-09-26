@@ -1,7 +1,9 @@
 package com.gitutility.messaging.webhook.kafka;
 
 import com.gitutility.messaging.webhook.WebhookBusConditions;
+import com.gitutility.messaging.webhook.WebhookIncrementalService;
 import com.gitutility.model.dto.IncrementalGitEvent;
+import com.gitutility.service.UnmappedWebhookRetention;
 import com.gitutility.model.entity.UnmappedWebhookEvent;
 import com.gitutility.repository.UnmappedWebhookEventRepository;
 import jakarta.annotation.PreDestroy;
@@ -36,7 +38,8 @@ import java.util.concurrent.TimeUnit;
 public class KafkaWebhookOps {
 
     private final KafkaProperties kafkaProperties;
-    private final KafkaWebhookPublisher publisher;
+    private final WebhookIncrementalService webhookIncrementalService;
+    private final UnmappedWebhookRetention unmappedWebhookRetention;
     private final UnmappedWebhookEventRepository unmappedWebhookEventRepository;
     private final ObjectMapper objectMapper;
     private final KafkaListenerEndpointRegistry registry;
@@ -60,12 +63,14 @@ public class KafkaWebhookOps {
 
     public KafkaWebhookOps(
             KafkaProperties kafkaProperties,
-            KafkaWebhookPublisher publisher,
+            WebhookIncrementalService webhookIncrementalService,
+            UnmappedWebhookRetention unmappedWebhookRetention,
             UnmappedWebhookEventRepository unmappedWebhookEventRepository,
             ObjectMapper objectMapper,
             KafkaListenerEndpointRegistry registry) {
         this.kafkaProperties = kafkaProperties;
-        this.publisher = publisher;
+        this.webhookIncrementalService = webhookIncrementalService;
+        this.unmappedWebhookRetention = unmappedWebhookRetention;
         this.unmappedWebhookEventRepository = unmappedWebhookEventRepository;
         this.objectMapper = objectMapper;
         this.registry = registry;
@@ -258,26 +263,39 @@ public class KafkaWebhookOps {
     }
 
     /**
-     * Publishes stored poison rows back onto the incremental topic and marks them replayed.
-     * Unreadable payloads stay in the table.
+     * Processes stored poison rows on this process. A row is marked replayed only after that run
+     * finishes. Failures stay {@code KAFKA_POISON}. Nothing is published back onto the topic.
      */
     public int redrive(int limit) {
         int cap = Math.max(1, Math.min(limit, 100));
         List<UnmappedWebhookEvent> rows = unmappedWebhookEventRepository
                 .findByDiscardReasonOrderByReceivedAtAsc(KafkaWebhookPublisher.POISON_REASON);
+        int attempted = 0;
         int moved = 0;
         for (UnmappedWebhookEvent row : rows) {
-            if (moved >= cap) {
+            if (attempted >= cap) {
                 break;
             }
             IncrementalGitEvent event = readEvent(row.getPayloadJson());
             if (event == null || event.getRepoUrl() == null || event.getRepoUrl().isBlank()) {
                 continue;
             }
+            attempted++;
             event.setAttempt(1);
             event.setError(null);
-            publisher.publish(event);
+            String error = webhookIncrementalService.replay(event);
+            if (error != null) {
+                row.setDetails(error);
+                try {
+                    row.setPayloadJson(objectMapper.writeValueAsString(event));
+                } catch (Exception ignored) {
+                }
+                unmappedWebhookEventRepository.save(row);
+                log.warn("Poison replay stayed stored for {}: {}", row.getRepoUrl(), error);
+                continue;
+            }
             row.setDiscardReason(KafkaWebhookPublisher.POISON_REPLAYED);
+            unmappedWebhookRetention.stamp(row);
             unmappedWebhookEventRepository.save(row);
             moved++;
         }

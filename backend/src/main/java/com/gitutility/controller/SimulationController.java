@@ -1,6 +1,9 @@
 package com.gitutility.controller;
 
 import com.gitutility.model.dto.SimulationConfigRequest;
+import com.gitutility.model.dto.SimulationRefTip;
+import com.gitutility.model.dto.SimulationScenarioRequest;
+import com.gitutility.model.dto.SimulationScenarioResult;
 import com.gitutility.model.dto.SyntheticWebhookRequest;
 import com.gitutility.model.entity.SyncJob;
 import com.gitutility.service.ClusterRuntimeService;
@@ -51,5 +54,18 @@ public class SimulationController {
     public ResponseEntity<SyncJob> emitSyntheticWebhook(@RequestBody SyntheticWebhookRequest request) {
         SyncJob job = simulationService.emitSyntheticWebhook(request);
         return ResponseEntity.accepted().body(job);
+    }
+
+    @GetMapping("/ref-tip")
+    public ResponseEntity<SimulationRefTip> refTip(@RequestParam String mappingId,
+                                                   @RequestParam String side,
+                                                   @RequestParam String refName,
+                                                   @RequestParam(defaultValue = "branch") String kind) {
+        return ResponseEntity.ok(simulationService.currentTip(mappingId, side, refName, kind));
+    }
+
+    @PostMapping("/emit-scenario")
+    public ResponseEntity<SimulationScenarioResult> emitScenario(@RequestBody SimulationScenarioRequest request) {
+        return ResponseEntity.accepted().body(simulationService.emitScenario(request));
     }
 }

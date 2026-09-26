@@ -1247,7 +1247,49 @@ public class GitHubProviderService implements ScmProviderAdapter {
                     rel.path("prerelease").asBoolean(false),
                     assetNames);
         } catch (HttpClientErrorException.NotFound ignored) {
-            return ReleaseLookup.missing();
+            return findListedReleaseByTag(repoFullName, tagName, token);
+        } catch (Exception e) {
+            throw new IllegalStateException("GitHub release lookup failed for tag " + tagName + ": " + e.getMessage(), e);
+        }
+    }
+
+    /** {@code /releases/tags} hides drafts. The release list includes them. */
+    private ReleaseLookup findListedReleaseByTag(String repoFullName, String tagName, String token) {
+        try {
+            HttpHeaders headers = createHeaders(token);
+            String url = "https://api.github.com/repos/" + repoFullName + "/releases?per_page=100";
+            ResponseEntity<String> resp = restTemplate.exchange(URI.create(url), HttpMethod.GET, new HttpEntity<>(headers), String.class);
+            JsonNode releases = objectMapper.readTree(resp.getBody());
+            if (!releases.isArray()) {
+                return ReleaseLookup.missing();
+            }
+            JsonNode chosen = null;
+            for (JsonNode rel : releases) {
+                if (!tagName.equals(rel.path("tag_name").asText(""))) {
+                    continue;
+                }
+                if (chosen == null || (chosen.path("draft").asBoolean(false) && !rel.path("draft").asBoolean(false))) {
+                    chosen = rel;
+                }
+            }
+            if (chosen == null) {
+                return ReleaseLookup.missing();
+            }
+            List<String> assetNames = new ArrayList<>();
+            JsonNode assetsNode = chosen.path("assets");
+            if (assetsNode.isArray()) {
+                for (JsonNode asset : assetsNode) {
+                    assetNames.add(asset.path("name").asText());
+                }
+            }
+            return new ReleaseLookup(true,
+                    String.valueOf(chosen.path("id").asLong()),
+                    chosen.path("tag_name").asText(tagName),
+                    chosen.path("name").asText(null),
+                    chosen.path("body").asText(null),
+                    chosen.path("draft").asBoolean(false),
+                    chosen.path("prerelease").asBoolean(false),
+                    assetNames);
         } catch (Exception e) {
             throw new IllegalStateException("GitHub release lookup failed for tag " + tagName + ": " + e.getMessage(), e);
         }
@@ -1308,6 +1350,28 @@ public class GitHubProviderService implements ScmProviderAdapter {
                     + e.getResponseBodyAsString(), e);
         } catch (Exception e) {
             throw new IllegalStateException("GitHub release update failed: " + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public boolean deleteRelease(String repoFullName, String externalId) {
+        String token = getEffectiveGitHubToken(null);
+        if (token == null || repoFullName == null || externalId == null || externalId.isBlank()) {
+            return false;
+        }
+        try {
+            HttpHeaders headers = createHeaders(token);
+            String url = "https://api.github.com/repos/" + repoFullName + "/releases/" + externalId.trim();
+            restTemplate.exchange(URI.create(url), HttpMethod.DELETE, new HttpEntity<>(headers), String.class);
+            log.info("Deleted GitHub release {} on {}", externalId, repoFullName);
+            return true;
+        } catch (HttpClientErrorException.NotFound ignored) {
+            return true;
+        } catch (HttpClientErrorException e) {
+            throw new IllegalStateException("GitHub release delete rejected (" + e.getStatusCode() + "): "
+                    + e.getResponseBodyAsString(), e);
+        } catch (Exception e) {
+            throw new IllegalStateException("GitHub release delete failed: " + e.getMessage(), e);
         }
     }
 

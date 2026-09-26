@@ -22,6 +22,7 @@ public class SystemEngineConfigService {
     private final StorageTieringService storageTieringService;
     private final QueueConsumerService queueConsumerService;
     private final EnterpriseLoggingService enterpriseLoggingService;
+    private final UnmappedWebhookRetention unmappedWebhookRetention;
 
     /** Paths previously seeded from code defaults. They are not an operator choice. */
     private static final String BUILTIN_LOCAL_DIR = "/tmp/git-utility-mirrors";
@@ -35,6 +36,15 @@ public class SystemEngineConfigService {
 
     @Value("${git-utility.storage.retention-hours:72}")
     private int defaultRetentionHours;
+
+    @Value("${git-utility.storage.unmapped-webhook-ttl-days:7}")
+    private int defaultUnmappedWebhookTtlDays;
+
+    @Value("${git-utility.storage.unmapped-webhook-purge-days:7}")
+    private int defaultUnmappedWebhookPurgeDays;
+
+    @Value("${git-utility.storage.unmapped-webhook-purge-interval-minutes:60}")
+    private int defaultUnmappedWebhookPurgeIntervalMinutes;
 
     @Value("${git-utility.throttle.max-concurrent-git-pushes:5}")
     private int defaultMaxConcurrentPushes;
@@ -53,17 +63,19 @@ public class SystemEngineConfigService {
             CircuitBreakerManagerService circuitBreakerManager,
             @Lazy StorageTieringService storageTieringService,
             @Lazy QueueConsumerService queueConsumerService,
-            @Lazy EnterpriseLoggingService enterpriseLoggingService) {
+            @Lazy EnterpriseLoggingService enterpriseLoggingService,
+            @Lazy UnmappedWebhookRetention unmappedWebhookRetention) {
         this.configRepository = configRepository;
         this.circuitBreakerManager = circuitBreakerManager;
         this.storageTieringService = storageTieringService;
         this.queueConsumerService = queueConsumerService;
         this.enterpriseLoggingService = enterpriseLoggingService;
+        this.unmappedWebhookRetention = unmappedWebhookRetention;
     }
 
     @PostConstruct
     public void init() {
-        SystemEngineConfig config = syncStoragePathsFromEnv(getOrCreateConfig());
+        SystemEngineConfig config = fillWebhookRetention(syncStoragePathsFromEnv(getOrCreateConfig()));
         applyHotReload(config);
     }
 
@@ -77,6 +89,9 @@ public class SystemEngineConfigService {
                     .maxDiskQuotaMb(defaultMaxDiskQuotaMb)
                     .maxCachedRepos(defaultMaxCachedRepos)
                     .retentionHours(defaultRetentionHours)
+                    .unmappedWebhookTtlDays(Math.max(1, defaultUnmappedWebhookTtlDays))
+                    .unmappedWebhookPurgeDays(clampPurgeDays(defaultUnmappedWebhookPurgeDays, Math.max(1, defaultUnmappedWebhookTtlDays)))
+                    .unmappedWebhookPurgeIntervalMinutes(Math.max(1, defaultUnmappedWebhookPurgeIntervalMinutes))
                     .maxConcurrentPushes(defaultMaxConcurrentPushes)
                     .metadataSyncIntervalSeconds(defaultMetadataSyncIntervalSeconds)
                     .maxRetryAttempts(3)
@@ -114,6 +129,19 @@ public class SystemEngineConfigService {
         }
         if (req.getRetentionHours() != null && req.getRetentionHours() > 0) {
             config.setRetentionHours(req.getRetentionHours());
+        }
+        int ttlBefore = config.getUnmappedWebhookTtlDays();
+        if (req.getUnmappedWebhookTtlDays() != null && req.getUnmappedWebhookTtlDays() >= 1) {
+            config.setUnmappedWebhookTtlDays(Math.min(3650, req.getUnmappedWebhookTtlDays()));
+        }
+        if (req.getUnmappedWebhookPurgeDays() != null && req.getUnmappedWebhookPurgeDays() >= 1) {
+            config.setUnmappedWebhookPurgeDays(req.getUnmappedWebhookPurgeDays());
+        }
+        if (req.getUnmappedWebhookPurgeIntervalMinutes() != null && req.getUnmappedWebhookPurgeIntervalMinutes() >= 1) {
+            config.setUnmappedWebhookPurgeIntervalMinutes(Math.min(10_080, req.getUnmappedWebhookPurgeIntervalMinutes()));
+        }
+        if (config.getUnmappedWebhookPurgeDays() > config.getUnmappedWebhookTtlDays()) {
+            throw new IllegalArgumentException("Purge age cannot exceed the webhook TTL ceiling");
         }
 
         if (req.getMaxConcurrentPushes() != null && req.getMaxConcurrentPushes() > 0) {
@@ -180,6 +208,9 @@ public class SystemEngineConfigService {
 
         config.setUpdatedAt(Instant.now());
         SystemEngineConfig saved = configRepository.save(config);
+        if (saved.getUnmappedWebhookTtlDays() != ttlBefore && unmappedWebhookRetention != null) {
+            unmappedWebhookRetention.rewriteStamped();
+        }
 
         // Apply hot-reload updates across subsystems
         applyHotReload(saved);
@@ -298,6 +329,9 @@ public class SystemEngineConfigService {
                 .maxDiskQuotaMb(config.getMaxDiskQuotaMb())
                 .maxCachedRepos(config.getMaxCachedRepos())
                 .retentionHours(config.getRetentionHours())
+                .unmappedWebhookTtlDays(config.getUnmappedWebhookTtlDays())
+                .unmappedWebhookPurgeDays(config.getUnmappedWebhookPurgeDays())
+                .unmappedWebhookPurgeIntervalMinutes(config.getUnmappedWebhookPurgeIntervalMinutes())
                 .maxConcurrentPushes(config.getMaxConcurrentPushes())
                 .metadataSyncIntervalSeconds(config.getMetadataSyncIntervalSeconds())
                 .maxRetryAttempts(config.getMaxRetryAttempts())
@@ -325,5 +359,56 @@ public class SystemEngineConfigService {
                 .lastProbeSuccess(circuitBreakerManager.isLastProbeSuccess())
                 .updatedAt(config.getUpdatedAt())
                 .build();
+    }
+
+    public int unmappedWebhookTtlDays() {
+        return Math.max(1, getOrCreateConfig().getUnmappedWebhookTtlDays());
+    }
+
+    public int unmappedWebhookPurgeDays() {
+        SystemEngineConfig config = getOrCreateConfig();
+        return clampPurgeDays(config.getUnmappedWebhookPurgeDays(), Math.max(1, config.getUnmappedWebhookTtlDays()));
+    }
+
+    public int unmappedWebhookPurgeIntervalMinutes() {
+        return Math.max(1, getOrCreateConfig().getUnmappedWebhookPurgeIntervalMinutes());
+    }
+
+    private SystemEngineConfig fillWebhookRetention(SystemEngineConfig config) {
+        boolean changed = false;
+        int ttl = config.getUnmappedWebhookTtlDays();
+        if (ttl <= 0) {
+            ttl = Math.max(1, defaultUnmappedWebhookTtlDays);
+            config.setUnmappedWebhookTtlDays(ttl);
+            changed = true;
+        }
+        int purge = config.getUnmappedWebhookPurgeDays();
+        if (purge <= 0) {
+            purge = clampPurgeDays(defaultUnmappedWebhookPurgeDays, ttl);
+            config.setUnmappedWebhookPurgeDays(purge);
+            changed = true;
+        } else if (purge > ttl) {
+            config.setUnmappedWebhookPurgeDays(ttl);
+            changed = true;
+        }
+        if (config.getUnmappedWebhookPurgeIntervalMinutes() <= 0) {
+            config.setUnmappedWebhookPurgeIntervalMinutes(Math.max(1, defaultUnmappedWebhookPurgeIntervalMinutes));
+            changed = true;
+        }
+        if (!changed) {
+            return config;
+        }
+        config.setUpdatedAt(Instant.now());
+        log.info("Stored discarded-webhook retention from defaults: ttl={}d purge={}d interval={}m",
+                config.getUnmappedWebhookTtlDays(),
+                config.getUnmappedWebhookPurgeDays(),
+                config.getUnmappedWebhookPurgeIntervalMinutes());
+        return configRepository.save(config);
+    }
+
+    private static int clampPurgeDays(int purgeDays, int ttlDays) {
+        int ttl = Math.max(1, ttlDays);
+        int purge = purgeDays <= 0 ? ttl : purgeDays;
+        return Math.min(purge, ttl);
     }
 }

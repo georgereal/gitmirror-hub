@@ -42,7 +42,7 @@ return repo.findAllByOrderByReceivedAtDesc();
     public int deleteOlderThan(Instant cutoff) {
         return (int) mongoTemplate.remove(
                 Query.query(Criteria.where("receivedAt").lt(cutoff)
-                        .and("discardReason").nin("KAFKA_POISON", "KAFKA_POISON_REPLAYED")),
+                        .and("discardReason").ne("KAFKA_POISON")),
                 UnmappedWebhookEvent.class).getDeletedCount();
     }
 

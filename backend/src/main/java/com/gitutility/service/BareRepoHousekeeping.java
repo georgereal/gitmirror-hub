@@ -95,46 +95,34 @@ public final class BareRepoHousekeeping {
         return hasAnyHeadRefs(repository.getDirectory());
     }
 
+    /**
+     * Branch names for the pair matrix: source heads, legacy source tracking, and destination tracking.
+     * Loose refs are included even when {@code packed-refs} already has other heads. A branch updated
+     * after the pack (or never packed) lives only as a file under {@code refs/heads/}.
+     */
     public static Set<String> listHeadBranchNames(Repository repository) throws IOException {
         Set<String> names = new TreeSet<>();
         if (repository == null) {
             return names;
         }
-        int packedHeadCount = 0;
-        File packed = new File(repository.getDirectory(), "packed-refs");
-        if (packed.isFile()) {
-            try (BufferedReader reader = Files.newBufferedReader(packed.toPath())) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (line.isBlank() || line.startsWith("#") || line.startsWith("^")) {
-                        continue;
-                    }
-                    int space = line.indexOf(' ');
-                    if (space <= 0) {
-                        continue;
-                    }
-                    String ref = line.substring(space + 1).trim();
-                    if (ref.startsWith("refs/heads/")) {
-                        names.add(ref.substring("refs/heads/".length()));
-                        packedHeadCount++;
-                    } else if (ref.startsWith("refs/remotes/source/")) {
-                        names.add(ref.substring("refs/remotes/source/".length()));
-                    } else if (ref.startsWith("refs/remotes/target/")) {
-                        names.add(ref.substring("refs/remotes/target/".length()));
-                    }
-                }
-            }
+        names.addAll(listRefSuffixesWithPrefix(repository, "refs/heads/"));
+        names.addAll(listRefSuffixesWithPrefix(repository, "refs/remotes/source/"));
+        names.addAll(listRefSuffixesWithPrefix(repository, "refs/remotes/target/"));
+        return names;
+    }
+
+    /**
+     * Source branch names only: {@code refs/heads/*} and legacy {@code refs/remotes/source/*}.
+     * Destination tracking refs are not source heads. Folding them in makes a branch deleted
+     * on the source look like the source still has it.
+     */
+    public static Set<String> listSourceHeadBranchNames(Repository repository) throws IOException {
+        Set<String> names = new TreeSet<>();
+        if (repository == null) {
+            return names;
         }
-        if (packedHeadCount == 0) {
-            Path headsDir = repository.getDirectory().toPath().resolve("refs/heads");
-            if (Files.isDirectory(headsDir)) {
-                try (Stream<Path> entries = Files.list(headsDir)) {
-                    entries.map(p -> p.getFileName().toString())
-                            .filter(n -> !n.startsWith("."))
-                            .forEach(names::add);
-                }
-            }
-        }
+        names.addAll(listRefSuffixesWithPrefix(repository, "refs/heads/"));
+        names.addAll(listRefSuffixesWithPrefix(repository, "refs/remotes/source/"));
         return names;
     }
 

@@ -274,10 +274,16 @@ public class RefOriginService {
     }
 
     /**
-     * Heads originated on the destination of this job, or synthetic fork heads when pushing
-     * toward repo A, must not be included in push specs.
+     * Omit synthetic fork heads, conflict branches, and fork PR heads aimed at origin.
+     * A normal branch is omitted only when {@code tipSha} is already the tip Hub wrote
+     * on the destination ref. Origin side does not hide a new merge SHA.
      */
     public boolean shouldOmitHeadPush(RepoMapping mapping, PairSide sourceSide, PairSide destSide, String branchOrRef) {
+        return shouldOmitHeadPush(mapping, sourceSide, destSide, branchOrRef, null, null);
+    }
+
+    public boolean shouldOmitHeadPush(RepoMapping mapping, PairSide sourceSide, PairSide destSide,
+                                       String branchOrRef, String tipSha, String recordedDestTip) {
         if (mapping == null || branchOrRef == null) {
             return false;
         }
@@ -288,8 +294,19 @@ public class RefOriginService {
         if (destSide == PairSide.A && isForkPrHead(mapping.getId(), branch)) {
             return true;
         }
-        PairSide origin = originOf(mapping.getId(), branchOrRef);
-        return origin != null && sourceSide != null && origin != sourceSide;
+        return tipSha != null && !tipSha.isBlank() && tipSha.equals(recordedDestTip);
+    }
+
+    /**
+     * Incremental delete already passed the peer-tip echo check. Propagate it unless the ref is
+     * protected or a synthetic fork head. Full-mirror prune still uses {@link #shouldPropagateDelete}.
+     */
+    public boolean shouldPropagateInboundDelete(RepoMapping mapping, PairSide sourceSide, String branchOrRef) {
+        if (mapping == null || isProtectedTrunk(branchOrRef) || isSyncConflictBranch(branchOrRef)
+                || isSyntheticForkPrHead(branchOrRef)) {
+            return false;
+        }
+        return true;
     }
 
     public boolean shouldPropagateDelete(RepoMapping mapping, PairSide sourceSide, String branchOrRef) {
