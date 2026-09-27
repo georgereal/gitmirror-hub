@@ -1,0 +1,10 @@
+{
+  "provider": "github",
+  "repoUrl": "https://github.com/acme/origin.git",
+  "ref": "refs/heads/main",
+  "beforeSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "afterSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "deliveryId": "delivery-push-1",
+  "eventType": "push",
+  "receivedAt": "2026-09-26T12:00:00.000Z"
+}

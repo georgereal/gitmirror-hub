@@ -22,6 +22,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -112,6 +113,7 @@ class WebhookIncrementalServiceTest {
         when(refInterestPolicy.shouldEnqueuePushWebhook(any(), anyString())).thenReturn(true);
         when(refInterestPolicy.tryAcceptIncrementalEnqueue(anyString(), anyString())).thenReturn(true);
         when(pairTipEchoService.pushEcho(any(), anyBoolean(), anyString(), anyString())).thenReturn(false);
+        when(syncJobRepository.findByQueueMessageId(anyString())).thenReturn(Optional.empty());
         when(syncJobRepository.save(any())).thenAnswer(invocation -> {
             com.gitutility.model.entity.SyncJob job = invocation.getArgument(0);
             job.setId("job-1");
@@ -153,6 +155,7 @@ class WebhookIncrementalServiceTest {
         when(refInterestPolicy.shouldEnqueuePushWebhook(any(), anyString())).thenReturn(true);
         when(refInterestPolicy.tryAcceptIncrementalEnqueue(anyString(), anyString())).thenReturn(true);
         when(pairTipEchoService.deleteEcho(any(), anyBoolean(), anyString())).thenReturn(false);
+        when(syncJobRepository.findByQueueMessageId(anyString())).thenReturn(Optional.empty());
         when(syncJobRepository.save(any())).thenAnswer(invocation -> {
             com.gitutility.model.entity.SyncJob job = invocation.getArgument(0);
             job.setId("job-del");

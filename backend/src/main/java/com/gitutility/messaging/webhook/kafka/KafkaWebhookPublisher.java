@@ -9,7 +9,6 @@ import com.gitutility.service.RepoMappingService;
 import com.gitutility.service.WebSocketNotificationService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
 
@@ -25,7 +24,6 @@ public class KafkaWebhookPublisher implements WebhookEventPublisher {
 
     public static final String POISON_REPLAYED = "KAFKA_POISON_REPLAYED";
 
-    private final KafkaTemplate<String, String> webhookKafkaTemplate;
     private final ObjectMapper objectMapper;
     private final UnmappedWebhookEventRepository unmappedWebhookEventRepository;
     private final WebSocketNotificationService webSocketNotificationService;
@@ -34,11 +32,9 @@ public class KafkaWebhookPublisher implements WebhookEventPublisher {
     private String topic;
 
     public KafkaWebhookPublisher(
-            KafkaTemplate<String, String> webhookKafkaTemplate,
             ObjectMapper objectMapper,
             UnmappedWebhookEventRepository unmappedWebhookEventRepository,
             WebSocketNotificationService webSocketNotificationService) {
-        this.webhookKafkaTemplate = webhookKafkaTemplate;
         this.objectMapper = objectMapper;
         this.unmappedWebhookEventRepository = unmappedWebhookEventRepository;
         this.webSocketNotificationService = webSocketNotificationService;
@@ -46,7 +42,8 @@ public class KafkaWebhookPublisher implements WebhookEventPublisher {
 
     @Override
     public void publish(IncrementalGitEvent event) {
-        send(topic, event);
+        throw new EnrichedEventRedelivery(
+                "incremental processing reads the source record and does not write it back to Kafka");
     }
 
     @Override
@@ -76,16 +73,6 @@ public class KafkaWebhookPublisher implements WebhookEventPublisher {
     @Override
     public String destination() {
         return topic;
-    }
-
-    private void send(String destination, IncrementalGitEvent event) {
-        try {
-            String key = event == null ? null : RepoMappingService.normalizeRepoKey(event.getRepoUrl());
-            String json = objectMapper.writeValueAsString(event);
-            webhookKafkaTemplate.send(destination, key, json).get();
-        } catch (Exception e) {
-            throw new IllegalStateException("Kafka publish to " + destination + " failed: " + e.getMessage(), e);
-        }
     }
 
     private void store(String provider, String repoUrl, String ref, String afterSha,

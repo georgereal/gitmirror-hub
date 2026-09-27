@@ -145,6 +145,9 @@ git-utility:
       listener-concurrency: ${GIT_WEBHOOK_KAFKA_LISTENER_CONCURRENCY:4}
       max-poll-interval-ms: ${GIT_WEBHOOK_KAFKA_MAX_POLL_INTERVAL_MS:600000}
       session-timeout-ms: ${GIT_WEBHOOK_KAFKA_SESSION_TIMEOUT_MS:45000}
+      # Adapters. normalized-v1 is built in. GIT_WEBHOOK_EVENT_FORMATS_DIR adds more schema versions. Hub does not produce processing records.
+      event-format: ${GIT_WEBHOOK_EVENT_FORMAT:normalized-v1}
+      event-formats-dir: ${GIT_WEBHOOK_EVENT_FORMATS_DIR:}
     rabbitmq:
       addresses: ${GIT_WEBHOOK_RABBITMQ_ADDRESSES:${SPRING_RABBITMQ_ADDRESSES:}}
       exchange: ${GIT_WEBHOOK_RABBITMQ_EXCHANGE:git.webhook.exchange}

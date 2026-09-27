@@ -23,6 +23,10 @@ public class IncrementalGitEvent {
     private String deliveryId;
     /** {@code push}, {@code create}, {@code delete}, {@code pull_request}, {@code release}, {@code status}, or {@code check_run}. */
     private String eventType;
+    /** Adapter id that produced this event. {@code normalized-v1} or a mapping file id. */
+    private String schemaVersion;
+    /** Source Kafka value, capped, kept so the incremental list can show what arrived. */
+    private String sourceMessage;
     /** Original webhook body for metadata events. Git push and delete leave this empty. */
     private String rawPayload;
     private String receivedAt;

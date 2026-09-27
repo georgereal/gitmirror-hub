@@ -78,6 +78,7 @@ public class PoisonReplaySteps {
                 retention,
                 events,
                 json,
+                new com.gitutility.messaging.webhook.kafka.KafkaIncrementalDecoder(json, ""),
                 mock(KafkaListenerEndpointRegistry.class));
         poison = null;
         discarded = null;

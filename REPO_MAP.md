@@ -13,6 +13,7 @@ gitUtility/
 ├── INSTRUCTIONS.md                     # Operational guide, runbook, and failover instructions
 ├── INSTRUCTIONS-MULTI-POD.md           # Local multi-pod (2+ backend JVMs) runbook
 ├── INSTRUCTIONS-KAFKA-WEBHOOK.md       # Confluent Cloud cluster, Kafka webhook worker, and Hub bus env
+├── KAFKA_EVENT_FORMATS.md              # Incremental topic adapters and GIT_WEBHOOK_EVENT_FORMATS_DIR
 ├── KAFKA_PARTITION_ORDERING.md         # Why one repo stays in order across many partitions
 ├── SCM_PROVIDER_SETUP.md               # Create/configure SCM identities (GitHub App first; more providers later)
 ├── README.md                           # Quickstart summary
@@ -42,6 +43,16 @@ gitUtility/
 │   ├── README.md                       # Wrangler login, secret setup, and deployment runbook
 │   └── src/
 │       └── index.ts                    # Edge router: WebCrypto HMAC validation & RabbitMQ HTTP publish
+│
+├── kafka-event-format/                 # CLI that maps enriched Kafka records onto IncrementalGitEvent
+│   ├── package.json                    # kafka-format bin; kafkajs is used only by the bridge command
+│   ├── README.md                       # Flag normalized-v1 vs enriched, mapping files, check and bridge
+│   ├── examples/                       # Sample shapes, canonical events, and config files
+│   └── src/
+│       ├── cli.js                      # check and bridge entry
+│       ├── apply.js                    # JSON Pointer mapping, when-match, validation
+│       ├── bridge.js                   # Consume source topic, produce canonical topic
+│       └── repoKey.js                  # Same repo key as webhook-worker-kafka
 │
 ├── backend/                            # Spring Boot 4.1.1 Backend Application (Java 21/23)
 │   ├── pom.xml                         # Maven build (preferred for local bootRun)
@@ -315,7 +326,7 @@ gitUtility/
             └── UnmappedWebhooksView.tsx        # Discarded & unmapped webhooks stream with 1-click configure action
 ```
 
-> **Tests:** `backend/src/test/java/com/gitutility/` contains ~73 JUnit classes covering sync resume, GraphQL parsers, queue skip-ACK, checkpoints, LFS, conflicts, and controller integration. The tree above lists representative tests only. Cucumber scenarios in `backend/src/test/resources/features/` run in the same Gradle/Maven test task (46 scenarios: trunk divergence, release echo, pull-request mirror rules, simulation lab, queue acknowledgement, webhook echo). Persistence facades are additionally proven by the store contract suite in `persistence/contract/` (`H2StoreContractTest` runs on every build; `MongoStoreContractTest` runs against a real MongoDB supplied via `MONGO_CONTRACT_URI` and skips when unset — no Docker/Testcontainers; see `INSTRUCTIONS.md`).
+> **Tests:** `backend/src/test/java/com/gitutility/` contains the JUnit classes covering sync resume, GraphQL parsers, queue skip-ACK, checkpoints, LFS, conflicts, and controller integration, plus focus locks for a local incremental mirror, pull-request heads, one release per tag, poison retention, write authority, disaster-recovery lane scope, and pair leases. The tree above lists representative tests only. Cucumber scenarios in `backend/src/test/resources/features/` run in the same Gradle/Maven test task. `com.gitutility.coverage` (`@Tag("coverage")`) exercises host adapters and other classes the focus suite does not enter so the JaCoCo report counts them; a green result there does not lock a planned outcome. Persistence facades are additionally proven by the store contract suite in `persistence/contract/` (`H2StoreContractTest` runs on every build; `MongoStoreContractTest` runs against a real MongoDB supplied via `MONGO_CONTRACT_URI` and skips when unset — no Docker/Testcontainers; see `INSTRUCTIONS.md`).
 
 ---
 
@@ -344,6 +355,7 @@ gitUtility/
 | **Backend** | `MessagingModule` / `SyncEventBus` | `GIT_MESSAGING_PROVIDER=rabbitmq\|kafka\|none`; descriptor at `GET /api/v1/messaging`. |
 | **Backend** | `WebhookIncrementalService` | `GIT_WEBHOOK_BUS_PROVIDER=kafka\|rabbitmq\|off`. One incremental lane. `GET /api/v1/webhook-bus`, `POST /api/v1/webhook-bus/redrive`. |
 | **Edge** | `webhook-worker-kafka/` | Optional Cloudflare script. HMAC then Confluent REST produce of a normalized git event. |
+| **Tool** | `kafka-event-format/` | Local check for mapping files. Hub adapts records after consume. `normalized-v1` is built in. `GIT_WEBHOOK_EVENT_FORMATS_DIR` adds schema versions. |
 | **Backend** | `SyncLaneRouter` | Shared full vs incremental routing rule used by producer, engine, DLQ redrive, and consumers. |
 | **Backend** | `QueueConsumerService` | Shared execution path; Rabbit lane listeners live in `messaging.rabbit.RabbitLaneConsumers` when provider=`rabbit`. |
 | **Backend** | `ConsumerRuntimeRegistry` | Tracks the AMQP thread currently holding an unacked message per lane (job, thread liveness, elapsed). |

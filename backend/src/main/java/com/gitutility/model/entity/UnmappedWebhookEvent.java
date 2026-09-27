@@ -36,6 +36,10 @@ public class UnmappedWebhookEvent implements WritePreparer {
 
     private String eventType; // "push", "pull_request", "ping", "status", etc.
 
+    /** Adapter id that read this record, when the incremental bus produced the row. */
+    @Column(length = 128)
+    private String schemaVersion;
+
     private String sender; // e.g. "alice"
 
     private String branch; // e.g. "main"

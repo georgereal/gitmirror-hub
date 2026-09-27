@@ -287,6 +287,14 @@ public class WebhookIncrementalService {
                 return existing;
             }
         }
+        if (event.getDeliveryId() != null && !event.getDeliveryId().isBlank()) {
+            SyncJob byDelivery = syncJobRepository.findByQueueMessageId(event.getDeliveryId()).orElse(null);
+            if (byDelivery != null && mapping.getId().equals(byDelivery.getMappingId())) {
+                event.setJobId(byDelivery.getId());
+                stampProvenance(byDelivery, event);
+                return syncJobRepository.save(byDelivery);
+            }
+        }
         SyncJob job = SyncJob.builder()
                 .mappingId(mapping.getId())
                 .pairName(mapping.getName())
@@ -297,6 +305,9 @@ public class WebhookIncrementalService {
                 .commitSha(afterSha)
                 .status(SyncStatus.QUEUED)
                 .triggerType(TriggerType.WEBHOOK)
+                .webhookEventType(event.getEventType())
+                .schemaVersion(event.getSchemaVersion())
+                .sourceMessage(event.getSourceMessage())
                 .createdAt(Instant.now())
                 .queueMessageId(event.getDeliveryId())
                 .build();
@@ -304,6 +315,18 @@ public class WebhookIncrementalService {
         event.setJobId(job.getId());
         webSocketNotificationService.notifyJobUpdated(job);
         return job;
+    }
+
+    private static void stampProvenance(SyncJob job, IncrementalGitEvent event) {
+        if (event.getEventType() != null && !event.getEventType().isBlank()) {
+            job.setWebhookEventType(event.getEventType());
+        }
+        if (event.getSchemaVersion() != null && !event.getSchemaVersion().isBlank()) {
+            job.setSchemaVersion(event.getSchemaVersion());
+        }
+        if (event.getSourceMessage() != null && !event.getSourceMessage().isBlank()) {
+            job.setSourceMessage(event.getSourceMessage());
+        }
     }
 
     private void discard(IncrementalGitEvent event, String reason, String details) {
@@ -314,10 +337,12 @@ public class WebhookIncrementalService {
                     .repoFullName(repoPath(event.getRepoUrl()))
                     .repoUrl(event.getRepoUrl())
                     .eventType(event.getEventType() == null ? "push" : event.getEventType())
+                    .schemaVersion(event.getSchemaVersion())
                     .branch(branchOf(event.getRef()))
                     .commitSha(event.getAfterSha())
                     .discardReason(reason)
                     .details(details)
+                    .payloadJson(event.getSourceMessage())
                     .receivedAt(Instant.now())
                     .build();
             unmappedWebhookRetention.stamp(row);

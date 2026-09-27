@@ -1,5 +1,6 @@
 package com.gitutility.messaging.webhook;
 
+import com.gitutility.messaging.webhook.kafka.IncrementalEventDecoder;
 import org.springframework.boot.EnvironmentPostProcessor;
 import org.springframework.boot.SpringApplication;
 import org.springframework.core.Ordered;
@@ -75,6 +76,7 @@ public class WebhookBusEnvironmentPostProcessor implements EnvironmentPostProces
                         "Kafka SASL requires GIT_WEBHOOK_KAFKA_SASL_USERNAME and GIT_WEBHOOK_KAFKA_SASL_PASSWORD");
             }
         }
+        validateEventFormat(environment);
         String group = firstNonBlank(
                 environment.getProperty("git-utility.webhook-bus.kafka.group-id"),
                 environment.getProperty("GIT_WEBHOOK_KAFKA_GROUP_ID"),
@@ -164,6 +166,15 @@ public class WebhookBusEnvironmentPostProcessor implements EnvironmentPostProces
         if (environment.getProperty("spring.rabbitmq.addresses") == null
                 && environment.getProperty("SPRING_RABBITMQ_ADDRESSES") == null) {
             overrides.put("spring.rabbitmq.addresses", addresses);
+        }
+    }
+
+    private static void validateEventFormat(ConfigurableEnvironment environment) {
+        String dir = firstNonBlank(
+                environment.getProperty("git-utility.webhook-bus.kafka.event-formats-dir"),
+                environment.getProperty("GIT_WEBHOOK_EVENT_FORMATS_DIR"));
+        if (dir != null) {
+            IncrementalEventDecoder.requireFormats(dir);
         }
     }
 

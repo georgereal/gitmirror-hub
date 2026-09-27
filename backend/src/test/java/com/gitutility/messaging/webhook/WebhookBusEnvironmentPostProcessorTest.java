@@ -48,6 +48,17 @@ class WebhookBusEnvironmentPostProcessorTest {
     }
 
     @Test
+    void missingFormatsDirectoryFailsStartup() {
+        MockEnvironment env = new MockEnvironment();
+        env.setProperty("GIT_WEBHOOK_BUS_PROVIDER", "kafka");
+        env.setProperty("GIT_WEBHOOK_KAFKA_BOOTSTRAP_SERVERS", "localhost:9092");
+        env.setProperty("GIT_WEBHOOK_EVENT_FORMATS_DIR", "/tmp/git-utility-missing-formats");
+
+        assertThrows(IllegalStateException.class,
+                () -> new WebhookBusEnvironmentPostProcessor().postProcessEnvironment(env, new SpringApplication()));
+    }
+
+    @Test
     void rabbitRejectsQueueThatMatchesFullMirrorLane() {
         MockEnvironment env = new MockEnvironment();
         env.setProperty("GIT_MESSAGING_PROVIDER", "rabbitmq");

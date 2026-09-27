@@ -208,6 +208,8 @@ npx wrangler delete
 
 [`webhook-worker-kafka/`](webhook-worker-kafka/README.md) is a second Worker. It produces normalized git events to a Kafka topic over the Confluent REST API. Deploy it only when `GIT_WEBHOOK_BUS_PROVIDER=kafka`. Its cluster and API key live in gitignored `webhook-worker-kafka/.env`, same as the Rabbit worker. Start, stop, and delete use `ENABLED` in that file, `workers_dev` in `wrangler.toml`, and `wrangler delete`. The script name is `gitmirror-webhook-worker-kafka`. The Confluent walkthrough is [`INSTRUCTIONS-KAFKA-WEBHOOK.md`](INSTRUCTIONS-KAFKA-WEBHOOK.md).
 
+**Event shape on that topic.** Hub always understands `normalized-v1` (the flat event the Worker publishes). A different JSON shape is an adapter file. Set `GIT_WEBHOOK_EVENT_FORMATS_DIR` to the directory of those files in the same shell that starts Hub, then restart. Leave it unset to keep only `normalized-v1`. The directory is read at startup. How a record picks an adapter, the mapping file, and the Queues columns are in [`KAFKA_EVENT_FORMATS.md`](KAFKA_EVENT_FORMATS.md). The Kafka runbook step is [`INSTRUCTIONS-KAFKA-WEBHOOK.md`](INSTRUCTIONS-KAFKA-WEBHOOK.md) section 12.
+
 Both Workers accept only `push`, `create`, `delete`, `pull_request`, `release`, `status`, and `check_run`. After those events are added on the GitHub App, redeploy the Worker for the bus you use. An older bundle answers `200 ignored` and Hub never stores the delivery.
 
 ---
@@ -362,13 +364,30 @@ Cucumber runs inside the normal backend test task. Feature files are in `backend
 | Queue acknowledgement | Cancelled and missing jobs are skipped so the broker can ack |
 | Webhook echo | Hub-written mirror tips and deletes are skipped; new origin work and a new mirror `main` commit are queued; dependabot branches are ignored |
 
+Focus JUnit locks outcomes a later edit can flip while the scenarios above stay green:
+
+| Test | What it locks |
+| :--- | :--- |
+| `GitSyncEngineLocalMirrorTest` | An incremental `refs/heads/main` job fetches only that ref and the commit lands on a local target |
+| `PullRequestAndReleaseReplicationTest` | A fork or a `main` head is created as `fork-pr-{n}`; a same-repo feature branch keeps its name; a missing release tag is created once and an existing tag is updated |
+| `AuxStoreContract` | The purge delete removes old rows and `KAFKA_POISON_REPLAYED`, and leaves unreplayed `KAFKA_POISON` |
+| `WriteAuthorityAndDrLaneTest` | A linked pair cannot be read-only on both sides; a disaster-recovery lane tries an enterprise lock, then an organization lock, and a repository ruleset only after both are rejected |
+| `PairLeaseServiceTest` | A second pod cannot take a live pair lease; it can after release or expiry |
+
 ```bash
 # JUnit and Cucumber together. The Gradle JVM must be 21 or 23; Java 25 cannot configure this wrapper.
+# This also writes the JaCoCo report for that run.
 ./backend/gradlew -p backend test
 
-# Cucumber scenarios only
+# Cucumber scenarios only. This replaces the coverage report with a Cucumber-only measurement.
 ./backend/gradlew -p backend test -PtestEngine=cucumber
 ```
+
+The HTML report is `backend/build/reports/jacoco/test/html/index.html`. XML is `backend/build/reports/jacoco/test/jacocoTestReport.xml`.
+
+### Coverage report tests
+
+`backend/src/test/java/com/gitutility/coverage/` holds JUnit tagged `@Tag("coverage")`. Those tests call the host adapters, GitHub token and GraphQL clients, the ruleset HTTP client, the provider facade, the mapping and queue controllers, the websocket broadcast, and the instance heartbeat, using a stand-in HTTP response. They are part of `./backend/gradlew -p backend test`, so the JaCoCo report counts those lines. A green coverage test does not mean a planned mirror outcome still holds. When a scenario or a focus test above goes red, that is the test to read.
 
 Maven runs both as well: `mvn -f backend/pom.xml test`.
 

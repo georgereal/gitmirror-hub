@@ -1,0 +1,11 @@
+{
+  "kind": "ref.deleted",
+  "deliveryId": "delivery-delete-1",
+  "provider": "github",
+  "repository": { "cloneUrl": "https://github.com/acme/origin.git" },
+  "git": {
+    "ref": "refs/heads/feature",
+    "before": "cccccccccccccccccccccccccccccccccccccccc",
+    "after": "0000000000000000000000000000000000000000"
+  }
+}

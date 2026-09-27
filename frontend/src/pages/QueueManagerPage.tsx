@@ -118,6 +118,7 @@ export const QueueManagerPage: React.FC = () => {
   const [feedback, setFeedback] = useState<string | null>(null);
   const [confirmPurge, setConfirmPurge] = useState(false);
   const [selectedJobForLogs, setSelectedJobForLogs] = useState<SyncJob | null>(null);
+  const [sourceRecordId, setSourceRecordId] = useState<string | null>(null);
 
   const loadData = async () => {
     try {
@@ -706,10 +707,26 @@ export const QueueManagerPage: React.FC = () => {
                     </span>
                   </div>
                   <p className="text-zinc-600 mt-0.5">{row.details || row.eventType}</p>
+                  <p className="text-[11px] text-zinc-500 mt-0.5">
+                    {row.eventType ? `Event ${row.eventType}` : 'Event unknown'}
+                    {row.schemaVersion ? ` · adapter ${row.schemaVersion}` : ''}
+                  </p>
                   <p className="text-[11px] text-zinc-400 mt-0.5 font-mono">
                     {row.commitSha ? `${row.commitSha.slice(0, 10)} · ` : ''}
                     {row.receivedAt ? new Date(row.receivedAt).toLocaleString() : ''}
                   </p>
+                  {row.payloadJson && (
+                    <button
+                      type="button"
+                      onClick={() => setSourceRecordId((current) => current === row.id ? null : row.id)}
+                      className="mt-1 text-[11px] font-medium text-zinc-700 underline"
+                    >
+                      {sourceRecordId === row.id ? 'Hide Kafka message' : 'Kafka message'}
+                    </button>
+                  )}
+                  {sourceRecordId === row.id && row.payloadJson && (
+                    <pre className="mt-1 max-h-40 overflow-auto rounded bg-zinc-50 p-2 text-[10px] text-zinc-700 whitespace-pre-wrap">{row.payloadJson}</pre>
+                  )}
                 </li>
               ))}
             </ul>
@@ -745,10 +762,26 @@ export const QueueManagerPage: React.FC = () => {
                       {row.branch ? ` · ${row.branch}` : ''}
                     </div>
                     <p className="text-zinc-600 mt-0.5">{row.details || row.eventType || 'Failure'}</p>
+                    <p className="text-[11px] text-zinc-500 mt-0.5">
+                      {row.eventType ? `Event ${row.eventType}` : 'Event unknown'}
+                      {row.schemaVersion ? ` · adapter ${row.schemaVersion}` : ''}
+                    </p>
                     <p className="text-[11px] text-zinc-400 mt-0.5 font-mono">
                       {row.commitSha ? `${row.commitSha.slice(0, 10)} · ` : ''}
                       {row.receivedAt ? new Date(row.receivedAt).toLocaleString() : ''}
                     </p>
+                    {row.payloadJson && (
+                      <button
+                        type="button"
+                        onClick={() => setSourceRecordId((current) => current === `poison-${row.id}` ? null : `poison-${row.id}`)}
+                        className="mt-1 text-[11px] font-medium text-zinc-700 underline"
+                      >
+                        {sourceRecordId === `poison-${row.id}` ? 'Hide Kafka message' : 'Kafka message'}
+                      </button>
+                    )}
+                    {sourceRecordId === `poison-${row.id}` && row.payloadJson && (
+                      <pre className="mt-1 max-h-40 overflow-auto rounded bg-zinc-50 p-2 text-[10px] text-zinc-700 whitespace-pre-wrap">{row.payloadJson}</pre>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -777,6 +810,8 @@ export const QueueManagerPage: React.FC = () => {
                   <th className="py-2.5 px-4 font-medium">Pair</th>
                   <th className="py-2.5 px-4 font-medium">Lane</th>
                   <th className="py-2.5 px-4 font-medium">Branch</th>
+                  {historyTab === 'events' && <th className="py-2.5 px-4 font-medium">Event</th>}
+                  {historyTab === 'events' && <th className="py-2.5 px-4 font-medium">Adapter</th>}
                   <th className="py-2.5 px-4 font-medium">Trigger</th>
                   <th className="py-2.5 px-4 font-medium">Status</th>
                   <th className="py-2.5 px-4 font-medium">When</th>
@@ -785,7 +820,8 @@ export const QueueManagerPage: React.FC = () => {
               </thead>
               <tbody className="divide-y divide-zinc-100">
                 {historyJobs.map((job) => (
-                  <tr key={job.id} className="hover:bg-zinc-50/70">
+                  <React.Fragment key={job.id}>
+                  <tr className="hover:bg-zinc-50/70">
                     <td className="py-3 px-4">
                       {isDispatchableStatus(job.status) ? (
                         <input
@@ -799,6 +835,23 @@ export const QueueManagerPage: React.FC = () => {
                     <td className="py-3 px-4 font-medium text-zinc-900">{job.pairName}</td>
                     <td className="py-3 px-4 text-zinc-500">{isFullLane(job) ? 'Full' : 'Webhook'}</td>
                     <td className="py-3 px-4 font-mono text-zinc-600 max-w-[220px] truncate">{job.branch || '*'}</td>
+                    {historyTab === 'events' && (
+                      <td className="py-3 px-4 text-zinc-700">{job.webhookEventType || '—'}</td>
+                    )}
+                    {historyTab === 'events' && (
+                      <td className="py-3 px-4 text-zinc-700">
+                        <div>{job.schemaVersion || '—'}</div>
+                        {job.sourceMessage && (
+                          <button
+                            type="button"
+                            onClick={() => setSourceRecordId((current) => current === job.id ? null : job.id)}
+                            className="mt-1 text-[11px] font-medium text-zinc-700 underline"
+                          >
+                            {sourceRecordId === job.id ? 'Hide Kafka message' : 'Kafka message'}
+                          </button>
+                        )}
+                      </td>
+                    )}
                     <td className="py-3 px-4 text-zinc-500">{job.triggerType}</td>
                     <td className="py-3 px-4">
                       <StatusPill status={job.status} />
@@ -847,6 +900,14 @@ export const QueueManagerPage: React.FC = () => {
                       )}
                     </td>
                   </tr>
+                  {historyTab === 'events' && sourceRecordId === job.id && job.sourceMessage && (
+                    <tr className="bg-zinc-50/80">
+                      <td colSpan={10} className="px-4 py-2">
+                        <pre className="max-h-48 overflow-auto text-[10px] text-zinc-700 whitespace-pre-wrap">{job.sourceMessage}</pre>
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
                 ))}
               </tbody>
             </table>

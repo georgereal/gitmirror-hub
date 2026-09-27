@@ -1,0 +1,13 @@
+{
+  "format": "enriched",
+  "formatsDir": "formats",
+  "samplesDir": "samples",
+  "consume": "enriched.git.events",
+  "produce": "git.sync.incremental",
+  "bootstrapServers": "localhost:9092",
+  "groupId": "kafka-event-format",
+  "securityProtocol": "PLAINTEXT",
+  "saslMechanism": "PLAIN",
+  "saslUsername": "",
+  "saslPassword": ""
+}

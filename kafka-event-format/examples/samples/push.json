@@ -1,0 +1,11 @@
+{
+  "kind": "ref.updated",
+  "deliveryId": "delivery-push-1",
+  "provider": "github",
+  "repository": { "cloneUrl": "https://github.com/acme/origin.git" },
+  "git": {
+    "ref": "refs/heads/main",
+    "before": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "after": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "id": "enriched-git-v1",
+  "when": { "pointer": "/kind", "in": ["ref.updated", "ref.created", "ref.deleted"] },
+  "fields": {
+    "repoUrl": "/repository/cloneUrl",
+    "ref": "/git/ref",
+    "beforeSha": "/git/before",
+    "afterSha": "/git/after",
+    "deliveryId": "/deliveryId",
+    "provider": "/provider",
+    "eventType": "/kind"
+  },
+  "eventTypeMap": {
+    "ref.updated": "push",
+    "ref.created": "create",
+    "ref.deleted": "delete"
+  }
+}

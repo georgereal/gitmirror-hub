@@ -1,0 +1,9 @@
+{
+  "type": "pr.opened",
+  "id": "delivery-pr-1",
+  "scm": "github",
+  "repo": "https://github.com/acme/origin",
+  "head": "refs/heads/feature",
+  "sha": "dddddddddddddddddddddddddddddddddddddddd",
+  "webhook": { "action": "opened", "number": 12 }
+}

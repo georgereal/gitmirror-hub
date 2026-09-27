@@ -424,6 +424,8 @@ Domain code publishes operator jobs through `SyncEventBus` (`QueueProducerServic
 
 Continuous incremental sync is a **second switch**, `GIT_WEBHOOK_BUS_PROVIDER=off|kafka|rabbitmq`. It consumes one configurable topic or queue of normalized git events (`IncrementalGitEvent`). Full mirrors stay on `GIT_MESSAGING_PROVIDER`. Echo suppression (`echo_ledger`) and trunk/tag/metadata conflicts stay in `GitSyncEngine`. Every pod in one deployment shares the Kafka consumer group; pair exclusivity stays on `pair_leases`. The optional Cloudflare publisher is [`webhook-worker-kafka/`](webhook-worker-kafka/README.md). Design: [`future-work/kafka-incremental-upstream-sync.md`](future-work/kafka-incremental-upstream-sync.md).
 
+An incremental record is adapted inside the Kafka listener, after it is consumed. `schemaVersion` (header or JSON field) selects the adapter. `normalized-v1` is built in. Extra versions are JSON mapping files in `GIT_WEBHOOK_EVENT_FORMATS_DIR`. Every adapter returns `IncrementalGitEvent`. Hub does not write a processing copy back to the topic. A record that must be tried again stays unacknowledged so Kafka redelivers the original bytes. Write-up: [`KAFKA_EVENT_FORMATS.md`](KAFKA_EVENT_FORMATS.md).
+
 When provider=`rabbitmq`, the ingestion and execution pipeline uses **Spring AMQP** over standard AMQP 0-9-1 protocols, compatible with free cloud brokers like **CloudAMQP ("Little Lemur" tier)** or on-premise RabbitMQ.
 
 ```

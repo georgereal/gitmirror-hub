@@ -1,0 +1,21 @@
+{
+  "name": "kafka-event-format",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Map enriched Kafka git events onto Hub's IncrementalGitEvent before the backend consumes them.",
+  "type": "module",
+  "bin": {
+    "kafka-format": "./src/cli.js"
+  },
+  "scripts": {
+    "check:enriched": "node src/cli.js check --format enriched --formats examples/formats --samples examples/samples",
+    "check:normalized": "node src/cli.js check --format normalized-v1 --samples examples/canonical"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "kafkajs": "^2.2.4"
+  },
+  "license": "MIT"
+}

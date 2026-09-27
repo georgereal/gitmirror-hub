@@ -58,6 +58,18 @@ public class SyncJob implements WritePreparer {
     @Builder.Default
     private TriggerType triggerType = TriggerType.WEBHOOK;
 
+    /** Canonical incremental type after the adapter runs. Empty on full-mirror jobs. */
+    @Column(length = 64)
+    private String webhookEventType;
+
+    /** Adapter id, for example {@code normalized-v1} or {@code enriched-git-v1}. */
+    @Column(length = 128)
+    private String schemaVersion;
+
+    /** Capped source Kafka value for the incremental events list. */
+    @Column(columnDefinition = "CLOB")
+    private String sourceMessage;
+
     private String queueMessageId;
 
     @Builder.Default

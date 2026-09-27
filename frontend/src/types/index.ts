@@ -99,6 +99,9 @@ export interface SyncJob {
   author?: string;
   status: SyncStatus;
   triggerType: TriggerType;
+  webhookEventType?: string;
+  schemaVersion?: string;
+  sourceMessage?: string;
   queueMessageId?: string;
   attemptCount: number;
   maxAttempts: number;
@@ -876,12 +879,14 @@ export interface UnmappedWebhookEvent {
   repoFullName?: string;
   repoUrl?: string;
   eventType: string;
+  schemaVersion?: string;
   sender?: string;
   branch?: string;
   commitSha?: string;
   commitMessage?: string;
   discardReason: 'UNMAPPED_REPOSITORY' | 'INACTIVE_MAPPING' | 'NON_BRANCH_REF' | 'UNSUPPORTED_EVENT' | 'DIRECTION_IGNORED' | string;
   details?: string;
+  payloadJson?: string;
   receivedAt: string;
 }
 

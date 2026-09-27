@@ -1,0 +1,20 @@
+{
+  "id": "enriched-metadata-v1",
+  "when": { "pointer": "/type", "in": ["pr.opened", "release.published", "commit.status", "check.completed"] },
+  "fields": {
+    "repoUrl": "/repo",
+    "ref": "/head",
+    "beforeSha": "/before",
+    "afterSha": "/sha",
+    "deliveryId": "/id",
+    "provider": "/scm",
+    "eventType": "/type",
+    "rawPayload": "/webhook"
+  },
+  "eventTypeMap": {
+    "pr.opened": "pull_request",
+    "release.published": "release",
+    "commit.status": "status",
+    "check.completed": "check_run"
+  }
+}

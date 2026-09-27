@@ -1,5 +1,6 @@
 plugins {
     java
+    jacoco
     id("org.springframework.boot") version "4.1.1"
     id("io.spring.dependency-management") version "1.1.7"
 }
@@ -51,6 +52,10 @@ dependencies {
     testImplementation("io.cucumber:cucumber-junit-platform-engine:$cucumberVersion")
 }
 
+jacoco {
+    toolVersion = "0.8.13"
+}
+
 tasks.withType<Test> {
     description = "Regression: JUnit and Cucumber together. -PtestEngine=cucumber or -PtestEngine=junit-jupiter runs one engine."
     useJUnitPlatform {
@@ -60,6 +65,15 @@ tasks.withType<Test> {
         }
     }
     jvmArgs("-XX:+EnableDynamicAgentLoading")
+    finalizedBy(tasks.jacocoTestReport)
+}
+
+tasks.jacocoTestReport {
+    dependsOn(tasks.test)
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+    }
 }
 
 tasks.named<org.springframework.boot.gradle.tasks.bundling.BootJar>("bootJar") {

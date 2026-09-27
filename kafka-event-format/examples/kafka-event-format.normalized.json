@@ -1,0 +1,12 @@
+{
+  "format": "normalized-v1",
+  "samplesDir": "canonical",
+  "consume": "git.sync.incremental",
+  "produce": "git.sync.incremental",
+  "bootstrapServers": "localhost:9092",
+  "groupId": "kafka-event-format",
+  "securityProtocol": "PLAINTEXT",
+  "saslMechanism": "PLAIN",
+  "saslUsername": "",
+  "saslPassword": ""
+}

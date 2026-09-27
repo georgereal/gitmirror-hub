@@ -15,7 +15,7 @@ If an upstream system already writes this JSON to the topic, skip the Worker (se
 
 The Rabbit Cloudflare worker (`webhook-worker/`) and this Kafka worker are two ways to accept the same Git webhooks. Run one of them at a time. Section 8 is the switch: stop the worker you are leaving, start the one you are entering, then point the Git webhook at the one that is running.
 
-Design notes live in [`future-work/kafka-incremental-upstream-sync.md`](future-work/kafka-incremental-upstream-sync.md). Worker commands also live in [`webhook-worker-kafka/README.md`](webhook-worker-kafka/README.md).
+Design notes live in [`future-work/kafka-incremental-upstream-sync.md`](future-work/kafka-incremental-upstream-sync.md). Worker commands also live in [`webhook-worker-kafka/README.md`](webhook-worker-kafka/README.md). Event shapes after consume are in [`KAFKA_EVENT_FORMATS.md`](KAFKA_EVENT_FORMATS.md).
 
 ---
 
@@ -251,6 +251,9 @@ export GIT_WEBHOOK_KAFKA_INCREMENTAL_TOPIC=git.sync.incremental
 export GIT_WEBHOOK_KAFKA_GROUP_ID=git-mirror-hub
 export GIT_WEBHOOK_KAFKA_INCREMENTAL_PARTITIONS=6
 export GIT_WEBHOOK_KAFKA_REPLICATION_FACTOR=3
+
+# Optional. Directory of extra event-shape adapters. Unset keeps only normalized-v1.
+# export GIT_WEBHOOK_EVENT_FORMATS_DIR=/path/to/formats
 ```
 
 `GIT_WEBHOOK_KAFKA_INCREMENTAL_PARTITIONS` must match the topic you created in section 3.
@@ -474,3 +477,40 @@ Every pod in one deployment uses the same bootstrap, topic, and `GIT_WEBHOOK_KAF
 | Record sits on the topic | Consumers paused on the Queue page, or Hub is not running with `GIT_WEBHOOK_BUS_PROVIDER=kafka` |
 | Event discarded `UNMAPPED_REPOSITORY` | The `repoUrl` does not match an active mirror pair |
 | Second Hub deployment duplicates work | It joined the same `GIT_WEBHOOK_KAFKA_GROUP_ID`. Use a different group per deployment |
+
+---
+
+## 12. More than one event shape
+
+Full write-up: [`KAFKA_EVENT_FORMATS.md`](KAFKA_EVENT_FORMATS.md). This section is the Hub setting.
+
+Hub consumes the incremental topic and adapts each record after it arrives. The mirror path only sees `IncrementalGitEvent`. Hub does not publish a converted copy back to Kafka. A busy lease or a failed attempt leaves the offset uncommitted so the broker redelivers the original bytes. After the retry budget, the raw record is stored on the dead-letter list in the database.
+
+`normalized-v1` is always available. It is today's flat event (`push`, `create`, `delete`, `pull_request`, `release`, `status`, `check_run`).
+
+Another shape is a JSON file in `GIT_WEBHOOK_EVENT_FORMATS_DIR`. The file `id` is the schema version. `when` selects records that omit a version. `fields` are JSON Pointers onto the canonical event. `eventTypeMap` renames the producer kind onto Hub's type names. Worked files are in `kafka-event-format/examples/formats/`.
+
+Put the version on the record when both shapes share the topic:
+
+```text
+schemaVersion: enriched-git-v1
+```
+
+That can be a Kafka header (`schemaVersion` or `schema-version`) or a top-level JSON field. If the header is absent, Hub uses the adapter whose `when` matches. A record that matches two adapters is stored as unreadable until the producer sets `schemaVersion`.
+
+Check a sample before restart:
+
+```bash
+cd kafka-event-format
+node src/cli.js check --format enriched --formats ./formats --samples ./samples
+```
+
+Then point Hub at that directory and restart:
+
+```bash
+export GIT_WEBHOOK_EVENT_FORMATS_DIR=/path/to/formats
+```
+
+On Queues → Incremental events, each row shows the event type, the adapter id, and the source Kafka message (capped at 16,000 characters) for records Hub processed. Skipped and dead-letter rows show the same when the payload was kept.
+
+A pointer file renames and nests fields. It does not add a git operation Hub does not already run.

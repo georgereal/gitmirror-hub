@@ -7,12 +7,14 @@ import com.gitutility.model.dto.IncrementalGitEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.common.header.Header;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Component;
-import tools.jackson.databind.ObjectMapper;
+
+import java.nio.charset.StandardCharsets;
 
 @Component
 @WebhookBusConditions.OnKafka
@@ -24,7 +26,7 @@ public class KafkaWebhookListener implements WebhookBusControls {
 
     private final WebhookIncrementalService webhookIncrementalService;
     private final KafkaWebhookPublisher publisher;
-    private final ObjectMapper objectMapper;
+    private final KafkaIncrementalDecoder decoder;
     private final KafkaListenerEndpointRegistry registry;
 
     @KafkaListener(
@@ -36,15 +38,37 @@ public class KafkaWebhookListener implements WebhookBusControls {
     public void onRecord(ConsumerRecord<String, String> record, Acknowledgment acknowledgment) {
         IncrementalGitEvent event;
         try {
-            event = objectMapper.readValue(record.value(), IncrementalGitEvent.class);
-        } catch (Exception e) {
+            event = decoder.decode(record.value(), schemaVersion(record));
+        } catch (IncrementalEventDecodeException e) {
             log.warn("Discarding unreadable incremental record on {}: {}", record.topic(), e.getMessage());
             publisher.deadLetterRaw(record.key(), record.value(), e.getMessage());
             acknowledgment.acknowledge();
             return;
         }
+        event.setSourceMessage(cap(record.value()));
         webhookIncrementalService.handle(event);
         acknowledgment.acknowledge();
+    }
+
+    private static String schemaVersion(ConsumerRecord<String, String> record) {
+        String version = header(record, "schemaVersion");
+        return version != null ? version : header(record, "schema-version");
+    }
+
+    private static String header(ConsumerRecord<String, String> record, String name) {
+        Header header = record.headers().lastHeader(name);
+        if (header == null || header.value() == null || header.value().length == 0) {
+            return null;
+        }
+        String value = new String(header.value(), StandardCharsets.UTF_8).trim();
+        return value.isEmpty() ? null : value;
+    }
+
+    static String cap(String value) {
+        if (value == null || value.length() <= 16_000) {
+            return value;
+        }
+        return value.substring(0, 15_999) + "\u2026";
     }
 
     @Override

@@ -42,6 +42,7 @@ public class KafkaWebhookOps {
     private final UnmappedWebhookRetention unmappedWebhookRetention;
     private final UnmappedWebhookEventRepository unmappedWebhookEventRepository;
     private final ObjectMapper objectMapper;
+    private final KafkaIncrementalDecoder decoder;
     private final KafkaListenerEndpointRegistry registry;
 
     @Value("${git-utility.webhook-bus.kafka.incremental-topic}")
@@ -67,12 +68,14 @@ public class KafkaWebhookOps {
             UnmappedWebhookRetention unmappedWebhookRetention,
             UnmappedWebhookEventRepository unmappedWebhookEventRepository,
             ObjectMapper objectMapper,
+            KafkaIncrementalDecoder decoder,
             KafkaListenerEndpointRegistry registry) {
         this.kafkaProperties = kafkaProperties;
         this.webhookIncrementalService = webhookIncrementalService;
         this.unmappedWebhookRetention = unmappedWebhookRetention;
         this.unmappedWebhookEventRepository = unmappedWebhookEventRepository;
         this.objectMapper = objectMapper;
+        this.decoder = decoder;
         this.registry = registry;
     }
 
@@ -307,7 +310,7 @@ public class KafkaWebhookOps {
             return null;
         }
         try {
-            return objectMapper.readValue(payload, IncrementalGitEvent.class);
+            return decoder.decode(payload);
         } catch (Exception e) {
             log.debug("Stored Kafka failure is not an incremental event: {}", e.getMessage());
             return null;

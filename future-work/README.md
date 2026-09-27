@@ -26,6 +26,7 @@ Deferred design plans. These are **not** delivery schedules. Shipped plans live 
 | [done/multi-store-persistence-h2-mongo.md](done/multi-store-persistence-h2-mongo.md) | H2 \| Mongo provider, string ids, store facades, contract tests, Settings store indicator |
 | [done/readonly-replica-rulesets.md](done/readonly-replica-rulesets.md) | Per-repo ruleset lock/unlock/swap, shared `echo_ledger`, App-sender skip |
 | [done/org-enterprise-ruleset-ui.md](done/org-enterprise-ruleset-ui.md) | Write authority screen: linked or individual write/read at repo, org, or enterprise scope |
+| [done/kafka-event-format.md](done/kafka-event-format.md) | Utility in front of Hub. `normalized-v1` copies today's event; `enriched` maps new JSON shapes onto it |
 
 ## Conventions
 

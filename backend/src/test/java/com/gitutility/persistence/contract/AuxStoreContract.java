@@ -60,13 +60,22 @@ public abstract class AuxStoreContract {
         unmapped().save(UnmappedWebhookEvent.builder()
                 .provider("github").repoFullName("acme/new").eventType("push")
                 .discardReason("UNMAPPED_REPOSITORY").receivedAt(now).build());
+        unmapped().save(UnmappedWebhookEvent.builder()
+                .provider("github").repoFullName("acme/poison").eventType("push")
+                .discardReason("KAFKA_POISON").receivedAt(now.minusSeconds(7200)).build());
+        unmapped().save(UnmappedWebhookEvent.builder()
+                .provider("github").repoFullName("acme/replayed").eventType("push")
+                .discardReason("KAFKA_POISON_REPLAYED").receivedAt(now.minusSeconds(7200)).build());
 
         int deleted = unmapped().deleteOlderThan(now.minusSeconds(3600));
-        assertTrue(deleted >= 1);
+        assertTrue(deleted >= 2);
         List<UnmappedWebhookEvent> remaining = unmapped().findAllByOrderByReceivedAtDesc();
-        assertEquals(1, remaining.size());
+        assertEquals(2, remaining.size());
         assertEquals("acme/new", remaining.get(0).getRepoFullName());
-        assertEquals(1, unmapped().findTop100ByOrderByReceivedAtDesc().size());
+        assertTrue(remaining.stream().anyMatch(row -> "acme/poison".equals(row.getRepoFullName())
+                && "KAFKA_POISON".equals(row.getDiscardReason())));
+        assertTrue(remaining.stream().noneMatch(row -> "KAFKA_POISON_REPLAYED".equals(row.getDiscardReason())));
+        assertEquals(2, unmapped().findTop100ByOrderByReceivedAtDesc().size());
     }
 
     @Test
