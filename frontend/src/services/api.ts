@@ -469,7 +469,9 @@ export interface KafkaStoredFailure {
   branch?: string;
   commitSha?: string;
   eventType?: string;
+  schemaVersion?: string;
   details?: string;
+  payloadJson?: string;
   receivedAt?: string;
 }
 

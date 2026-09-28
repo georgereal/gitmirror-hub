@@ -125,13 +125,15 @@ A busy pair lease or a failed attempt leaves the offset uncommitted. Kafka redel
 
 ## What you see in the UI
 
-Queues → Incremental events shows, for each processed webhook job:
+Queues → Incremental events is one list, newest first. A row is either a mirror job or a skipped topic record.
 
-- the canonical event type (`push`, `pull_request`, and the rest)
-- the adapter id (`normalized-v1` or the mapping file `id`)
-- the source Kafka value, behind **Kafka message**
+- **Repository** includes the branch and a short commit
+- **Event** includes the canonical type and the adapter id (`normalized-v1` or the mapping file `id`)
+- **Outcome** is the job status or the skip reason
+- the braces icon opens the source Kafka value
+- the chevron opens the job id, trigger, full time, and Logs, Cancel, or Resume
 
-The stored source is capped at 16,000 characters. Skipped rows and dead-letter rows show the event type, the adapter, and the payload when Hub kept one.
+From 768px wide the list is a table that stays inside the page. Narrower screens use a stacked card for each row. The stored source is capped at 16,000 characters. Dead-letter rows use the same columns.
 
 ## What a mapping cannot do
 

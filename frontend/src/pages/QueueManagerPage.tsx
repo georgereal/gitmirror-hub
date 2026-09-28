@@ -3,6 +3,8 @@ import { Link } from 'react-router';
 import {
   AlertTriangle,
   Ban,
+  Braces,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -66,6 +68,15 @@ const SKIP_REASONS = [
   'PULL_REQUEST_PAYLOAD',
 ] as const;
 type HistoryTab = 'full' | 'events' | 'dlq';
+type IncrementalRow =
+  | { kind: 'job'; id: string; at: number; job: SyncJob }
+  | { kind: 'skip'; id: string; at: number; skip: UnmappedWebhookEvent };
+
+function instantOf(value?: string): number {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
 type TabFilters = { pair: string; outcome: string };
 
 const matchesSelectedPair = (
@@ -119,6 +130,8 @@ export const QueueManagerPage: React.FC = () => {
   const [confirmPurge, setConfirmPurge] = useState(false);
   const [selectedJobForLogs, setSelectedJobForLogs] = useState<SyncJob | null>(null);
   const [sourceRecordId, setSourceRecordId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [eventLimit, setEventLimit] = useState(100);
 
   const loadData = async () => {
     try {
@@ -131,8 +144,8 @@ export const QueueManagerPage: React.FC = () => {
       const eventStatus = eventOutcomeIsJob ? eventFilters.outcome : undefined;
       const fullPageIndex = historyTab === 'full' ? historyPage : 0;
       const fullPageSize = historyTab === 'full' ? HISTORY_PAGE_SIZE : 1;
-      const eventPageIndex = historyTab === 'events' ? historyPage : 0;
-      const eventPageSize = historyTab === 'events' ? HISTORY_PAGE_SIZE : 1;
+      const eventPageIndex = 0;
+      const eventPageSize = historyTab === 'events' ? eventLimit : 1;
       const [q, m, fullHistory, eventHistory, running, stats, unmapped, bus] = await Promise.allSettled([
         getQueueStatus(),
         getMappings(),
@@ -190,7 +203,7 @@ export const QueueManagerPage: React.FC = () => {
     loadData();
     const timer = setInterval(loadData, 4000);
     return () => clearInterval(timer);
-  }, [historyPage, filters, historyTab]);
+  }, [historyPage, filters, historyTab, eventLimit]);
 
   useEffect(() => {
     const cleanup = initWebSocket((data) => {
@@ -316,6 +329,31 @@ export const QueueManagerPage: React.FC = () => {
     || filters.events.outcome === 'SKIPPED'
     || !(JOB_STATUSES as readonly string[]).includes(filters.events.outcome)
   );
+  const incrementalRows = useMemo(() => {
+    if (historyTab !== 'events') return [];
+    const jobs: IncrementalRow[] = historyJobs.map((job) => ({
+      kind: 'job',
+      id: `job-${job.id}`,
+      at: instantOf(job.completedAt || job.createdAt),
+      job,
+    }));
+    const skips: IncrementalRow[] = showSkipList
+      ? visibleSkips.map((skip) => ({
+          kind: 'skip',
+          id: `skip-${skip.id}`,
+          at: instantOf(skip.receivedAt),
+          skip,
+        }))
+      : [];
+    return [...jobs, ...skips].sort((left, right) => right.at - left.at);
+  }, [historyTab, historyJobs, showSkipList, visibleSkips]);
+  const incrementalPages = Math.max(1, Math.ceil(incrementalRows.length / HISTORY_PAGE_SIZE));
+  const pagedIncremental = incrementalRows.slice(
+    historyPage * HISTORY_PAGE_SIZE,
+    (historyPage + 1) * HISTORY_PAGE_SIZE,
+  );
+  const eventJobsOnPage = pagedIncremental.flatMap((row) => (row.kind === 'job' ? [row.job] : []));
+  const eventDispatchable = eventJobsOnPage.filter((job) => isDispatchableStatus(job.status));
   const visiblePoison = useMemo(() => {
     return poisonRows.filter((row) => {
       if (!matchesSelectedPair(row, filters.dlq.pair, mappings)) return false;
@@ -579,7 +617,7 @@ export const QueueManagerPage: React.FC = () => {
               </div>
               <p className="text-[11px] text-zinc-500 mt-2">
                 {historyTab === 'full' && 'Full mirror jobs. '}
-                {historyTab === 'events' && 'Webhook mirrors plus topic records that were finished without starting a job, including skips. '}
+                {historyTab === 'events' && 'Webhook jobs and skipped topic records in one list, newest first. '}
                 {historyTab === 'dlq' && 'Incremental records Hub could not apply. Stored in the database and kept past the 7-day discard cleanup. '}
                 {brokerBacked
                   ? `AMQP Ready (pending): ${waitingCount}. Cancel marks jobs skipped; the worker ACKs those messages on pickup.`
@@ -690,49 +728,6 @@ export const QueueManagerPage: React.FC = () => {
           </div>
         </div>
 
-        {showSkipList && (
-          visibleSkips.length === 0 ? (
-            <p className="px-5 py-3 text-xs text-zinc-400 border-b border-zinc-100">No skipped incremental records match this filter.</p>
-          ) : (
-            <ul className="divide-y divide-zinc-100 border-b border-zinc-100">
-              {visibleSkips.map((row) => (
-                <li key={row.id} className="px-5 py-3 text-xs">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium text-zinc-900">
-                      {row.repoFullName || row.repoUrl || 'Unknown repo'}
-                      {row.branch ? ` · ${row.branch}` : ''}
-                    </span>
-                    <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-50 text-amber-800 border border-amber-200">
-                      {row.discardReason}
-                    </span>
-                  </div>
-                  <p className="text-zinc-600 mt-0.5">{row.details || row.eventType}</p>
-                  <p className="text-[11px] text-zinc-500 mt-0.5">
-                    {row.eventType ? `Event ${row.eventType}` : 'Event unknown'}
-                    {row.schemaVersion ? ` · adapter ${row.schemaVersion}` : ''}
-                  </p>
-                  <p className="text-[11px] text-zinc-400 mt-0.5 font-mono">
-                    {row.commitSha ? `${row.commitSha.slice(0, 10)} · ` : ''}
-                    {row.receivedAt ? new Date(row.receivedAt).toLocaleString() : ''}
-                  </p>
-                  {row.payloadJson && (
-                    <button
-                      type="button"
-                      onClick={() => setSourceRecordId((current) => current === row.id ? null : row.id)}
-                      className="mt-1 text-[11px] font-medium text-zinc-700 underline"
-                    >
-                      {sourceRecordId === row.id ? 'Hide Kafka message' : 'Kafka message'}
-                    </button>
-                  )}
-                  {sourceRecordId === row.id && row.payloadJson && (
-                    <pre className="mt-1 max-h-40 overflow-auto rounded bg-zinc-50 p-2 text-[10px] text-zinc-700 whitespace-pre-wrap">{row.payloadJson}</pre>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )
-        )}
-
         {historyTab === 'dlq' ? (
           <div>
             <div className="px-5 py-3 border-b border-zinc-100 flex justify-end">
@@ -754,46 +749,57 @@ export const QueueManagerPage: React.FC = () => {
             {visiblePoison.length === 0 ? (
               <div className="py-12 text-center text-xs text-zinc-400">No dead-letter rows match this filter</div>
             ) : (
-              <ul className="divide-y divide-zinc-100">
-                {visiblePoison.map((row) => (
-                  <li key={row.id} className="px-5 py-3 text-xs">
-                    <div className="font-medium text-zinc-900">
-                      {row.repoFullName || row.repoUrl || 'Unknown repo'}
-                      {row.branch ? ` · ${row.branch}` : ''}
-                    </div>
-                    <p className="text-zinc-600 mt-0.5">{row.details || row.eventType || 'Failure'}</p>
-                    <p className="text-[11px] text-zinc-500 mt-0.5">
-                      {row.eventType ? `Event ${row.eventType}` : 'Event unknown'}
-                      {row.schemaVersion ? ` · adapter ${row.schemaVersion}` : ''}
-                    </p>
-                    <p className="text-[11px] text-zinc-400 mt-0.5 font-mono">
-                      {row.commitSha ? `${row.commitSha.slice(0, 10)} · ` : ''}
-                      {row.receivedAt ? new Date(row.receivedAt).toLocaleString() : ''}
-                    </p>
-                    {row.payloadJson && (
-                      <button
-                        type="button"
-                        onClick={() => setSourceRecordId((current) => current === `poison-${row.id}` ? null : `poison-${row.id}`)}
-                        className="mt-1 text-[11px] font-medium text-zinc-700 underline"
-                      >
-                        {sourceRecordId === `poison-${row.id}` ? 'Hide Kafka message' : 'Kafka message'}
-                      </button>
-                    )}
-                    {sourceRecordId === `poison-${row.id}` && row.payloadJson && (
-                      <pre className="mt-1 max-h-40 overflow-auto rounded bg-zinc-50 p-2 text-[10px] text-zinc-700 whitespace-pre-wrap">{row.payloadJson}</pre>
-                    )}
-                  </li>
-                ))}
-              </ul>
+              <WebhookRecordTable
+                rows={visiblePoison}
+                sourceRecordId={sourceRecordId}
+                idPrefix="poison-"
+                onToggle={(id) => setSourceRecordId((current) => current === id ? null : id)}
+              />
             )}
             {replayNote && <p className="px-5 pb-3 text-[11px] text-zinc-500">{replayNote}</p>}
           </div>
-        ) : historyJobs.length === 0 ? (
-          historyTab === 'events' && visibleSkips.length > 0 ? null : (
-            <div className="py-12 text-center text-xs text-zinc-400">
-              {historyTab === 'full' ? 'No full sync jobs' : 'No incremental mirror jobs'}
-            </div>
+        ) : historyTab === 'events' ? (
+          pagedIncremental.length === 0 ? (
+            <div className="py-12 text-center text-xs text-zinc-400">No incremental events match this filter</div>
+          ) : (
+            <IncrementalFeed
+              rows={pagedIncremental}
+              sourceRecordId={sourceRecordId}
+              expandedId={expandedId}
+              selectedIds={selectedIds}
+              dispatchableIds={eventDispatchable.map((job) => job.id)}
+              allDispatchableSelected={eventDispatchable.length > 0 && eventDispatchable.every((job) => selectedIds.has(job.id))}
+              busy={busy}
+              onToggleSource={(id) => setSourceRecordId((current) => current === id ? null : id)}
+              onToggleExpanded={(id) => setExpandedId((current) => current === id ? null : id)}
+              onToggleSelected={toggleSelected}
+              onToggleSelectDispatchable={() => {
+                const visibleIds = eventDispatchable.map((job) => job.id);
+                const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+                setSelectedIds((prev) => {
+                  const next = new Set(prev);
+                  if (allSelected) visibleIds.forEach((id) => next.delete(id));
+                  else visibleIds.forEach((id) => next.add(id));
+                  return next;
+                });
+              }}
+              onLogs={setSelectedJobForLogs}
+              onCancel={(job) =>
+                runAction(`cancel-${job.id}`, async () => {
+                  await cancelJob(job.id);
+                  return `Cancelled job #${job.id}`;
+                })
+              }
+              onResume={(job) =>
+                runAction(`resume-${job.id}`, async () => {
+                  await resumeJob(job.id);
+                  return `Job #${job.id} re-queued from checkpoint`;
+                })
+              }
+            />
           )
+        ) : historyJobs.length === 0 ? (
+          <div className="py-12 text-center text-xs text-zinc-400">No full sync jobs</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
@@ -810,8 +816,6 @@ export const QueueManagerPage: React.FC = () => {
                   <th className="py-2.5 px-4 font-medium">Pair</th>
                   <th className="py-2.5 px-4 font-medium">Lane</th>
                   <th className="py-2.5 px-4 font-medium">Branch</th>
-                  {historyTab === 'events' && <th className="py-2.5 px-4 font-medium">Event</th>}
-                  {historyTab === 'events' && <th className="py-2.5 px-4 font-medium">Adapter</th>}
                   <th className="py-2.5 px-4 font-medium">Trigger</th>
                   <th className="py-2.5 px-4 font-medium">Status</th>
                   <th className="py-2.5 px-4 font-medium">When</th>
@@ -835,23 +839,6 @@ export const QueueManagerPage: React.FC = () => {
                     <td className="py-3 px-4 font-medium text-zinc-900">{job.pairName}</td>
                     <td className="py-3 px-4 text-zinc-500">{isFullLane(job) ? 'Full' : 'Webhook'}</td>
                     <td className="py-3 px-4 font-mono text-zinc-600 max-w-[220px] truncate">{job.branch || '*'}</td>
-                    {historyTab === 'events' && (
-                      <td className="py-3 px-4 text-zinc-700">{job.webhookEventType || '—'}</td>
-                    )}
-                    {historyTab === 'events' && (
-                      <td className="py-3 px-4 text-zinc-700">
-                        <div>{job.schemaVersion || '—'}</div>
-                        {job.sourceMessage && (
-                          <button
-                            type="button"
-                            onClick={() => setSourceRecordId((current) => current === job.id ? null : job.id)}
-                            className="mt-1 text-[11px] font-medium text-zinc-700 underline"
-                          >
-                            {sourceRecordId === job.id ? 'Hide Kafka message' : 'Kafka message'}
-                          </button>
-                        )}
-                      </td>
-                    )}
                     <td className="py-3 px-4 text-zinc-500">{job.triggerType}</td>
                     <td className="py-3 px-4">
                       <StatusPill status={job.status} />
@@ -900,13 +887,6 @@ export const QueueManagerPage: React.FC = () => {
                       )}
                     </td>
                   </tr>
-                  {historyTab === 'events' && sourceRecordId === job.id && job.sourceMessage && (
-                    <tr className="bg-zinc-50/80">
-                      <td colSpan={10} className="px-4 py-2">
-                        <pre className="max-h-48 overflow-auto text-[10px] text-zinc-700 whitespace-pre-wrap">{job.sourceMessage}</pre>
-                      </td>
-                    </tr>
-                  )}
                   </React.Fragment>
                 ))}
               </tbody>
@@ -917,7 +897,12 @@ export const QueueManagerPage: React.FC = () => {
         {historyTab !== 'dlq' && (
         <div className="p-4 border-t border-zinc-100 bg-zinc-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <p className="text-[11px] text-zinc-500">
-            Showing {historyJobs.length} of {historyTotal} jobs.
+            {historyTab === 'events'
+              ? `Showing ${pagedIncremental.length} of ${incrementalRows.length} events.`
+              : `Showing ${historyJobs.length} of ${historyTotal} jobs.`}
+            {historyTab === 'events' && eventJobTotal > historyJobs.length
+              ? ` Latest ${historyJobs.length} of ${eventJobTotal} jobs.`
+              : ''}
             {brokerBacked ? ' Ready (pending): ' : ' Deferred: '}
             {waitingCount}
             {cancelledCount > 0 ? ` · ${cancelledCount} cancelled` : ''}
@@ -933,11 +918,20 @@ export const QueueManagerPage: React.FC = () => {
               <ChevronLeft className="w-3.5 h-3.5" />
             </button>
             <span className="text-[11px] text-zinc-500">
-              Page {historyPage + 1} / {Math.max(1, historyPages)}
+              Page {historyPage + 1} / {Math.max(1, historyTab === 'events' ? incrementalPages : historyPages)}
             </span>
+            {historyTab === 'events' && eventJobTotal > historyJobs.length && (
+              <button
+                type="button"
+                onClick={() => setEventLimit((limit) => limit + 100)}
+                className="px-2 py-1 rounded-lg border border-zinc-200 text-[11px] font-medium"
+              >
+                Load older jobs
+              </button>
+            )}
             <button
               onClick={() => setHistoryPage((p) => p + 1)}
-              disabled={historyPage + 1 >= historyPages}
+              disabled={historyPage + 1 >= (historyTab === 'events' ? incrementalPages : historyPages)}
               className="p-1 rounded-lg border border-zinc-200 disabled:opacity-40"
             >
               <ChevronRight className="w-3.5 h-3.5" />
@@ -1052,6 +1046,449 @@ export const QueueManagerPage: React.FC = () => {
     </div>
   );
 };
+
+type WebhookRecordRow = {
+  id: string;
+  repoFullName?: string;
+  repoUrl?: string;
+  branch?: string;
+  eventType?: string;
+  schemaVersion?: string;
+  discardReason?: string;
+  details?: string;
+  commitSha?: string;
+  payloadJson?: string;
+  receivedAt?: string;
+};
+
+const WebhookRecordTable: React.FC<{
+  rows: WebhookRecordRow[];
+  sourceRecordId: string | null;
+  idPrefix?: string;
+  onToggle: (id: string) => void;
+}> = ({ rows, sourceRecordId, idPrefix = '', onToggle }) => (
+  <div className="border-b border-zinc-100">
+    <div className="hidden md:block">
+      <table className="w-full table-fixed text-left text-xs">
+        <thead className="bg-zinc-50/70 text-zinc-500 border-b border-zinc-100">
+          <tr>
+            <th className="py-2.5 px-3 font-medium w-[32%]">Repository</th>
+            <th className="py-2.5 px-3 font-medium w-[18%]">Event</th>
+            <th className="py-2.5 px-3 font-medium w-[28%]">Outcome</th>
+            <th className="py-2.5 px-3 font-medium w-[14%]">When</th>
+            <th className="py-2.5 px-3 font-medium w-[8%] text-right">Message</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-zinc-100">
+          {rows.map((row) => {
+            const recordId = `${idPrefix}${row.id}`;
+            const open = sourceRecordId === recordId;
+            return (
+              <React.Fragment key={recordId}>
+                <tr className="hover:bg-zinc-50/70">
+                  <td className="py-3 px-3">
+                    <div className="font-medium text-zinc-900 truncate" title={row.repoFullName || row.repoUrl || ''}>
+                      {row.repoFullName || row.repoUrl || 'Unknown repo'}
+                    </div>
+                    <div className="font-mono text-[11px] text-zinc-500 truncate">
+                      {row.branch || '—'}
+                      {row.commitSha ? ` · ${row.commitSha.slice(0, 7)}` : ''}
+                    </div>
+                  </td>
+                  <td className="py-3 px-3">
+                    <div className="text-zinc-800 truncate">{row.eventType || '—'}</div>
+                    <div className="text-[11px] text-zinc-500 truncate">{row.schemaVersion || '—'}</div>
+                  </td>
+                  <td className="py-3 px-3">
+                    <ReasonBadge reason={row.discardReason} />
+                    <div className="text-[11px] text-zinc-500 truncate mt-0.5" title={row.details || ''}>{row.details || '—'}</div>
+                  </td>
+                  <td className="py-3 px-3 text-zinc-500">{shortWhen(row.receivedAt)}</td>
+                  <td className="py-3 px-3 text-right">
+                    <KafkaMessageButton present={Boolean(row.payloadJson)} open={open} onClick={() => onToggle(recordId)} />
+                  </td>
+                </tr>
+                {open && row.payloadJson && (
+                  <tr className="bg-zinc-50/80">
+                    <td colSpan={5} className="px-3 py-2">
+                      <PayloadBlock value={row.payloadJson} />
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+    <ul className="md:hidden divide-y divide-zinc-100">
+      {rows.map((row) => {
+        const recordId = `${idPrefix}${row.id}`;
+        const open = sourceRecordId === recordId;
+        return (
+          <li key={recordId} className="p-3 text-xs">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="font-medium text-zinc-900 truncate">{row.repoFullName || row.repoUrl || 'Unknown repo'}</div>
+                <div className="font-mono text-[11px] text-zinc-500 truncate">
+                  {row.branch || '—'}
+                  {row.commitSha ? ` · ${row.commitSha.slice(0, 7)}` : ''}
+                </div>
+              </div>
+              <ReasonBadge reason={row.discardReason} />
+            </div>
+            <p className="mt-1 text-[11px] text-zinc-600">{row.eventType || '—'} · {row.schemaVersion || '—'}</p>
+            <p className="mt-0.5 text-[11px] text-zinc-500">{row.details || '—'}</p>
+            <div className="mt-2 flex items-center justify-between">
+              <span className="text-[11px] text-zinc-400">{shortWhen(row.receivedAt)}</span>
+              <KafkaMessageButton present={Boolean(row.payloadJson)} open={open} onClick={() => onToggle(recordId)} />
+            </div>
+            {open && row.payloadJson && <div className="mt-2"><PayloadBlock value={row.payloadJson} /></div>}
+          </li>
+        );
+      })}
+    </ul>
+  </div>
+);
+
+const IncrementalFeed: React.FC<{
+  rows: IncrementalRow[];
+  sourceRecordId: string | null;
+  expandedId: string | null;
+  selectedIds: Set<string>;
+  dispatchableIds: string[];
+  allDispatchableSelected: boolean;
+  busy: string | null;
+  onToggleSource: (id: string) => void;
+  onToggleExpanded: (id: string) => void;
+  onToggleSelected: (id: string) => void;
+  onToggleSelectDispatchable: () => void;
+  onLogs: (job: SyncJob) => void;
+  onCancel: (job: SyncJob) => void;
+  onResume: (job: SyncJob) => void;
+}> = ({
+  rows,
+  sourceRecordId,
+  expandedId,
+  selectedIds,
+  dispatchableIds,
+  allDispatchableSelected,
+  busy,
+  onToggleSource,
+  onToggleExpanded,
+  onToggleSelected,
+  onToggleSelectDispatchable,
+  onLogs,
+  onCancel,
+  onResume,
+}) => {
+  const dispatchable = new Set(dispatchableIds);
+  return (
+    <div>
+      <div className="hidden md:block">
+        <table className="w-full table-fixed text-left text-xs">
+          <thead className="bg-zinc-50/70 text-zinc-500 border-b border-zinc-100">
+            <tr>
+              <th className="py-2.5 px-3 font-medium w-[34%]">
+                <span className="inline-flex items-center gap-2">
+                  {dispatchableIds.length > 0 && (
+                    <input type="checkbox" checked={allDispatchableSelected} onChange={onToggleSelectDispatchable} />
+                  )}
+                  Repository
+                </span>
+              </th>
+              <th className="py-2.5 px-3 font-medium w-[16%]">Event</th>
+              <th className="py-2.5 px-3 font-medium w-[26%]">Outcome</th>
+              <th className="py-2.5 px-3 font-medium w-[14%]">When</th>
+              <th className="py-2.5 px-3 font-medium w-[10%] text-right"> </th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-zinc-100">
+            {rows.map((row) => (
+              <IncrementalDesktopRow
+                key={row.id}
+                row={row}
+                sourceOpen={sourceRecordId === row.id}
+                expanded={expandedId === row.id}
+                selected={row.kind === 'job' && selectedIds.has(row.job.id)}
+                dispatchable={row.kind === 'job' && dispatchable.has(row.job.id)}
+                busy={busy}
+                onToggleSource={() => onToggleSource(row.id)}
+                onToggleExpanded={() => onToggleExpanded(row.id)}
+                onToggleSelected={() => row.kind === 'job' && onToggleSelected(row.job.id)}
+                onLogs={onLogs}
+                onCancel={onCancel}
+                onResume={onResume}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <ul className="md:hidden divide-y divide-zinc-100">
+        {rows.map((row) => (
+          <IncrementalMobileCard
+            key={row.id}
+            row={row}
+            sourceOpen={sourceRecordId === row.id}
+            expanded={expandedId === row.id}
+            selected={row.kind === 'job' && selectedIds.has(row.job.id)}
+            dispatchable={row.kind === 'job' && dispatchable.has(row.job.id)}
+            busy={busy}
+            onToggleSource={() => onToggleSource(row.id)}
+            onToggleExpanded={() => onToggleExpanded(row.id)}
+            onToggleSelected={() => row.kind === 'job' && onToggleSelected(row.job.id)}
+            onLogs={onLogs}
+            onCancel={onCancel}
+            onResume={onResume}
+          />
+        ))}
+      </ul>
+    </div>
+  );
+};
+
+type FeedHandlers = {
+  row: IncrementalRow;
+  sourceOpen: boolean;
+  expanded: boolean;
+  selected: boolean;
+  dispatchable: boolean;
+  busy: string | null;
+  onToggleSource: () => void;
+  onToggleExpanded: () => void;
+  onToggleSelected: () => void;
+  onLogs: (job: SyncJob) => void;
+  onCancel: (job: SyncJob) => void;
+  onResume: (job: SyncJob) => void;
+};
+
+const IncrementalDesktopRow: React.FC<FeedHandlers> = (props) => {
+  const view = feedView(props.row);
+  return (
+    <React.Fragment>
+      <tr className="hover:bg-zinc-50/70">
+        <td className="py-3 px-3">
+          <div className="flex items-start gap-2 min-w-0">
+            {props.dispatchable ? (
+              <input type="checkbox" className="mt-0.5" checked={props.selected} onChange={props.onToggleSelected} />
+            ) : (
+              <span className="w-3.5 shrink-0" />
+            )}
+            <div className="min-w-0">
+              <div className="font-medium text-zinc-900 truncate" title={view.repo}>{view.repo}</div>
+              <div className="font-mono text-[11px] text-zinc-500 truncate">{view.branchLine}</div>
+            </div>
+          </div>
+        </td>
+        <td className="py-3 px-3">
+          <div className="text-zinc-800 truncate">{view.eventType}</div>
+          <div className="text-[11px] text-zinc-500 truncate">{view.adapter}</div>
+        </td>
+        <td className="py-3 px-3">
+          {view.job ? <StatusPill status={view.job.status} /> : <ReasonBadge reason={view.reason} />}
+          <div className="text-[11px] text-zinc-500 truncate mt-0.5" title={view.detail}>{view.detail}</div>
+        </td>
+        <td className="py-3 px-3 text-zinc-500">{shortWhen(view.when)}</td>
+        <td className="py-3 px-3">
+          <div className="flex items-center justify-end gap-1">
+            <KafkaMessageButton present={Boolean(view.payload)} open={props.sourceOpen} onClick={props.onToggleSource} />
+            <button
+              type="button"
+              title={props.expanded ? 'Hide details' : 'Show details'}
+              aria-label={props.expanded ? 'Hide details' : 'Show details'}
+              aria-expanded={props.expanded}
+              onClick={props.onToggleExpanded}
+              className="inline-flex p-1.5 rounded-md border border-zinc-200 text-zinc-600 hover:bg-zinc-50"
+            >
+              <ChevronDown className={`w-3.5 h-3.5 transition-transform ${props.expanded ? 'rotate-180' : ''}`} />
+            </button>
+          </div>
+        </td>
+      </tr>
+      {(props.expanded || props.sourceOpen) && (
+        <tr className="bg-zinc-50/80">
+          <td colSpan={5} className="px-3 py-2">
+            <FeedExtra {...props} />
+          </td>
+        </tr>
+      )}
+    </React.Fragment>
+  );
+};
+
+const IncrementalMobileCard: React.FC<FeedHandlers> = (props) => {
+  const view = feedView(props.row);
+  return (
+    <li className="p-3 text-xs">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-start gap-2 min-w-0">
+          {props.dispatchable && (
+            <input type="checkbox" className="mt-0.5" checked={props.selected} onChange={props.onToggleSelected} />
+          )}
+          <div className="min-w-0">
+            <div className="font-medium text-zinc-900 truncate">{view.repo}</div>
+            <div className="font-mono text-[11px] text-zinc-500 truncate">{view.branchLine}</div>
+          </div>
+        </div>
+        {view.job ? <StatusPill status={view.job.status} /> : <ReasonBadge reason={view.reason} />}
+      </div>
+      <p className="mt-1 text-[11px] text-zinc-600">{view.eventType} · {view.adapter}</p>
+      <p className="mt-0.5 text-[11px] text-zinc-500 truncate">{view.detail}</p>
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <span className="text-[11px] text-zinc-400">{shortWhen(view.when)}</span>
+        <span className="inline-flex items-center gap-1">
+          <KafkaMessageButton present={Boolean(view.payload)} open={props.sourceOpen} onClick={props.onToggleSource} />
+          <button
+            type="button"
+            aria-expanded={props.expanded}
+            onClick={props.onToggleExpanded}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-zinc-200 text-[11px] font-medium text-zinc-700"
+          >
+            Details
+            <ChevronDown className={`w-3.5 h-3.5 transition-transform ${props.expanded ? 'rotate-180' : ''}`} />
+          </button>
+        </span>
+      </div>
+      {(props.expanded || props.sourceOpen) && (
+        <div className="mt-2">
+          <FeedExtra {...props} />
+        </div>
+      )}
+    </li>
+  );
+};
+
+const FeedExtra: React.FC<FeedHandlers> = ({ row, sourceOpen, expanded, busy, onLogs, onCancel, onResume }) => {
+  const view = feedView(row);
+  return (
+    <div className="space-y-2 text-[11px] text-zinc-600">
+      {expanded && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          {view.job && <span className="font-mono text-zinc-700">Job #{view.job.id}</span>}
+          {view.job && <span>{view.job.triggerType}</span>}
+          <span>{view.when ? new Date(view.when).toLocaleString() : '—'}</span>
+          {view.commit && <span className="font-mono">{view.commit}</span>}
+          {view.detail !== '—' && <span>{view.detail}</span>}
+        </div>
+      )}
+      {expanded && view.job && (
+        <div className="flex flex-wrap gap-1">
+          <button
+            type="button"
+            onClick={() => onLogs(view.job!)}
+            className="px-2.5 py-1 rounded-lg bg-white border border-zinc-200 text-[11px] font-medium"
+          >
+            Logs
+          </button>
+          {(view.job.status === 'QUEUED' || view.job.status === 'IN_PROGRESS') && (
+            <button
+              type="button"
+              onClick={() => onCancel(view.job!)}
+              disabled={busy === `cancel-${view.job.id}`}
+              className="px-2.5 py-1 rounded-lg bg-white border border-zinc-200 hover:text-rose-700 text-[11px] font-medium disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          )}
+          {isDispatchableStatus(view.job.status) && view.job.status !== 'QUEUED' && (
+            <button
+              type="button"
+              onClick={() => onResume(view.job!)}
+              disabled={busy === `resume-${view.job.id}`}
+              className="px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 text-[11px] font-medium disabled:opacity-50"
+            >
+              Resume
+            </button>
+          )}
+        </div>
+      )}
+      {sourceOpen && view.payload && <PayloadBlock value={view.payload} />}
+    </div>
+  );
+};
+
+function feedView(row: IncrementalRow) {
+  if (row.kind === 'job') {
+    const job = row.job;
+    const commit = job.commitSha?.slice(0, 10);
+    return {
+      job,
+      repo: job.pairName || 'Unknown pair',
+      branchLine: `${job.branch || '*'}${commit ? ` · ${commit}` : ''}`,
+      eventType: job.webhookEventType || '—',
+      adapter: job.schemaVersion || '—',
+      reason: undefined as string | undefined,
+      detail: job.errorMessage || job.summaryMessage || job.triggerType || '—',
+      when: job.completedAt || job.createdAt,
+      commit: job.commitSha,
+      payload: job.sourceMessage,
+    };
+  }
+  const skip = row.skip;
+  const commit = skip.commitSha?.slice(0, 7);
+  return {
+    job: undefined as SyncJob | undefined,
+    repo: skip.repoFullName || skip.repoUrl || 'Unknown repo',
+    branchLine: `${skip.branch || '—'}${commit ? ` · ${commit}` : ''}`,
+    eventType: skip.eventType || '—',
+    adapter: skip.schemaVersion || '—',
+    reason: skip.discardReason,
+    detail: skip.details || '—',
+    when: skip.receivedAt,
+    commit: skip.commitSha,
+    payload: skip.payloadJson,
+  };
+}
+
+const ReasonBadge: React.FC<{ reason?: string }> = ({ reason }) => {
+  if (!reason) return <span className="text-zinc-400">—</span>;
+  return (
+    <span className="inline-flex max-w-full truncate px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-50 text-amber-800 border border-amber-200" title={reason}>
+      {reason}
+    </span>
+  );
+};
+
+const PayloadBlock: React.FC<{ value: string }> = ({ value }) => (
+  <pre className="max-h-48 overflow-auto rounded bg-white border border-zinc-100 p-2 text-[10px] text-zinc-700 whitespace-pre-wrap">{formatPayload(value)}</pre>
+);
+
+function shortWhen(value?: string): string {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+const KafkaMessageButton: React.FC<{
+  present: boolean;
+  open: boolean;
+  onClick: () => void;
+}> = ({ present, open, onClick }) => {
+  if (!present) {
+    return <span className="text-zinc-300">—</span>;
+  }
+  return (
+    <button
+      type="button"
+      title={open ? 'Hide Kafka message' : 'Show Kafka message'}
+      aria-label={open ? 'Hide Kafka message' : 'Show Kafka message'}
+      aria-pressed={open}
+      onClick={onClick}
+      className={`inline-flex p-1.5 rounded-md border ${open ? 'bg-zinc-900 text-white border-zinc-900' : 'border-zinc-200 text-zinc-600 hover:bg-zinc-50'}`}
+    >
+      <Braces className="w-3.5 h-3.5" />
+    </button>
+  );
+};
+
+function formatPayload(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
+  }
+}
 
 const StatusPill: React.FC<{ status: SyncStatus }> = ({ status }) => {
   const styles: Record<string, string> = {
