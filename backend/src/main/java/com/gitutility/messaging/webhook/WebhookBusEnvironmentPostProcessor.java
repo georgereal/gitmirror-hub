@@ -1,6 +1,9 @@
 package com.gitutility.messaging.webhook;
 
 import com.gitutility.messaging.webhook.kafka.IncrementalEventDecoder;
+import com.gitutility.messaging.webhook.kafka.KafkaSslPemSupport;
+import com.gitutility.messaging.webhook.kafka.KafkaValueCodec;
+import com.gitutility.messaging.webhook.kafka.KafkaWebhookSources;
 import org.springframework.boot.EnvironmentPostProcessor;
 import org.springframework.boot.SpringApplication;
 import org.springframework.core.Ordered;
@@ -48,25 +51,40 @@ public class WebhookBusEnvironmentPostProcessor implements EnvironmentPostProces
     }
 
     private static void applyKafka(ConfigurableEnvironment environment, Map<String, Object> overrides) {
+        String sourcesFile = firstNonBlank(
+                environment.getProperty("git-utility.webhook-bus.kafka.sources-file"),
+                environment.getProperty("GIT_WEBHOOK_KAFKA_SOURCES_FILE"));
+        KafkaWebhookSources.Source active = KafkaWebhookSources.loadActive(sourcesFile);
+        String sourceId = firstNonBlank(
+                active == null ? null : active.id(),
+                environment.getProperty("git-utility.webhook-bus.kafka.source-id"),
+                environment.getProperty("GIT_WEBHOOK_KAFKA_SOURCE_ID"));
+
         String bootstrap = firstNonBlank(
+                active == null ? null : active.bootstrapServers(),
                 environment.getProperty("git-utility.webhook-bus.kafka.bootstrap-servers"),
                 environment.getProperty("GIT_WEBHOOK_KAFKA_BOOTSTRAP_SERVERS"));
         if (bootstrap == null) {
             throw new IllegalStateException(
-                    "GIT_WEBHOOK_BUS_PROVIDER=kafka requires GIT_WEBHOOK_KAFKA_BOOTSTRAP_SERVERS");
+                    "GIT_WEBHOOK_BUS_PROVIDER=kafka requires GIT_WEBHOOK_KAFKA_BOOTSTRAP_SERVERS "
+                            + "or an enabled source in GIT_WEBHOOK_KAFKA_SOURCES_FILE");
         }
         String protocol = firstNonBlank(
+                active == null ? null : active.securityProtocol(),
                 environment.getProperty("git-utility.webhook-bus.kafka.security-protocol"),
                 environment.getProperty("GIT_WEBHOOK_KAFKA_SECURITY_PROTOCOL"),
                 "PLAINTEXT");
         String mechanism = firstNonBlank(
+                active == null ? null : active.saslMechanism(),
                 environment.getProperty("git-utility.webhook-bus.kafka.sasl-mechanism"),
                 environment.getProperty("GIT_WEBHOOK_KAFKA_SASL_MECHANISM"),
                 "PLAIN");
         String username = firstNonBlank(
+                active == null ? null : active.saslUsername(),
                 environment.getProperty("git-utility.webhook-bus.kafka.sasl-username"),
                 environment.getProperty("GIT_WEBHOOK_KAFKA_SASL_USERNAME"));
         String password = firstNonBlank(
+                active == null ? null : active.saslPassword(),
                 environment.getProperty("git-utility.webhook-bus.kafka.sasl-password"),
                 environment.getProperty("GIT_WEBHOOK_KAFKA_SASL_PASSWORD"),
                 "");
@@ -77,14 +95,88 @@ public class WebhookBusEnvironmentPostProcessor implements EnvironmentPostProces
             }
         }
         validateEventFormat(environment);
+        String codec = KafkaValueCodec.normalize(firstNonBlank(
+                active == null ? null : active.valueCodec(),
+                environment.getProperty("git-utility.webhook-bus.kafka.value-codec"),
+                environment.getProperty("GIT_WEBHOOK_KAFKA_VALUE_CODEC"),
+                KafkaValueCodec.JSON));
+        overrides.put("git-utility.webhook-bus.kafka.value-codec", codec);
+        String registryUrl = firstNonBlank(
+                active == null ? null : active.schemaRegistryUrl(),
+                environment.getProperty("git-utility.webhook-bus.kafka.schema-registry-url"),
+                environment.getProperty("GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_URL"));
+        if (KafkaValueCodec.AVRO.equals(codec)) {
+            if (registryUrl == null || registryUrl.isBlank()) {
+                throw new IllegalStateException(
+                        "GIT_WEBHOOK_KAFKA_VALUE_CODEC=avro requires GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_URL");
+            }
+            overrides.put("git-utility.webhook-bus.kafka.schema-registry-url", registryUrl);
+            overrides.put("spring.kafka.properties.schema.registry.url", registryUrl);
+            String registryUser = firstNonBlank(
+                    active == null ? null : active.schemaRegistryUsername(),
+                    environment.getProperty("git-utility.webhook-bus.kafka.schema-registry-username"),
+                    environment.getProperty("GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_USERNAME"));
+            String registryPassword = firstNonBlank(
+                    active == null ? null : active.schemaRegistryPassword(),
+                    environment.getProperty("git-utility.webhook-bus.kafka.schema-registry-password"),
+                    environment.getProperty("GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_PASSWORD"),
+                    "");
+            if (registryUser != null && !registryUser.isBlank()) {
+                overrides.put("spring.kafka.properties.basic.auth.credentials.source", "USER_INFO");
+                overrides.put("spring.kafka.properties.basic.auth.user.info",
+                        registryUser + ":" + registryPassword);
+            }
+        }
+
+        String trustPath = firstNonBlank(
+                active == null ? null : active.sslTruststoreLocation(),
+                environment.getProperty("git-utility.webhook-bus.kafka.ssl-truststore-location"),
+                environment.getProperty("GIT_WEBHOOK_KAFKA_SSL_TRUSTSTORE_LOCATION"));
+        String keystorePath = firstNonBlank(
+                active == null ? null : active.sslKeystoreLocation(),
+                environment.getProperty("git-utility.webhook-bus.kafka.ssl-keystore-location"),
+                environment.getProperty("GIT_WEBHOOK_KAFKA_SSL_KEYSTORE_LOCATION"));
+        String keyPath = firstNonBlank(
+                active == null ? null : active.sslKeyLocation(),
+                environment.getProperty("git-utility.webhook-bus.kafka.ssl-key-location"),
+                environment.getProperty("GIT_WEBHOOK_KAFKA_SSL_KEY_LOCATION"));
+        String keyPassword = firstNonBlank(
+                active == null ? null : active.sslKeyPassword(),
+                environment.getProperty("git-utility.webhook-bus.kafka.ssl-key-password"),
+                environment.getProperty("GIT_WEBHOOK_KAFKA_SSL_KEY_PASSWORD"),
+                "");
+        boolean wantsPem = "SSL".equalsIgnoreCase(protocol)
+                || trustPath != null
+                || keystorePath != null
+                || keyPath != null;
+        if (wantsPem) {
+            if (!"SSL".equalsIgnoreCase(protocol) && !"SASL_SSL".equalsIgnoreCase(protocol)) {
+                throw new IllegalStateException(
+                        "Kafka PEM certificates require GIT_WEBHOOK_KAFKA_SECURITY_PROTOCOL=SSL or SASL_SSL");
+            }
+            KafkaSslPemSupport.PemMaterial pem = KafkaSslPemSupport.load(trustPath, keystorePath, keyPath);
+            KafkaSslPemSupport.requireKeyPasswordIfEncrypted(pem.clientKey(), keyPassword);
+            KafkaSslPemSupport.putKafkaSsl(overrides, pem, keyPassword);
+            if (KafkaValueCodec.AVRO.equals(codec)) {
+                KafkaSslPemSupport.putSchemaRegistrySsl(overrides, pem, keyPassword);
+            }
+        }
+
         String group = firstNonBlank(
+                active == null ? null : active.groupId(),
                 environment.getProperty("git-utility.webhook-bus.kafka.group-id"),
                 environment.getProperty("GIT_WEBHOOK_KAFKA_GROUP_ID"),
                 "git-mirror-hub");
         String clientId = firstNonBlank(
+                active == null ? null : active.clientId(),
                 environment.getProperty("git-utility.webhook-bus.kafka.client-id"),
                 environment.getProperty("GIT_WEBHOOK_KAFKA_CLIENT_ID"),
                 "git-mirror-hub");
+        String topic = firstNonBlank(
+                active == null ? null : active.incrementalTopic(),
+                environment.getProperty("git-utility.webhook-bus.kafka.incremental-topic"),
+                environment.getProperty("GIT_WEBHOOK_KAFKA_INCREMENTAL_TOPIC"),
+                "git.sync.incremental");
         String offsetReset = firstNonBlank(
                 environment.getProperty("git-utility.webhook-bus.kafka.auto-offset-reset"),
                 environment.getProperty("GIT_WEBHOOK_KAFKA_AUTO_OFFSET_RESET"),
@@ -98,6 +190,13 @@ public class WebhookBusEnvironmentPostProcessor implements EnvironmentPostProces
                 environment.getProperty("GIT_WEBHOOK_KAFKA_SESSION_TIMEOUT_MS"),
                 "45000");
 
+        if (sourceId != null && !sourceId.isBlank()) {
+            overrides.put("git-utility.webhook-bus.kafka.source-id", sourceId);
+        }
+        overrides.put("git-utility.webhook-bus.kafka.bootstrap-servers", bootstrap);
+        overrides.put("git-utility.webhook-bus.kafka.incremental-topic", topic);
+        overrides.put("git-utility.webhook-bus.kafka.group-id", group);
+        overrides.put("git-utility.webhook-bus.kafka.security-protocol", protocol);
         overrides.put("spring.kafka.bootstrap-servers", bootstrap);
         overrides.put("spring.kafka.client-id", clientId);
         overrides.put("spring.kafka.consumer.group-id", group);
@@ -106,11 +205,11 @@ public class WebhookBusEnvironmentPostProcessor implements EnvironmentPostProces
         overrides.put("spring.kafka.consumer.key-deserializer",
                 "org.apache.kafka.common.serialization.StringDeserializer");
         overrides.put("spring.kafka.consumer.value-deserializer",
-                "org.apache.kafka.common.serialization.StringDeserializer");
+                "org.apache.kafka.common.serialization.ByteArrayDeserializer");
         overrides.put("spring.kafka.producer.key-serializer",
                 "org.apache.kafka.common.serialization.StringSerializer");
         overrides.put("spring.kafka.producer.value-serializer",
-                "org.apache.kafka.common.serialization.StringSerializer");
+                "org.apache.kafka.common.serialization.ByteArraySerializer");
         overrides.put("spring.kafka.consumer.properties.max.poll.interval.ms", maxPoll);
         overrides.put("spring.kafka.consumer.properties.session.timeout.ms", sessionTimeout);
         overrides.put("spring.kafka.consumer.properties.partition.assignment.strategy",

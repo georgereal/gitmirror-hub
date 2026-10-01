@@ -1,4 +1,4 @@
-import { applyFormat, selectFormat, validateEvent } from "./apply.js";
+import { applyFormat, expandStringifiedPayload, selectFormat, validateEvent } from "./apply.js";
 import { repoKey } from "./repoKey.js";
 
 /**
@@ -49,7 +49,7 @@ export async function runBridge(settings, formats) {
       const raw = message.value == null ? "" : message.value.toString("utf8");
       let record;
       try {
-        record = JSON.parse(raw);
+        record = expandStringifiedPayload(JSON.parse(raw));
       } catch (err) {
         stats.skipped += 1;
         console.error(`skip partition=${partition} offset=${message.offset}: unreadable JSON (${err.message})`);

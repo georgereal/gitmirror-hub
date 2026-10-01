@@ -1,8 +1,16 @@
 # Kafka event formats
 
-How Hub reads more than one JSON shape from the incremental Kafka topic. The mirror path stays on one object, `IncrementalGitEvent`. Adapters run after Hub has consumed the record. Hub does not write a converted copy back to Kafka.
+How Hub turns an incremental Kafka record into `IncrementalGitEvent` after consume. Hub does not write a converted copy back to Kafka.
 
-Setup for the cluster, worker, and the rest of the webhook bus is in [`INSTRUCTIONS-KAFKA-WEBHOOK.md`](INSTRUCTIONS-KAFKA-WEBHOOK.md). This page is only the format layer.
+Three **independent** layers:
+
+| Layer | Default | Opt-in |
+| :--- | :--- | :--- |
+| Connection | `PLAINTEXT` or `SASL_SSL` + API key | Mutual TLS PEMs (`SSL`) |
+| Value codec | `json` (UTF-8 body) | `avro` + Schema Registry URL |
+| Event adapters | `normalized-v1` | Mapping files in `GIT_WEBHOOK_EVENT_FORMATS_DIR` |
+
+Cluster and worker setup: [`INSTRUCTIONS-KAFKA-WEBHOOK.md`](INSTRUCTIONS-KAFKA-WEBHOOK.md). Operator env tables: [`INSTRUCTIONS.md`](INSTRUCTIONS.md) (Kafka Hub sections). Partition keys: [`KAFKA_PARTITION_ORDERING.md`](KAFKA_PARTITION_ORDERING.md). Avro/mTLS tracking: [`future-work/kafka-avro-mtls.md`](future-work/kafka-avro-mtls.md).
 
 ## What Hub processes
 
@@ -18,9 +26,13 @@ The listener turns each record into `IncrementalGitEvent`, then `WebhookIncremen
 
 The fields the git path uses are `repoUrl`, `ref`, `beforeSha`, `afterSha`, `eventType`, `deliveryId`, and `provider`.
 
-## Config
+## Event format adapters
 
 `GIT_WEBHOOK_EVENT_FORMATS_DIR` is an environment variable on the Hub process. It is wired in `backend/src/main/resources/application.yml` as `git-utility.webhook-bus.kafka.event-formats-dir`. The default is empty.
+
+| Env | Default | Role |
+| :--- | :--- | :--- |
+| `GIT_WEBHOOK_EVENT_FORMATS_DIR` | empty | Directory of `*.json` mapping files. Each file `id` is a `schemaVersion`. |
 
 | Value | What Hub loads |
 | :--- | :--- |
@@ -35,12 +47,72 @@ export GIT_WEBHOOK_EVENT_FORMATS_DIR=/path/to/formats
 
 Put that export in the same shell file that starts the backend (`env.pod.a`, or the pod example `env.pod-a.example`). Do not commit a directory that holds secrets. Mapping files are field pointers, not credentials.
 
-`normalized-v1` does not need this variable. Leave it unset until a producer sends a different shape.
+`normalized-v1` does not need this variable. Leave it unset until a producer sends a different shape. Runbook: [`INSTRUCTIONS-KAFKA-WEBHOOK.md`](INSTRUCTIONS-KAFKA-WEBHOOK.md) section 12.
+
+## Value codec (`json` | `avro`)
+
+Independent of the mapping adapters and of TLS. Wired as `git-utility.webhook-bus.kafka.value-codec`.
+
+| Env | Default | Role |
+| :--- | :--- | :--- |
+| `GIT_WEBHOOK_KAFKA_VALUE_CODEC` | `json` | `json` = UTF-8 JSON value. `avro` = Confluent wire format. |
+| `GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_URL` | empty | Required when codec is `avro`. |
+| `GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_USERNAME` | empty | Optional registry basic auth. |
+| `GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_PASSWORD` | empty | Optional registry basic auth. |
+
+| Codec | Behavior |
+| :--- | :--- |
+| unset / `json` | Record value is UTF-8 JSON. Same path as today. |
+| `avro` | Hub asks the Schema Registry for the schema, turns the Avro record into JSON, then runs the same adapters. |
+
+```bash
+export GIT_WEBHOOK_KAFKA_VALUE_CODEC=avro
+export GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_URL=https://schema-registry.example:8081
+# export GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_USERNAME=
+# export GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_PASSWORD=
+```
+
+Startup fails when codec is `avro` and the registry URL is empty. When the broker uses mutual TLS PEMs, the same certificates are applied to the Schema Registry client.
+
+`sourceMessage` on the Queues page stores the JSON projection (capped at 16,000 characters), not raw Avro bytes. Runbook: [`INSTRUCTIONS-KAFKA-WEBHOOK.md`](INSTRUCTIONS-KAFKA-WEBHOOK.md) section 13.
+
+## Mutual TLS (connection)
+
+Independent of the value codec and of the formats directory. Today’s Confluent Cloud path stays `SASL_SSL` + API key + secret.
+
+| Env | Default | Role |
+| :--- | :--- | :--- |
+| `GIT_WEBHOOK_KAFKA_SECURITY_PROTOCOL` | `PLAINTEXT` | Set to `SSL` for mutual TLS. |
+| `GIT_WEBHOOK_KAFKA_SSL_TRUSTSTORE_LOCATION` | empty | CA / trust PEM. Required for `SSL`. |
+| `GIT_WEBHOOK_KAFKA_SSL_KEYSTORE_LOCATION` | empty | Client cert PEM, or combined cert + key PEM. Required for `SSL`. |
+| `GIT_WEBHOOK_KAFKA_SSL_KEY_LOCATION` | empty | Private key PEM. Optional when the keystore file already contains the key. |
+| `GIT_WEBHOOK_KAFKA_SSL_KEY_PASSWORD` | empty | Passphrase for an encrypted private key. Required when the key is encrypted. |
+
+```bash
+export GIT_WEBHOOK_KAFKA_SECURITY_PROTOCOL=SSL
+export GIT_WEBHOOK_KAFKA_SSL_TRUSTSTORE_LOCATION=/path/ca.pem
+export GIT_WEBHOOK_KAFKA_SSL_KEYSTORE_LOCATION=/path/client.pem
+export GIT_WEBHOOK_KAFKA_SSL_KEY_PASSWORD='<pem passphrase>'
+```
+
+Hub splits a combined keystore PEM into certificate chain + key, then sets Kafka’s PEM properties (including `ssl.key.password` when set). Partition keys and adapters are unchanged. Runbook: [`INSTRUCTIONS-KAFKA-WEBHOOK.md`](INSTRUCTIONS-KAFKA-WEBHOOK.md) section 14.
+
+## Stringified `payload` envelopes
+
+Some producers (for example `source=GitWebhookService`) wrap a GitHub webhook body as a **JSON string** under `payload`. Before adapters run, Hub parses that string in place so pointers like `/payload/ref` work. The same unwrap runs in `kafka-event-format` check/bridge.
+
+Worked adapter: `kafka-event-format/examples/formats/30-git-webhook-service-v1.json` with sample `examples/samples/git-webhook-service-push.json`. Point `GIT_WEBHOOK_EVENT_FORMATS_DIR` at a directory that includes that file (or a copy).
 
 ## How a record picks an adapter
 
 ```text
 Kafka record
+    │
+    ▼
+value codec (json | avro) → JSON tree
+    │
+    ▼
+unwrap stringified /payload (if it is JSON text)
     │
     ▼
 schemaVersion header, or schema-version header, or JSON field /schemaVersion
@@ -121,7 +193,7 @@ The command exits non-zero when a sample matches no file or two files, `repoUrl`
 
 Hub mirrors from the canonical event. It does not publish that event back to the topic.
 
-A busy pair lease or a failed attempt leaves the offset uncommitted. Kafka redelivers the original bytes. After `GIT_MAX_RETRY_ATTEMPTS` (default 3), the raw record is stored on the dead-letter list in the database and the offset is committed. Replay from Queues reads that stored body through the same adapters.
+A busy pair lease or a failed attempt leaves the offset uncommitted. Kafka redelivers the original bytes. After `GIT_MAX_RETRY_ATTEMPTS` (default 3), the raw record is stored on the dead-letter list in the database and the offset is committed. Replay from Queues reads that stored body through the same adapters (JSON path after the first failure stores a JSON projection).
 
 ## What you see in the UI
 

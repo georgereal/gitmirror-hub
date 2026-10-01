@@ -1,0 +1,23 @@
+{
+  "id": "git-webhook-service-v1",
+  "when": { "pointer": "/source", "in": ["GitWebhookService"] },
+  "fields": {
+    "repoUrl": "/payload/repository/ssh_url",
+    "ref": "/payload/ref",
+    "beforeSha": "/payload/before",
+    "afterSha": "/payload/after",
+    "deliveryId": "/uuid",
+    "eventType": "/destinationList/0",
+    "rawPayload": "/payload"
+  },
+  "eventTypeMap": {
+    "PUSH_EVENT_PROCESSOR": "push",
+    "PULL_REQUEST_PROCESSOR": "pull_request",
+    "PULL_REQUEST_EVENT_PROCESSOR": "pull_request",
+    "CREATE_EVENT_PROCESSOR": "create",
+    "DELETE_EVENT_PROCESSOR": "delete",
+    "RELEASE_EVENT_PROCESSOR": "release",
+    "STATUS_EVENT_PROCESSOR": "status",
+    "CHECK_RUN_EVENT_PROCESSOR": "check_run"
+  }
+}

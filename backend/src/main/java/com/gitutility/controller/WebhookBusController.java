@@ -3,12 +3,14 @@ package com.gitutility.controller;
 import com.gitutility.messaging.webhook.WebhookBusProvider;
 import com.gitutility.messaging.webhook.kafka.KafkaWebhookOps;
 import com.gitutility.messaging.webhook.rabbit.RabbitWebhookOps;
+import com.gitutility.model.dto.KafkaOffsetSeekRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -54,5 +56,21 @@ public class WebhookBusController {
                     "error", "Webhook bus is off. Set GIT_WEBHOOK_BUS_PROVIDER=kafka or rabbitmq."));
         }
         return ResponseEntity.ok(Map.of("redriven", moved));
+    }
+
+    @PostMapping("/offsets/seek")
+    public ResponseEntity<Map<String, Object>> seekOffsets(@RequestBody KafkaOffsetSeekRequest request) {
+        WebhookBusProvider provider = WebhookBusProvider.from(providerProperty);
+        if (provider != WebhookBusProvider.KAFKA || kafkaOps.getIfAvailable() == null) {
+            return ResponseEntity.status(409).body(Map.of(
+                    "error", "Offset seek requires GIT_WEBHOOK_BUS_PROVIDER=kafka."));
+        }
+        try {
+            return ResponseEntity.ok(kafkaOps.getObject().seek(request));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(409).body(Map.of("error", e.getMessage()));
+        }
     }
 }

@@ -58,6 +58,25 @@ function unescapePointer(segment) {
   return segment.replace(/~1/g, "/").replace(/~0/g, "~");
 }
 
+/**
+ * GitWebhookService envelopes store the GitHub body as a JSON string under payload.
+ * Parse it in place so pointers like /payload/ref work (same as Hub IncrementalEventDecoder).
+ */
+export function expandStringifiedPayload(record) {
+  if (record == null || typeof record !== "object" || Array.isArray(record)) {
+    return record;
+  }
+  const payload = record.payload;
+  if (typeof payload !== "string") {
+    return record;
+  }
+  const trimmed = payload.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+    return record;
+  }
+  return { ...record, payload: JSON.parse(trimmed) };
+}
+
 export function matches(record, format) {
   const when = format.when;
   if (!when || !when.pointer || !Array.isArray(when.in)) {
@@ -181,9 +200,16 @@ export function checkSamples(samples, formats) {
   const lines = [];
   const failures = [];
   for (const sample of samples) {
+    let record;
+    try {
+      record = expandStringifiedPayload(sample.record);
+    } catch (err) {
+      failures.push(`${sample.name}: payload is not JSON (${err.message})`);
+      continue;
+    }
     let hits;
     try {
-      hits = selectFormat(sample.record, formats);
+      hits = selectFormat(record, formats);
     } catch (err) {
       failures.push(`${sample.name}: ${err.message}`);
       continue;
@@ -198,7 +224,7 @@ export function checkSamples(samples, formats) {
       );
       continue;
     }
-    const event = applyFormat(sample.record, hits[0]);
+    const event = applyFormat(record, hits[0]);
     const errors = validateEvent(event);
     if (errors.length > 0) {
       failures.push(`${sample.name} via ${hits[0].id}: ${errors.join("; ")}`);

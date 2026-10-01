@@ -1,0 +1,8 @@
+{
+  "source": "GitWebhookService",
+  "destinationList": ["PUSH_EVENT_PROCESSOR"],
+  "uuid": "6ab9507d36be8fffc841d3c9",
+  "repoId": "app-ciwat-devops-test/bp-integration-test",
+  "repoUrl": "git@github-uat.example.com:app-ciwat-devops-test/bp-integration-test.git",
+  "payload": "{\"ref\":\"refs/heads/shouldntexistlater-1790529551993\",\"before\":\"0000000000000000000000000000000000000000\",\"after\":\"cf273a7aba9711f18b1c2c7a320cbed8abcdef12\",\"repository\":{\"full_name\":\"app-ciwat-devops-test/bp-integration-test\",\"ssh_url\":\"git@github-uat.example.com:app-ciwat-devops-test/bp-integration-test.git\",\"clone_url\":\"https://github-uat.example.com/app-ciwat-devops-test/bp-integration-test.git\"},\"pusher\":{\"name\":\"Mayank Sharma\",\"email\":\"u784565@example.com\"}}"
+}

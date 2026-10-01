@@ -13,7 +13,7 @@ gitUtility/
 ├── INSTRUCTIONS.md                     # Operational guide, runbook, and failover instructions
 ├── INSTRUCTIONS-MULTI-POD.md           # Local multi-pod (2+ backend JVMs) runbook
 ├── INSTRUCTIONS-KAFKA-WEBHOOK.md       # Confluent Cloud cluster, Kafka webhook worker, and Hub bus env
-├── KAFKA_EVENT_FORMATS.md              # Incremental topic adapters and GIT_WEBHOOK_EVENT_FORMATS_DIR
+├── KAFKA_EVENT_FORMATS.md              # Incremental topic adapters, value codec, and GIT_WEBHOOK_EVENT_FORMATS_DIR
 ├── KAFKA_PARTITION_ORDERING.md         # Why one repo stays in order across many partitions
 ├── SCM_PROVIDER_SETUP.md               # Create/configure SCM identities (GitHub App first; more providers later)
 ├── README.md                           # Quickstart summary
@@ -23,6 +23,7 @@ gitUtility/
 ├── env.pod-b.example                   # Template env for pod-b (copy → gitignored env.pod-b)
 ├── future-work/                        # Deferred backlog design plans (not shipped behavior)
 │   ├── README.md                       # Pending vs done index
+│   ├── kafka-avro-mtls.md              # Opt-in Avro Schema Registry + mutual TLS PEM
 │   ├── cache-resume-worker-affinity.md # Resume, cache, affinity (partial)
 │   ├── pr-sync-parity.md               # Richer PR sync (shell shipped; A–E pending)
 │   ├── fanout-concurrency.md           # In-job fan-out (LFS/PR pools shipped)
@@ -353,7 +354,7 @@ gitUtility/
 | **Backend** | `DedupLedgerService` | Still records tip SHAs, ref deletes, and `pr:<number>` when the engine writes. The inbound webhook skip uses `PairTipEchoService`, not this row. |
 | **Backend** | `QueueProducerService` | Builds `SyncEventMessage` and publishes via pluggable `SyncEventBus` (Rabbit or inline). |
 | **Backend** | `MessagingModule` / `SyncEventBus` | `GIT_MESSAGING_PROVIDER=rabbitmq\|kafka\|none`; descriptor at `GET /api/v1/messaging`. |
-| **Backend** | `WebhookIncrementalService` | `GIT_WEBHOOK_BUS_PROVIDER=kafka\|rabbitmq\|off`. One incremental lane. `GET /api/v1/webhook-bus`, `POST /api/v1/webhook-bus/redrive`. |
+| **Backend** | `WebhookIncrementalService` | `GIT_WEBHOOK_BUS_PROVIDER=kafka\|rabbitmq\|off`. One incremental lane. `GET /api/v1/webhook-bus`, `POST /api/v1/webhook-bus/redrive`, `POST /api/v1/webhook-bus/offsets/seek`. Optional `GIT_WEBHOOK_KAFKA_SOURCES_FILE` (single active named source). |
 | **Edge** | `webhook-worker-kafka/` | Optional Cloudflare script. HMAC then Confluent REST produce of a normalized git event. |
 | **Tool** | `kafka-event-format/` | Local check for mapping files. Hub adapts records after consume. `normalized-v1` is built in. `GIT_WEBHOOK_EVENT_FORMATS_DIR` adds schema versions. |
 | **Backend** | `SyncLaneRouter` | Shared full vs incremental routing rule used by producer, engine, DLQ redrive, and consumers. |

@@ -1,5 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { getWebhookBus, redriveWebhookBus, WebhookBusStatus } from '../services/api';
+import {
+  getWebhookBus,
+  redriveWebhookBus,
+  seekWebhookBusOffsets,
+  KafkaOffsetSeekMode,
+  WebhookBusStatus,
+} from '../services/api';
 
 const POLL_MS = 60_000;
 const HISTORY = 36;
@@ -12,6 +18,8 @@ export const KafkaWebhookPanel: React.FC = () => {
   const [status, setStatus] = useState<WebhookBusStatus | null>(null);
   const [history, setHistory] = useState<number[]>([]);
   const [busy, setBusy] = useState(false);
+  const [seeking, setSeeking] = useState(false);
+  const [rewindBy, setRewindBy] = useState(50);
   const [refreshing, setRefreshing] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const historyRef = useRef<number[]>([]);
@@ -76,6 +84,35 @@ export const KafkaWebhookPanel: React.FC = () => {
     }
   };
 
+  const seek = async (mode: KafkaOffsetSeekMode) => {
+    if (mode === 'earliest' && !window.confirm('Reset this consumer group to the earliest offset on every partition? Hub will re-read retained topic history.')) {
+      return;
+    }
+    if (mode === 'latest' && !window.confirm('Skip to the latest offset on every partition? Pending records for this group will be skipped.')) {
+      return;
+    }
+    setSeeking(true);
+    setNote(null);
+    try {
+      const result = await seekWebhookBusOffsets({
+        mode,
+        rewindBy: mode === 'rewind' ? Math.max(1, Math.min(rewindBy || 50, 10_000)) : undefined,
+      });
+      const count = result.offsets?.length ?? 0;
+      setNote(
+        mode === 'rewind'
+          ? `Rewound ${result.rewindBy ?? rewindBy} on ${count} partition${count === 1 ? '' : 's'}.`
+          : `Seeked to ${mode} on ${count} partition${count === 1 ? '' : 's'}.`
+      );
+      load(true);
+    } catch (err) {
+      const axiosErr = err as { response?: { data?: { error?: string } }; message?: string };
+      setNote(axiosErr.response?.data?.error || axiosErr.message || 'Offset seek failed');
+    } finally {
+      setSeeking(false);
+    }
+  };
+
   const stateLabel = status.paused
     ? 'Listener paused'
     : status.lagError
@@ -90,6 +127,12 @@ export const KafkaWebhookPanel: React.FC = () => {
         <div>
           <h3 className="text-sm font-semibold text-zinc-900">Incremental topic</h3>
           <p className="text-xs text-zinc-500 mt-0.5">
+            {status.sourceId ? (
+              <>
+                source <span className="font-mono text-zinc-700">{status.sourceId}</span>
+                {' · '}
+              </>
+            ) : null}
             <span className="font-mono text-zinc-700">{status.topic}</span>
             {' · group '}
             <span className="font-mono text-zinc-700">{status.groupId || 'git-mirror-hub'}</span>
@@ -97,6 +140,11 @@ export const KafkaWebhookPanel: React.FC = () => {
             {status.memberCount != null ? ` · ${status.memberCount} member${status.memberCount === 1 ? '' : 's'}` : ''}
             {status.partitionCount != null ? ` · ${status.partitionCount} partitions` : ''}
           </p>
+          {status.bootstrapServers ? (
+            <p className="text-[11px] text-zinc-400 mt-0.5 font-mono truncate" title={status.bootstrapServers}>
+              {status.bootstrapServers}
+            </p>
+          ) : null}
           <p className="text-[11px] text-zinc-400 mt-1">
             Refreshes about once a minute. Pending is uncommitted records. Committed includes skips and stored failures.
             {status.sampledAt ? ` Sampled ${status.sampledAt}.` : ''}
@@ -146,6 +194,54 @@ export const KafkaWebhookPanel: React.FC = () => {
           <div className="text-[11px] text-zinc-400">Last {Math.max(history.length, 1)} samples · 1 min apart</div>
         </div>
         <ActiveChart values={history} />
+      </div>
+
+      <div className="rounded-2xl border border-zinc-200/90 bg-white shadow-sm p-4 space-y-3">
+        <div>
+          <div className="text-xs font-semibold text-zinc-900">Replay from Kafka</div>
+          <p className="text-[11px] text-zinc-500 mt-0.5">
+            Moves this consumer group&apos;s committed offsets so Hub re-reads topic records.
+            Stop other Hub pods on the same group first. Distinct from replaying stored dead-letter rows below.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-1.5 text-xs text-zinc-600">
+            Rewind
+            <input
+              type="number"
+              min={1}
+              max={10000}
+              value={rewindBy}
+              onChange={(e) => setRewindBy(Number(e.target.value) || 50)}
+              className="w-20 rounded-md border border-zinc-200 px-2 py-1 font-mono text-xs"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => seek('rewind')}
+            disabled={seeking || !!status.lagError}
+            className="px-3 py-1.5 rounded-lg border border-zinc-200 text-xs font-medium hover:bg-zinc-50 disabled:opacity-50"
+          >
+            {seeking ? 'Seeking…' : 'Rewind'}
+          </button>
+          <button
+            type="button"
+            onClick={() => seek('earliest')}
+            disabled={seeking || !!status.lagError}
+            className="px-3 py-1.5 rounded-lg border border-zinc-200 text-xs font-medium hover:bg-zinc-50 disabled:opacity-50"
+          >
+            To earliest
+          </button>
+          <button
+            type="button"
+            onClick={() => seek('latest')}
+            disabled={seeking || !!status.lagError}
+            className="px-3 py-1.5 rounded-lg border border-zinc-200 text-xs font-medium hover:bg-zinc-50 disabled:opacity-50"
+          >
+            To latest
+          </button>
+        </div>
+        {note && <p className="text-[11px] text-zinc-500">{note}</p>}
       </div>
 
       <div className="rounded-2xl border border-zinc-200/90 bg-white shadow-sm overflow-hidden">
@@ -232,7 +328,6 @@ export const KafkaWebhookPanel: React.FC = () => {
             ))}
           </ul>
         )}
-        {note && <p className="px-4 pb-3 text-[11px] text-zinc-500">{note}</p>}
       </div>
     </div>
   );

@@ -4,6 +4,7 @@ import com.gitutility.model.dto.IncrementalGitEvent;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -67,6 +68,7 @@ public final class IncrementalEventDecoder {
         } catch (Exception e) {
             throw new IncrementalEventDecodeException("unreadable JSON: " + e.getMessage());
         }
+        root = expandStringifiedPayload(root);
         String named = firstText(schemaVersionHeader, text(root.at("/schemaVersion")));
         if (named != null) {
             return applyNamed(named, json, root);
@@ -87,6 +89,30 @@ public final class IncrementalEventDecoder {
             throw new IncrementalEventDecodeException("matched " + String.join(", ", hits));
         }
         return applyNamed(hits.get(0), json, root);
+    }
+
+    /**
+     * GitWebhookService-style envelopes store the GitHub body as a JSON string under {@code payload}.
+     * Parse it in place so format adapters can use pointers like {@code /payload/ref}.
+     */
+    private JsonNode expandStringifiedPayload(JsonNode root) {
+        if (!(root instanceof ObjectNode object)) {
+            return root;
+        }
+        JsonNode payload = object.get("payload");
+        if (payload == null || !payload.isString()) {
+            return root;
+        }
+        String text = payload.asText("").trim();
+        if (text.isEmpty() || !(text.startsWith("{") || text.startsWith("["))) {
+            return root;
+        }
+        try {
+            object.set("payload", mapper.readTree(text));
+        } catch (Exception e) {
+            throw new IncrementalEventDecodeException("payload is not JSON: " + e.getMessage());
+        }
+        return object;
     }
 
     private IncrementalGitEvent applyNamed(String schemaVersion, String json, JsonNode root) {

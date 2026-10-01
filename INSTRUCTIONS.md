@@ -11,7 +11,7 @@ Before running the application, ensure the following tools are installed:
 
 | Component        | Minimum Version | Verified Version                  | Notes                                 |
 | ---------------- | --------------- | --------------------------------- | ------------------------------------- |
-| **Java JDK**     | 21+             | JDK 23 (Oracle / OpenJDK)         | Required for Spring Boot 4 & JGit     |
+| **Java JDK**     | 23              | JDK 23 (Oracle / OpenJDK)         | Required for Spring Boot 4 & JGit. Toolchain is 23; Java 25 breaks this Gradle wrapper. |
 | **Apache Maven** | 3.8+            | Maven 3.9.9                       | Preferred for local `bootRun` / day-to-day iteration (`mvn -f backend/pom.xml`) |
 | **Gradle**       | 8.10+ (Wrapper) | Gradle 8.10.2                     | Optional alternate; useful for wrapper-based / pod-style runs (`backend/gradlew`) |
 | **Node.js**      | 18+             | Node.js v20.19.5                  | Frontend build & dev server           |
@@ -94,7 +94,8 @@ If you prefer running RabbitMQ locally:
 Open a terminal at the **repo root** (`gitUtility/`). The gitignored `env` file lives here (not under `backend/`).
 
 ```bash
-# Optional: JDK 21+ on PATH (macOS example: export JAVA_HOME="$(/usr/libexec/java_home -v 21)")
+# Prefer JDK 23 (toolchain / local default). macOS:
+export JAVA_HOME="$(/usr/libexec/java_home -v 23)"
 # Required if not already in ./env: unique key used to encrypt PATs and App private keys at rest
 # export GIT_UTILITY_ENCRYPTION_KEY="$(openssl rand -hex 32)"
 
@@ -208,9 +209,92 @@ npx wrangler delete
 
 [`webhook-worker-kafka/`](webhook-worker-kafka/README.md) is a second Worker. It produces normalized git events to a Kafka topic over the Confluent REST API. Deploy it only when `GIT_WEBHOOK_BUS_PROVIDER=kafka`. Its cluster and API key live in gitignored `webhook-worker-kafka/.env`, same as the Rabbit worker. Start, stop, and delete use `ENABLED` in that file, `workers_dev` in `wrangler.toml`, and `wrangler delete`. The script name is `gitmirror-webhook-worker-kafka`. The Confluent walkthrough is [`INSTRUCTIONS-KAFKA-WEBHOOK.md`](INSTRUCTIONS-KAFKA-WEBHOOK.md).
 
-**Event shape on that topic.** Hub always understands `normalized-v1` (the flat event the Worker publishes). A different JSON shape is an adapter file. Set `GIT_WEBHOOK_EVENT_FORMATS_DIR` to the directory of those files in the same shell that starts Hub, then restart. Leave it unset to keep only `normalized-v1`. The directory is read at startup. How a record picks an adapter, the mapping file, and the Queues columns are in [`KAFKA_EVENT_FORMATS.md`](KAFKA_EVENT_FORMATS.md). The Kafka runbook step is [`INSTRUCTIONS-KAFKA-WEBHOOK.md`](INSTRUCTIONS-KAFKA-WEBHOOK.md) section 12.
-
 Both Workers accept only `push`, `create`, `delete`, `pull_request`, `release`, `status`, and `check_run`. After those events are added on the GitHub App, redeploy the Worker for the bus you use. An older bundle answers `200 ignored` and Hub never stores the delivery.
+
+### Kafka Hub: event format adapters
+
+Independent of the value codec and of TLS. Leave unset to keep only the built-in flat event.
+
+| Env | Default | Role |
+| :--- | :--- | :--- |
+| `GIT_WEBHOOK_EVENT_FORMATS_DIR` | empty | Directory of `*.json` mapping files. Each file `id` is a `schemaVersion`. |
+
+Hub always loads `normalized-v1` (the shape `webhook-worker-kafka` publishes). Set the directory in the same shell that starts Hub, then restart. The path is read at startup. Missing or empty directory fails startup when the variable is set.
+
+```bash
+export GIT_WEBHOOK_EVENT_FORMATS_DIR=/path/to/formats
+```
+
+How a record picks an adapter, the mapping file schema, and the Queues columns: [`KAFKA_EVENT_FORMATS.md`](KAFKA_EVENT_FORMATS.md). Runbook: [`INSTRUCTIONS-KAFKA-WEBHOOK.md`](INSTRUCTIONS-KAFKA-WEBHOOK.md) section 12.
+
+### Kafka Hub: value codec (`json` | `avro`)
+
+Independent of the formats directory and of TLS. Default is today’s UTF-8 JSON body.
+
+| Env | Default | Role |
+| :--- | :--- | :--- |
+| `GIT_WEBHOOK_KAFKA_VALUE_CODEC` | `json` | `json` = UTF-8 JSON value. `avro` = Confluent wire format via Schema Registry. |
+| `GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_URL` | empty | Required when codec is `avro`. |
+| `GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_USERNAME` | empty | Optional registry basic auth. |
+| `GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_PASSWORD` | empty | Optional registry basic auth. |
+
+```bash
+export GIT_WEBHOOK_KAFKA_VALUE_CODEC=avro
+export GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_URL=https://schema-registry.example:8081
+# export GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_USERNAME=
+# export GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_PASSWORD=
+```
+
+Avro becomes JSON, then the same format adapters run. Queues stores a capped JSON projection as `sourceMessage`, not raw Avro bytes. Startup fails when codec is `avro` and the registry URL is empty. Details: [`KAFKA_EVENT_FORMATS.md`](KAFKA_EVENT_FORMATS.md) and [`INSTRUCTIONS-KAFKA-WEBHOOK.md`](INSTRUCTIONS-KAFKA-WEBHOOK.md) section 13.
+
+### Kafka Hub: mutual TLS (PEM)
+
+Independent of the value codec and of the formats directory. Today’s Confluent path stays `SASL_SSL` + API key + secret.
+
+| Env | Default | Role |
+| :--- | :--- | :--- |
+| `GIT_WEBHOOK_KAFKA_SECURITY_PROTOCOL` | `PLAINTEXT` | Use `SSL` for mutual TLS. `SASL_SSL` remains the Confluent Cloud default. |
+| `GIT_WEBHOOK_KAFKA_SSL_TRUSTSTORE_LOCATION` | empty | CA / trust PEM file. Required when protocol is `SSL`. |
+| `GIT_WEBHOOK_KAFKA_SSL_KEYSTORE_LOCATION` | empty | Client certificate PEM, or a combined cert + private-key PEM. Required when protocol is `SSL`. |
+| `GIT_WEBHOOK_KAFKA_SSL_KEY_LOCATION` | empty | Client private key PEM. Optional when the keystore file already contains the key. |
+| `GIT_WEBHOOK_KAFKA_SSL_KEY_PASSWORD` | empty | Passphrase for an encrypted PKCS#8 private key (`BEGIN ENCRYPTED PRIVATE KEY`). Required when the key is encrypted. |
+
+```bash
+export GIT_WEBHOOK_KAFKA_SECURITY_PROTOCOL=SSL
+export GIT_WEBHOOK_KAFKA_SSL_TRUSTSTORE_LOCATION=/path/ca.pem
+export GIT_WEBHOOK_KAFKA_SSL_KEYSTORE_LOCATION=/path/client.pem   # cert+key OK
+# export GIT_WEBHOOK_KAFKA_SSL_KEY_LOCATION=/path/client.key     # only if key is a separate file
+export GIT_WEBHOOK_KAFKA_SSL_KEY_PASSWORD='<pem passphrase>'
+```
+
+Truststore and keystore paths must be readable at startup. An encrypted key without `GIT_WEBHOOK_KAFKA_SSL_KEY_PASSWORD` fails startup. When Avro is also on, the same PEMs and key password are applied to the Schema Registry HTTP client. Details: [`KAFKA_EVENT_FORMATS.md`](KAFKA_EVENT_FORMATS.md) and [`INSTRUCTIONS-KAFKA-WEBHOOK.md`](INSTRUCTIONS-KAFKA-WEBHOOK.md) section 14. Tracked in [`future-work/kafka-avro-mtls.md`](future-work/kafka-avro-mtls.md).
+
+### Kafka Hub: offset seek / replay
+
+Moves this consumer group’s committed offsets so Hub re-reads topic records. Use Queues → Kafka panel (Rewind / To earliest / To latest), or:
+
+```bash
+curl -X POST "http://localhost:8080/api/v1/webhook-bus/offsets/seek" \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"rewind","rewindBy":50}'
+```
+
+`mode` is `earliest`, `latest`, or `rewind` (optional `rewindBy`, default 50, max 10000; optional `partition`). Hub stops the listener, alters offsets, then restarts it. Stop other Hub pods on the same `GIT_WEBHOOK_KAFKA_GROUP_ID` first. This is separate from dead-letter redrive (`POST /api/v1/webhook-bus/redrive`), which only replays rows already stored in the DB. Runbook: [`INSTRUCTIONS-KAFKA-WEBHOOK.md`](INSTRUCTIONS-KAFKA-WEBHOOK.md) section 15.
+
+### Kafka Hub: named sources (single active)
+
+Optional file listing several clusters; exactly one entry must have `enabled: true`. Hub copies that source onto the flat Kafka props at startup (restart to flip).
+
+| Env | Default | Role |
+| :--- | :--- | :--- |
+| `GIT_WEBHOOK_KAFKA_SOURCES_FILE` | empty | JSON or YAML sources file. Example: [`env.kafka-sources.example.yml`](env.kafka-sources.example.yml). |
+| `GIT_WEBHOOK_KAFKA_SOURCE_ID` | empty | Optional label when not using a sources file. Overridden by the enabled source’s `id`. |
+
+```bash
+export GIT_WEBHOOK_KAFKA_SOURCES_FILE=/path/to/kafka-sources.yml
+```
+
+Without a sources file, today’s flat `GIT_WEBHOOK_KAFKA_BOOTSTRAP_SERVERS` / topic / group env vars still work. Runbook: [`INSTRUCTIONS-KAFKA-WEBHOOK.md`](INSTRUCTIONS-KAFKA-WEBHOOK.md) section 16.
 
 ---
 
@@ -375,9 +459,13 @@ Focus JUnit locks outcomes a later edit can flip while the scenarios above stay 
 | `PairLeaseServiceTest` | A second pod cannot take a live pair lease; it can after release or expiry |
 
 ```bash
-# JUnit and Cucumber together. The Gradle JVM must be 21 or 23; Java 25 cannot configure this wrapper.
-# This also writes the JaCoCo report for that run.
+# Prefer JDK 23. Java 25 cannot configure this Gradle wrapper (version string like 25.0.4.1).
+export JAVA_HOME="$(/usr/libexec/java_home -v 23)"   # macOS
+# JUnit and Cucumber together. Also writes the JaCoCo report for that run.
 ./backend/gradlew -p backend test
+
+# Or Maven (same JDK 23):
+# mvn -f backend/pom.xml test
 
 # Cucumber scenarios only. This replaces the coverage report with a Cucumber-only measurement.
 ./backend/gradlew -p backend test -PtestEngine=cucumber

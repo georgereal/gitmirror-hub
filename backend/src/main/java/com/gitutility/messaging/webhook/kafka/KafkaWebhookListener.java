@@ -27,6 +27,7 @@ public class KafkaWebhookListener implements WebhookBusControls {
     private final WebhookIncrementalService webhookIncrementalService;
     private final KafkaWebhookPublisher publisher;
     private final KafkaIncrementalDecoder decoder;
+    private final KafkaValueCodec valueCodec;
     private final KafkaListenerEndpointRegistry registry;
 
     @KafkaListener(
@@ -35,27 +36,36 @@ public class KafkaWebhookListener implements WebhookBusControls {
             groupId = "${git-utility.webhook-bus.kafka.group-id}",
             containerFactory = "webhookKafkaListenerContainerFactory"
     )
-    public void onRecord(ConsumerRecord<String, String> record, Acknowledgment acknowledgment) {
-        IncrementalGitEvent event;
+    public void onRecord(ConsumerRecord<String, byte[]> record, Acknowledgment acknowledgment) {
+        String json;
         try {
-            event = decoder.decode(record.value(), schemaVersion(record));
+            json = valueCodec.toJson(record.topic(), record.value());
         } catch (IncrementalEventDecodeException e) {
             log.warn("Discarding unreadable incremental record on {}: {}", record.topic(), e.getMessage());
-            publisher.deadLetterRaw(record.key(), record.value(), e.getMessage());
+            publisher.deadLetterRaw(record.key(), binaryPlaceholder(record.value()), e.getMessage());
             acknowledgment.acknowledge();
             return;
         }
-        event.setSourceMessage(cap(record.value()));
+        IncrementalGitEvent event;
+        try {
+            event = decoder.decode(json, schemaVersion(record));
+        } catch (IncrementalEventDecodeException e) {
+            log.warn("Discarding unreadable incremental record on {}: {}", record.topic(), e.getMessage());
+            publisher.deadLetterRaw(record.key(), json, e.getMessage());
+            acknowledgment.acknowledge();
+            return;
+        }
+        event.setSourceMessage(cap(json));
         webhookIncrementalService.handle(event);
         acknowledgment.acknowledge();
     }
 
-    private static String schemaVersion(ConsumerRecord<String, String> record) {
+    private static String schemaVersion(ConsumerRecord<String, byte[]> record) {
         String version = header(record, "schemaVersion");
         return version != null ? version : header(record, "schema-version");
     }
 
-    private static String header(ConsumerRecord<String, String> record, String name) {
+    private static String header(ConsumerRecord<String, byte[]> record, String name) {
         Header header = record.headers().lastHeader(name);
         if (header == null || header.value() == null || header.value().length == 0) {
             return null;
@@ -69,6 +79,11 @@ public class KafkaWebhookListener implements WebhookBusControls {
             return value;
         }
         return value.substring(0, 15_999) + "\u2026";
+    }
+
+    private static String binaryPlaceholder(byte[] value) {
+        int len = value == null ? 0 : value.length;
+        return "{\"error\":\"binary record could not be decoded\",\"bytes\":" + len + "}";
     }
 
     @Override

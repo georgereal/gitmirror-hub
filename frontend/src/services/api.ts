@@ -477,6 +477,8 @@ export interface KafkaStoredFailure {
 
 export interface WebhookBusStatus {
   provider: string;
+  sourceId?: string;
+  bootstrapServers?: string;
   topic?: string;
   groupId?: string;
   lag?: number | null;
@@ -498,6 +500,27 @@ export interface WebhookBusStatus {
   deadLetterQueue?: string;
 }
 
+export type KafkaOffsetSeekMode = 'earliest' | 'latest' | 'rewind';
+
+export interface KafkaOffsetSeekRequest {
+  mode: KafkaOffsetSeekMode;
+  rewindBy?: number;
+  partition?: number;
+}
+
+export interface KafkaOffsetSeekResult {
+  mode: string;
+  rewindBy?: number | null;
+  partition?: number | null;
+  groupId?: string;
+  topic?: string;
+  sourceId?: string;
+  offsets?: Array<{ partition: number; offset: number }>;
+  error?: string;
+  pending?: number | null;
+  partitions?: KafkaPartitionStatus[];
+}
+
 export const getWebhookBus = async (fresh = false): Promise<WebhookBusStatus> => {
   const res = await api.get('/webhook-bus', { params: fresh ? { fresh: true } : {} });
   return res.data;
@@ -505,6 +528,13 @@ export const getWebhookBus = async (fresh = false): Promise<WebhookBusStatus> =>
 
 export const redriveWebhookBus = async (limit = 10): Promise<{ redriven: number }> => {
   const res = await api.post('/webhook-bus/redrive', null, { params: { limit } });
+  return res.data;
+};
+
+export const seekWebhookBusOffsets = async (
+  body: KafkaOffsetSeekRequest
+): Promise<KafkaOffsetSeekResult> => {
+  const res = await api.post('/webhook-bus/offsets/seek', body);
   return res.data;
 };
 

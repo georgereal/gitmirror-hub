@@ -3,6 +3,7 @@ package com.gitutility.messaging.webhook.kafka;
 import com.gitutility.messaging.webhook.WebhookBusConditions;
 import com.gitutility.messaging.webhook.WebhookIncrementalService;
 import com.gitutility.model.dto.IncrementalGitEvent;
+import com.gitutility.model.dto.KafkaOffsetSeekRequest;
 import com.gitutility.service.UnmappedWebhookRetention;
 import com.gitutility.model.entity.UnmappedWebhookEvent;
 import com.gitutility.repository.UnmappedWebhookEventRepository;
@@ -51,10 +52,17 @@ public class KafkaWebhookOps {
     @Value("${git-utility.webhook-bus.kafka.group-id}")
     private String groupId;
 
+    @Value("${git-utility.webhook-bus.kafka.source-id:}")
+    private String sourceId;
+
+    @Value("${git-utility.webhook-bus.kafka.bootstrap-servers:}")
+    private String bootstrapServers;
+
     private static final long BROKER_CACHE_MS = 15_000L;
     /** Drop the admin connection after the Kafka page has been quiet this long. */
     private static final long ADMIN_IDLE_MS = 300_000L;
     private static final long RPC_TIMEOUT_SEC = 10L;
+    private static final long GROUP_LEAVE_WAIT_MS = 2_000L;
 
     private final Object brokerLock = new Object();
     private AdminClient admin;
@@ -81,6 +89,12 @@ public class KafkaWebhookOps {
 
     public Map<String, Object> status(boolean fresh) {
         Map<String, Object> body = new LinkedHashMap<>();
+        if (sourceId != null && !sourceId.isBlank()) {
+            body.put("sourceId", sourceId);
+        }
+        if (bootstrapServers != null && !bootstrapServers.isBlank()) {
+            body.put("bootstrapServers", bootstrapServers);
+        }
         body.put("topic", topic);
         body.put("groupId", groupId);
         body.put("paused", listenerPaused());
@@ -95,6 +109,124 @@ public class KafkaWebhookOps {
                 .toList());
         body.putAll(brokerSnapshot(fresh));
         return body;
+    }
+
+    /**
+     * Stops the incremental listener, alters this group's committed offsets, then restarts the listener.
+     * Other Hub pods in the same group must be stopped or the broker rejects the alter.
+     */
+    public Map<String, Object> seek(KafkaOffsetSeekRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("seek body is required");
+        }
+        String mode = KafkaOffsetSeek.normalizeMode(request.mode());
+        int rewindBy = KafkaOffsetSeek.normalizeRewindBy(request.rewindBy());
+        Integer partitionFilter = request.partition();
+        if (partitionFilter != null && partitionFilter < 0) {
+            throw new IllegalArgumentException("partition must be >= 0");
+        }
+
+        MessageListenerContainer container = registry.getListenerContainer(KafkaWebhookListener.LISTENER_ID);
+        boolean wasRunning = container != null && container.isRunning();
+        synchronized (brokerLock) {
+            lastAdminUse = System.currentTimeMillis();
+            try {
+                if (wasRunning) {
+                    container.stop();
+                    sleepQuietly(GROUP_LEAVE_WAIT_MS);
+                }
+                Map<TopicPartition, OffsetAndMetadata> targets = resolveSeekTargets(mode, rewindBy, partitionFilter);
+                admin().alterConsumerGroupOffsets(groupId, targets)
+                        .all()
+                        .get(RPC_TIMEOUT_SEC, TimeUnit.SECONDS);
+                brokerCache = null;
+                log.info("Webhook Kafka seek mode={} rewindBy={} partition={} group={} topic={} partitions={}",
+                        mode, rewindBy, partitionFilter, groupId, topic, targets.size());
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put("mode", mode);
+                body.put("rewindBy", "rewind".equals(mode) ? rewindBy : null);
+                body.put("partition", partitionFilter);
+                body.put("groupId", groupId);
+                body.put("topic", topic);
+                if (sourceId != null && !sourceId.isBlank()) {
+                    body.put("sourceId", sourceId);
+                }
+                List<Map<String, Object>> rows = new ArrayList<>();
+                for (Map.Entry<TopicPartition, OffsetAndMetadata> entry : targets.entrySet()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("partition", entry.getKey().partition());
+                    row.put("offset", entry.getValue().offset());
+                    rows.add(row);
+                }
+                rows.sort(Comparator.comparingInt(row -> (Integer) row.get("partition")));
+                body.put("offsets", rows);
+                body.putAll(brokerSnapshot(true));
+                return body;
+            } catch (IllegalArgumentException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new IllegalStateException("Kafka offset seek failed: " + errorText(e), e);
+            } finally {
+                if (wasRunning && container != null && !container.isRunning()) {
+                    container.start();
+                }
+            }
+        }
+    }
+
+    private Map<TopicPartition, OffsetAndMetadata> resolveSeekTargets(
+            String mode,
+            int rewindBy,
+            Integer partitionFilter
+    ) throws Exception {
+        AdminClient client = admin();
+        var described = client.describeTopics(TopicCollection.ofTopicNames(List.of(topic)))
+                .allTopicNames()
+                .get(RPC_TIMEOUT_SEC, TimeUnit.SECONDS);
+        var description = described.get(topic);
+        if (description == null) {
+            throw new IllegalStateException("Topic not found: " + topic);
+        }
+        List<TopicPartition> parts = description.partitions().stream()
+                .map(info -> new TopicPartition(topic, info.partition()))
+                .sorted(Comparator.comparingInt(TopicPartition::partition))
+                .toList();
+        if (partitionFilter != null) {
+            boolean found = parts.stream().anyMatch(part -> part.partition() == partitionFilter);
+            if (!found) {
+                throw new IllegalArgumentException("partition " + partitionFilter + " not on topic " + topic);
+            }
+            parts = parts.stream().filter(part -> part.partition() == partitionFilter).toList();
+        }
+        Map<TopicPartition, OffsetSpec> latest = new HashMap<>();
+        Map<TopicPartition, OffsetSpec> earliest = new HashMap<>();
+        for (TopicPartition part : parts) {
+            latest.put(part, OffsetSpec.latest());
+            earliest.put(part, OffsetSpec.earliest());
+        }
+        var endOffsets = client.listOffsets(latest).all().get(RPC_TIMEOUT_SEC, TimeUnit.SECONDS);
+        var startOffsets = client.listOffsets(earliest).all().get(RPC_TIMEOUT_SEC, TimeUnit.SECONDS);
+        Map<TopicPartition, OffsetAndMetadata> committed = client.listConsumerGroupOffsets(groupId)
+                .partitionsToOffsetAndMetadata()
+                .get(RPC_TIMEOUT_SEC, TimeUnit.SECONDS);
+        Map<TopicPartition, OffsetAndMetadata> targets = new LinkedHashMap<>();
+        for (TopicPartition part : parts) {
+            long start = startOffsets.get(part).offset();
+            long end = endOffsets.get(part).offset();
+            OffsetAndMetadata meta = committed.get(part);
+            Long committedOffset = meta == null ? null : meta.offset();
+            long target = KafkaOffsetSeek.targetOffset(mode, start, end, committedOffset, rewindBy);
+            targets.put(part, new OffsetAndMetadata(target));
+        }
+        return targets;
+    }
+
+    private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     @Scheduled(fixedDelay = 60_000)

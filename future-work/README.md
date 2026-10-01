@@ -12,6 +12,7 @@ Deferred design plans. These are **not** delivery schedules. Shipped plans live 
 | [scm-credential-vault-and-hub-hmac.md](scm-credential-vault-and-hub-hmac.md) | Parked | Vault refs for secret bytes; Hub HMAC on inbound consume |
 | [multi-config-webhook-ingest.md](multi-config-webhook-ingest.md) | Parked | One Worker + one inbound queue; identity on envelope; no Kafka / per-card Worker |
 | [kafka-incremental-upstream-sync.md](kafka-incremental-upstream-sync.md) | Core shipped | Incremental lane on Kafka or Rabbit (`GIT_WEBHOOK_BUS_PROVIDER`). Cloudflare publisher in `webhook-worker-kafka/`. Full mirror stays on `GIT_MESSAGING_PROVIDER` |
+| [kafka-avro-mtls.md](kafka-avro-mtls.md) | Implemented (pending Maven verify) | Opt-in Avro (Schema Registry) codec + mutual TLS PEM beside JSON + SASL |
 | [kafka-mirroring-partitions.md](kafka-mirroring-partitions.md) | Backlog (design only) | Later cutover if full **and** incremental both move to Kafka. Not this slice |
 | [ephemeral-agentic-ref-webhooks.md](ephemeral-agentic-ref-webhooks.md) | Partial (core shipped) | Pair UI for prefixes; scheduled Smart sync; discard filter chips |
 | [fork-pr-lazy-dr-materialize.md](fork-pr-lazy-dr-materialize.md) | Partial (core shipped) | UI materialize action; legacy fork-pr cleanup; diff status for objects_cached |

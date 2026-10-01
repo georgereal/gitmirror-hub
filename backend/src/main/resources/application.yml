@@ -131,6 +131,10 @@ git-utility:
     # Incremental git events only. off | kafka | rabbitmq. Full mirrors stay on messaging.provider.
     provider: ${GIT_WEBHOOK_BUS_PROVIDER:off}
     kafka:
+      # Optional label; also set from the enabled entry in GIT_WEBHOOK_KAFKA_SOURCES_FILE.
+      source-id: ${GIT_WEBHOOK_KAFKA_SOURCE_ID:}
+      # JSON/YAML file of named sources; exactly one must have enabled: true. Overrides flat bootstrap/topic/group/auth.
+      sources-file: ${GIT_WEBHOOK_KAFKA_SOURCES_FILE:}
       bootstrap-servers: ${GIT_WEBHOOK_KAFKA_BOOTSTRAP_SERVERS:}
       security-protocol: ${GIT_WEBHOOK_KAFKA_SECURITY_PROTOCOL:PLAINTEXT}
       sasl-mechanism: ${GIT_WEBHOOK_KAFKA_SASL_MECHANISM:PLAIN}
@@ -148,6 +152,17 @@ git-utility:
       # Adapters. normalized-v1 is built in. GIT_WEBHOOK_EVENT_FORMATS_DIR adds more schema versions. Hub does not produce processing records.
       event-format: ${GIT_WEBHOOK_EVENT_FORMAT:normalized-v1}
       event-formats-dir: ${GIT_WEBHOOK_EVENT_FORMATS_DIR:}
+      # Value codec: json (default) | avro. Avro requires schema-registry-url. Independent of SSL and of formats-dir.
+      value-codec: ${GIT_WEBHOOK_KAFKA_VALUE_CODEC:json}
+      schema-registry-url: ${GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_URL:}
+      schema-registry-username: ${GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_USERNAME:}
+      schema-registry-password: ${GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_PASSWORD:}
+      # Mutual TLS (SECURITY_PROTOCOL=SSL). PEM file paths. Independent of SASL username/password and of value-codec.
+      # keystore may be cert-only or a combined cert+key PEM; key-location is optional when the keystore already has the key.
+      ssl-truststore-location: ${GIT_WEBHOOK_KAFKA_SSL_TRUSTSTORE_LOCATION:}
+      ssl-keystore-location: ${GIT_WEBHOOK_KAFKA_SSL_KEYSTORE_LOCATION:}
+      ssl-key-location: ${GIT_WEBHOOK_KAFKA_SSL_KEY_LOCATION:}
+      ssl-key-password: ${GIT_WEBHOOK_KAFKA_SSL_KEY_PASSWORD:}
     rabbitmq:
       addresses: ${GIT_WEBHOOK_RABBITMQ_ADDRESSES:${SPRING_RABBITMQ_ADDRESSES:}}
       exchange: ${GIT_WEBHOOK_RABBITMQ_EXCHANGE:git.webhook.exchange}

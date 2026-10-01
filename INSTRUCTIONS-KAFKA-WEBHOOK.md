@@ -7,15 +7,15 @@ Two processes talk to the same Confluent Cloud cluster:
 | Process | How it reaches Kafka | What it does |
 | :--- | :--- | :--- |
 | `webhook-worker-kafka` (Cloudflare) | HTTPS to the cluster REST endpoint | Checks the SCM HMAC and produces one normalized git event |
-| Hub | Kafka protocol, `SASL_SSL` + `PLAIN` | Consumes that topic and runs the existing incremental sync |
+| Hub | Kafka protocol: `SASL_SSL` + API key (default), or `SSL` + PEM mTLS | Consumes that topic (JSON or Avro codec) and runs incremental sync |
 
 Cloudflare cannot open the broker port (`:9092`). The Worker uses the Confluent REST records API. Hub uses the bootstrap server. Both use the same cluster API key.
 
-If an upstream system already writes this JSON to the topic, skip the Worker (sections 4–6) and start at section 7.
+If an upstream system already writes this JSON (or Avro) to the topic, skip the Worker (sections 4–6) and start at section 7. Optional Hub modes: event adapters (section 12), Avro codec (section 13), mutual TLS (section 14).
 
 The Rabbit Cloudflare worker (`webhook-worker/`) and this Kafka worker are two ways to accept the same Git webhooks. Run one of them at a time. Section 8 is the switch: stop the worker you are leaving, start the one you are entering, then point the Git webhook at the one that is running.
 
-Design notes live in [`future-work/kafka-incremental-upstream-sync.md`](future-work/kafka-incremental-upstream-sync.md). Worker commands also live in [`webhook-worker-kafka/README.md`](webhook-worker-kafka/README.md). Event shapes after consume are in [`KAFKA_EVENT_FORMATS.md`](KAFKA_EVENT_FORMATS.md).
+Design notes live in [`future-work/kafka-incremental-upstream-sync.md`](future-work/kafka-incremental-upstream-sync.md). Worker commands also live in [`webhook-worker-kafka/README.md`](webhook-worker-kafka/README.md). Event adapters, value codec, and mutual TLS: [`KAFKA_EVENT_FORMATS.md`](KAFKA_EVENT_FORMATS.md). Partition keys: [`KAFKA_PARTITION_ORDERING.md`](KAFKA_PARTITION_ORDERING.md). Avro + mTLS tracking: [`future-work/kafka-avro-mtls.md`](future-work/kafka-avro-mtls.md).
 
 ---
 
@@ -251,10 +251,9 @@ export GIT_WEBHOOK_KAFKA_INCREMENTAL_TOPIC=git.sync.incremental
 export GIT_WEBHOOK_KAFKA_GROUP_ID=git-mirror-hub
 export GIT_WEBHOOK_KAFKA_INCREMENTAL_PARTITIONS=6
 export GIT_WEBHOOK_KAFKA_REPLICATION_FACTOR=3
-
-# Optional. Directory of extra event-shape adapters. Unset keeps only normalized-v1.
-# export GIT_WEBHOOK_EVENT_FORMATS_DIR=/path/to/formats
 ```
+
+Optional Hub modes (formats directory, Avro codec, mutual TLS) are in sections 12–14. Leave them unset for JSON values over this SASL path.
 
 `GIT_WEBHOOK_KAFKA_INCREMENTAL_PARTITIONS` must match the topic you created in section 3.
 
@@ -270,7 +269,7 @@ curl -s http://localhost:8080/api/v1/webhook-bus
 
 `GIT_QUEUE_PAUSE_ON_STARTUP` defaults to off when messaging is `none`. If the Queue page shows consumers paused, resume them. A paused listener stays in the consumer group and does not poll.
 
-### Every Hub setting
+### Core Hub settings (SASL / topic)
 
 | Env | Confluent value | Default if unset |
 | :--- | :--- | :--- |
@@ -454,6 +453,8 @@ A record Hub cannot apply is stored in `unmapped_webhook_events` with `discardRe
 curl -X POST "http://localhost:8080/api/v1/webhook-bus/redrive?limit=20"
 ```
 
+To re-read records still on the topic (not only DB dead-letters), seek the consumer group (section 15).
+
 ---
 
 ## 10. More than one Hub pod
@@ -466,8 +467,13 @@ Every pod in one deployment uses the same bootstrap, topic, and `GIT_WEBHOOK_KAF
 
 | What you see | Fix |
 | :--- | :--- |
-| Hub exits: bootstrap servers required | `GIT_WEBHOOK_BUS_PROVIDER=kafka` without `GIT_WEBHOOK_KAFKA_BOOTSTRAP_SERVERS` |
+| Hub exits: bootstrap servers required | `GIT_WEBHOOK_BUS_PROVIDER=kafka` without `GIT_WEBHOOK_KAFKA_BOOTSTRAP_SERVERS` and without an enabled sources-file entry |
+| Hub exits: sources file exactly one | Zero or more than one `enabled: true` in `GIT_WEBHOOK_KAFKA_SOURCES_FILE` |
+| Offset seek 409 / alter rejected | Another Hub pod still in the same consumer group; stop siblings, then seek again |
 | Hub exits: SASL requires username | `SASL_SSL` without the API key and secret |
+| Hub exits: Schema Registry URL | `GIT_WEBHOOK_KAFKA_VALUE_CODEC=avro` without `GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_URL` |
+| Hub exits: SSL truststore location | `SECURITY_PROTOCOL=SSL` without trust/keystore PEM paths, or a path that is not a readable file |
+| Hub exits: SSL_KEY_PASSWORD | Keystore/key PEM has `BEGIN ENCRYPTED PRIVATE KEY` but `GIT_WEBHOOK_KAFKA_SSL_KEY_PASSWORD` is empty |
 | Hub exits: `GIT_MESSAGING_PROVIDER=kafka` | Use `none` or `rabbitmq` for full mirrors. Kafka on the webhook bus is `GIT_WEBHOOK_BUS_PROVIDER` |
 | Topic create rejected, replication factor | Create the topic in the UI and set `GIT_WEBHOOK_KAFKA_REPLICATION_FACTOR=3` |
 | Both workers publish the same push | A second Git webhook still points at the worker you meant to stop, or that worker's `ENABLED` is still `true`. Stop it with section 8 and keep a single webhook |
@@ -480,15 +486,19 @@ Every pod in one deployment uses the same bootstrap, topic, and `GIT_WEBHOOK_KAF
 
 ---
 
-## 12. More than one event shape
+## 12. Event format adapters
 
-Full write-up: [`KAFKA_EVENT_FORMATS.md`](KAFKA_EVENT_FORMATS.md). This section is the Hub setting.
+Full write-up: [`KAFKA_EVENT_FORMATS.md`](KAFKA_EVENT_FORMATS.md). Operator summary in [`INSTRUCTIONS.md`](INSTRUCTIONS.md) (Kafka Hub: event format adapters).
 
 Hub consumes the incremental topic and adapts each record after it arrives. The mirror path only sees `IncrementalGitEvent`. Hub does not publish a converted copy back to Kafka. A busy lease or a failed attempt leaves the offset uncommitted so the broker redelivers the original bytes. After the retry budget, the raw record is stored on the dead-letter list in the database.
 
 `normalized-v1` is always available. It is today's flat event (`push`, `create`, `delete`, `pull_request`, `release`, `status`, `check_run`).
 
-Another shape is a JSON file in `GIT_WEBHOOK_EVENT_FORMATS_DIR`. The file `id` is the schema version. `when` selects records that omit a version. `fields` are JSON Pointers onto the canonical event. `eventTypeMap` renames the producer kind onto Hub's type names. Worked files are in `kafka-event-format/examples/formats/`.
+| Env | Default | Role |
+| :--- | :--- | :--- |
+| `GIT_WEBHOOK_EVENT_FORMATS_DIR` | empty | Directory of `*.json` mapping files. Unset keeps only `normalized-v1`. |
+
+Another shape is a JSON file in that directory. The file `id` is the schema version. `when` selects records that omit a version. `fields` are JSON Pointers onto the canonical event. `eventTypeMap` renames the producer kind onto Hub's type names. Worked files are in `kafka-event-format/examples/formats/`.
 
 Put the version on the record when both shapes share the topic:
 
@@ -514,3 +524,99 @@ export GIT_WEBHOOK_EVENT_FORMATS_DIR=/path/to/formats
 On Queues → Incremental events, each row shows the event type, the adapter id, and the source Kafka message (capped at 16,000 characters) for records Hub processed. Skipped and dead-letter rows show the same when the payload was kept.
 
 A pointer file renames and nests fields. It does not add a git operation Hub does not already run.
+
+---
+
+## 13. Value codec (`json` | `avro`)
+
+Independent of section 12 and of section 14. Default is UTF-8 JSON (today's path). Full write-up: [`KAFKA_EVENT_FORMATS.md`](KAFKA_EVENT_FORMATS.md). Operator summary in [`INSTRUCTIONS.md`](INSTRUCTIONS.md) (Kafka Hub: value codec).
+
+| Env | Default | Role |
+| :--- | :--- | :--- |
+| `GIT_WEBHOOK_KAFKA_VALUE_CODEC` | `json` | `json` or `avro` |
+| `GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_URL` | empty | Required when codec is `avro` |
+| `GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_USERNAME` | empty | Optional registry basic auth |
+| `GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_PASSWORD` | empty | Optional registry basic auth |
+
+```bash
+export GIT_WEBHOOK_KAFKA_VALUE_CODEC=avro
+export GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_URL=https://schema-registry.example:8081
+# export GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_USERNAME=
+# export GIT_WEBHOOK_KAFKA_SCHEMA_REGISTRY_PASSWORD=
+```
+
+Hub deserializes Confluent-framed Avro through the Schema Registry, converts the record to JSON, then runs the same adapters as section 12. `sourceMessage` on Queues is that JSON projection (capped). Startup fails when codec is `avro` and the registry URL is empty.
+
+Compose with SASL (section 7) or with mutual TLS (section 14). When TLS PEMs are set, Hub applies the same certificates to the Schema Registry client.
+
+---
+
+## 14. Mutual TLS (PEM)
+
+Independent of section 12 and of section 13. Confluent Cloud usually stays on `SASL_SSL` + API key (section 7). Use this section for brokers that require client certificates. Operator summary in [`INSTRUCTIONS.md`](INSTRUCTIONS.md) (Kafka Hub: mutual TLS).
+
+| Env | Default | Role |
+| :--- | :--- | :--- |
+| `GIT_WEBHOOK_KAFKA_SECURITY_PROTOCOL` | `PLAINTEXT` | Set to `SSL` for mutual TLS |
+| `GIT_WEBHOOK_KAFKA_SSL_TRUSTSTORE_LOCATION` | empty | CA / trust PEM. Required for `SSL` |
+| `GIT_WEBHOOK_KAFKA_SSL_KEYSTORE_LOCATION` | empty | Client cert PEM, or combined cert + key PEM. Required for `SSL` |
+| `GIT_WEBHOOK_KAFKA_SSL_KEY_LOCATION` | empty | Private key PEM. Optional when the keystore already contains the key |
+| `GIT_WEBHOOK_KAFKA_SSL_KEY_PASSWORD` | empty | Passphrase for an encrypted private key. Required when the key is encrypted |
+
+```bash
+export GIT_WEBHOOK_KAFKA_SECURITY_PROTOCOL=SSL
+export GIT_WEBHOOK_KAFKA_SSL_TRUSTSTORE_LOCATION=/path/ca.pem
+export GIT_WEBHOOK_KAFKA_SSL_KEYSTORE_LOCATION=/path/client.pem
+export GIT_WEBHOOK_KAFKA_SSL_KEY_PASSWORD='<pem passphrase>'
+```
+
+Truststore and keystore must be readable at Hub startup. A combined client PEM (certificate block + `BEGIN ENCRYPTED PRIVATE KEY`) is supported; set the passphrase via `GIT_WEBHOOK_KAFKA_SSL_KEY_PASSWORD`. Hub loads the PEM contents into Kafka's PEM truststore / keystore properties (and `ssl.key.password`). Partition keys and adapters are unchanged; only the TCP/TLS handshake changes.
+
+For `GitWebhookService` envelopes (`payload` as a JSON string), use the adapter in `kafka-event-format/examples/formats/30-git-webhook-service-v1.json` and set `GIT_WEBHOOK_EVENT_FORMATS_DIR` (section 12). Hub unwraps stringified `payload` before adapters run.
+
+Tracking doc: [`future-work/kafka-avro-mtls.md`](future-work/kafka-avro-mtls.md).
+
+---
+
+## 15. Offset seek / replay
+
+Moves the Hub consumer group’s committed offsets so the incremental listener re-reads topic records. Use this when the topic is quiet and you need to inspect formats again. Distinct from section 9 dead-letter redrive (DB rows only).
+
+Queues → Kafka panel: **Rewind**, **To earliest**, **To latest**. Or:
+
+```bash
+# Re-read the last ~50 committed records per partition
+curl -X POST "http://localhost:8080/api/v1/webhook-bus/offsets/seek" \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"rewind","rewindBy":50}'
+
+# Optional: one partition only
+curl -X POST "http://localhost:8080/api/v1/webhook-bus/offsets/seek" \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"earliest","partition":0}'
+```
+
+| `mode` | Effect |
+| :--- | :--- |
+| `rewind` | Each partition → `max(log-start, committed - rewindBy)` (`rewindBy` default 50, max 10000) |
+| `earliest` | Each partition → log-start |
+| `latest` | Each partition → log-end (skips pending backlog for this group) |
+
+Hub stops the incremental listener, calls `alterConsumerGroupOffsets`, then starts the listener again. If other pods share `GIT_WEBHOOK_KAFKA_GROUP_ID`, stop them first or the broker rejects the alter.
+
+---
+
+## 16. Named sources (single active)
+
+Declare several clusters in one file. Exactly one source must have `enabled: true`. Hub loads that source at startup onto the flat Kafka settings. Flip by editing the file and restarting Hub. Example: [`env.kafka-sources.example.yml`](env.kafka-sources.example.yml).
+
+| Env | Default | Role |
+| :--- | :--- | :--- |
+| `GIT_WEBHOOK_KAFKA_SOURCES_FILE` | empty | Path to JSON or YAML sources file |
+| `GIT_WEBHOOK_KAFKA_SOURCE_ID` | empty | Optional label when not using a sources file |
+
+```bash
+export GIT_WEBHOOK_KAFKA_SOURCES_FILE=/path/to/kafka-sources.yml
+```
+
+Per-source fields override flat env for bootstrap, topic, group, security protocol, SASL, SSL paths, and value codec / schema registry when set. Formats directory (`GIT_WEBHOOK_EVENT_FORMATS_DIR`) stays process-wide. Status and the Queues Kafka panel show `sourceId` and bootstrap for the active source. Concurrent multi-broker consumers in one JVM are out of scope.

@@ -32,12 +32,13 @@ public class IncrementalGitEvent {
     private String receivedAt;
     /** Set when a busy lease re-queues the same SyncJob. */
     private String jobId;
+    /** Omitted on many producer payloads; Jackson 3 rejects null for primitive int. */
     @Builder.Default
-    private int attempt = 1;
+    private Integer attempt = 1;
     /** Last failure, kept on the record when it is stored for replay. */
     private String error;
 
     public int attemptOrOne() {
-        return attempt < 1 ? 1 : attempt;
+        return attempt == null || attempt < 1 ? 1 : attempt;
     }
 }

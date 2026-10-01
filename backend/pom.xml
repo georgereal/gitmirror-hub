@@ -16,10 +16,32 @@
     <description>Bidirectional Git Mirroring Utility with Spring Boot, AMQP Queues, and DLQ</description>
 
     <properties>
-        <java.version>21</java.version>
+        <java.version>23</java.version>
         <jgit.version>7.8.0.202609011348-r</jgit.version>
         <cucumber.version>8.0.1</cucumber.version>
+        <confluent.version>7.8.0</confluent.version>
     </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Align Cucumber transitives. Without the BOM, Maven fails resolving io.cucumber:messages
+                 (formatters want [32,33) while cucumber-core wants 34.x). -->
+            <dependency>
+                <groupId>io.cucumber</groupId>
+                <artifactId>cucumber-bom</artifactId>
+                <version>${cucumber.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <repositories>
+        <repository>
+            <id>confluent</id>
+            <url>https://packages.confluent.io/maven/</url>
+        </repository>
+    </repositories>
 
     <dependencies>
         <!-- Boot 4 modular starters (web → webmvc) -->
@@ -53,6 +75,12 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-kafka</artifactId>
+        </dependency>
+        <!-- Schema Registry Avro codec (GIT_WEBHOOK_KAFKA_VALUE_CODEC=avro). Opt-in; json path does not need it at runtime. -->
+        <dependency>
+            <groupId>io.confluent</groupId>
+            <artifactId>kafka-avro-serializer</artifactId>
+            <version>${confluent.version}</version>
         </dependency>
 
         <dependency>

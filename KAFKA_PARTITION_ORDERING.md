@@ -2,7 +2,7 @@
 
 How GitMirror Hub keeps one repository's webhooks in turn while still using many partitions. This paper describes the incremental webhook bus (`GIT_WEBHOOK_BUS_PROVIDER=kafka`). Full mirrors stay on `GIT_MESSAGING_PROVIDER` (`none` or `rabbitmq`) and are not part of this topic.
 
-Setup for the cluster, worker, and environment variables is in [`INSTRUCTIONS-KAFKA-WEBHOOK.md`](INSTRUCTIONS-KAFKA-WEBHOOK.md).
+Setup for the cluster, worker, and environment variables is in [`INSTRUCTIONS-KAFKA-WEBHOOK.md`](INSTRUCTIONS-KAFKA-WEBHOOK.md). Event adapters, value codec (`json` \| `avro`), and mutual TLS PEMs are in [`KAFKA_EVENT_FORMATS.md`](KAFKA_EVENT_FORMATS.md) and the Kafka Hub sections of [`INSTRUCTIONS.md`](INSTRUCTIONS.md). Those modes do not change the record key or the partition map.
 
 ## The problem
 
@@ -24,7 +24,7 @@ The Cloudflare worker `webhook-worker-kafka` accepts the SCM webhook, checks the
 
 A different repository is a different key. It hashes to some partition, often a different one. Those two streams never wait on each other.
 
-Hub republishes with the same key. `KafkaWebhookPublisher` calls `RepoMappingService.normalizeRepoKey`, which is the same normalization the worker uses. A record that Hub puts back on the topic stays on the repository's partition.
+Hub does not publish a processing copy back onto the topic for the Kafka bus. A busy lease or a failed attempt leaves the offset uncommitted so the broker redelivers the original bytes on the same partition. The repository key that landed the record there is still the one the producer set.
 
 The consumer group is `GIT_WEBHOOK_KAFKA_GROUP_ID` (default `git-mirror-hub`). Every pod in one deployment joins that group. Kafka's cooperative sticky assignor gives each partition to one pod. `GIT_WEBHOOK_KAFKA_LISTENER_CONCURRENCY` is how many partitions this process reads at once. It does not split one repository across threads. Offsets are committed manually after the event is handled, not when it is received.
 
@@ -58,7 +58,7 @@ For two repositories, there is no global turn. That is the point. Partition coun
 
 **The key survives URL spelling.** Clone URLs with and without `.git`, and SSH versus HTTPS, land on one partition as long as both producers use the normalization above. A second producer that sent the raw clone URL would silently split the repository across two partitions.
 
-**Retries stay on the same stream.** A republished event uses the normalized repository key, so it is appended to the same partition rather than jumping to another consumer.
+**Retries stay on the same stream.** A record that must be tried again stays unacknowledged. Kafka redelivers it on the same partition with the same key.
 
 **The pair is a separate problem, and it stays separate.** The two sides of a mirror are two URLs, so they are allowed to be two partitions and even two pods. Applying both at once is safe only because the pair lease (`pair_leases`, held by `GIT_UTILITY_INSTANCE_ID`) lets one job own that pair, and because an inbound event is an echo only when the other repository already has that tip. The bus does not pretend the two sides are one ordered log.
 
@@ -82,7 +82,7 @@ For two repositories, there is no global turn. That is the point. Partition coun
 
 **A hot repository cannot be split later without the same break.** If one repository dominates the topic, its partition is the bottleneck. The usual Kafka remedy, a finer key, would let two refs of that repository run out of order. Speeding that repository up means a faster consumer, not a second partition, unless the product deliberately chooses a new ordering unit (for example one key per ref) and accepts concurrent refs.
 
-**Normalization drift between producers.** The worker and `RepoMappingService.normalizeRepoKey` match today. A corporate publisher, a second worker, or a partial rewrite that keys on `full_name`, a numeric repo id, or the URL with `.git` left on will fork the stream. Both halves will look healthy. Order will simply be gone. Any new producer has to call the same key function.
+**Normalization drift between producers.** The worker and Hub’s `RepoMappingService.normalizeRepoKey` match today. A corporate publisher, a second worker, or a partial rewrite that keys on `full_name`, a numeric repo id, or the URL with `.git` left on will fork the stream. Both halves will look healthy. Order will simply be gone. Any new producer has to call the same key function. Avro bodies and mutual TLS do not choose the partition; only the record key does.
 
 **A missing key hashes to a single junk partition.** A produce with a null or empty key does not join the repository's stream. Those records pile onto one partition and can interleave with whichever repositories hashed there.
 
@@ -103,7 +103,7 @@ For two repositories, there is no global turn. That is the point. Partition coun
 ## Operating rules
 
 - Key every produce with the normalized repository URL. Do not key on the pair, the branch, or the delivery id.
-- Keep the worker and the Hub publisher on one normalization.
+- Keep every producer on one normalization (including an Avro producer).
 - Size partitions for how many repositories should run at once. Size listeners and pods to cover those partitions. Do not raise either number to speed up a single repository.
 - Change partition count only when the topic can be recreated or the in-flight log can be drained.
 - Give each deployment its own consumer group.

@@ -11,17 +11,20 @@ description = "Bidirectional Git Mirroring Utility with Spring Boot, AMQP Queues
 
 java {
     toolchain {
-        languageVersion.set(JavaLanguageVersion.of(21))
+        // Prefer JDK 23 on this machine. Java 25's version string (e.g. 25.0.4.1) breaks this Gradle wrapper.
+        languageVersion.set(JavaLanguageVersion.of(23))
     }
 }
 
 repositories {
     mavenCentral()
+    maven { url = uri("https://packages.confluent.io/maven/") }
 }
 
 val jgitVersion = "7.8.0.202609011348-r"
 val bouncyCastleVersion = "1.85"
 val cucumberVersion = "8.0.1"
+val confluentVersion = "7.8.0"
 
 dependencies {
     // Boot 4 modular starters (web → webmvc)
@@ -30,6 +33,7 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-data-mongodb")
     implementation("org.springframework.boot:spring-boot-starter-amqp")
     implementation("org.springframework.boot:spring-boot-starter-kafka")
+    implementation("io.confluent:kafka-avro-serializer:$confluentVersion")
     implementation("org.springframework.boot:spring-boot-starter-websocket")
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
